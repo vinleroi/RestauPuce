@@ -53,6 +53,19 @@ public sealed class IngredientForm
         AveragePieceWeightGrams,
         SupplierId);
 
+    /// <summary>
+    /// Change l'unité de base. Le prix affiché était saisi pour l'ancienne unité : il est vidé pour être ressaisi dans la
+    /// nouvelle (le service exige alors un prix). Sans effet si l'unité ne change pas.
+    /// </summary>
+    public void ChangeUnit(BaseUnit unit)
+    {
+        if (unit == BaseUnit)
+            return;
+
+        BaseUnit = unit;
+        DisplayPrice = null;
+    }
+
     public bool HasAllergen(EuAllergen allergen) => Allergens.HasFlag(allergen);
 
     public void SetAllergen(EuAllergen allergen, bool present) =>

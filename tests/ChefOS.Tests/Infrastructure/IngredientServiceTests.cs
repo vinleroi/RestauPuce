@@ -31,8 +31,9 @@ public class IngredientServiceTests(PostgresFixture postgres)
         int? supplierId = null,
         int? id = null,
         string category = "Légumes",
-        decimal? pieceWeight = null) =>
-        new(id, name, category, EuAllergen.None, BaseUnit.Gram, price, yieldPercent, pieceWeight, supplierId);
+        decimal? pieceWeight = null,
+        BaseUnit baseUnit = BaseUnit.Gram) =>
+        new(id, name, category, EuAllergen.None, baseUnit, price, yieldPercent, pieceWeight, supplierId);
 
     private static async Task<int> AddSupplierAsync(
         DbContextOptions<ChefOsDbContext> options, int restaurantId, string name = "Metro")
@@ -345,6 +346,117 @@ public class IngredientServiceTests(PostgresFixture postgres)
         Assert.Equal(supplierId, stored.SupplierId);
         Assert.False(stored.IsArchived);
         Assert.Equal("Divers", (await service.GetAsync(blankCategory.Id))!.Category);
+    }
+
+    // ── Changement d'unité de base ───────────────────────────────────────────
+    // Un prix par unité de base n'a de sens qu'avec son unité : un changement d'unité ne doit jamais le réinterpréter en silence.
+
+    [Fact]
+    public async Task Save_UnitChangeOnUsedIngredient_Refused()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var oeuf = await service.SaveAsync(Input(name: "Oeuf", baseUnit: BaseUnit.Piece, price: 0.30m));
+        await AddRecipeUsingAsync(options, restaurant, "Quiche", oeuf.Id);
+        await AddRecipeUsingAsync(options, restaurant, "Brioche", oeuf.Id);
+
+        // Le renommage voyage avec le changement d'unité : rien ne doit être enregistré.
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() =>
+            service.SaveAsync(Input(id: oeuf.Id, name: "Oeuf frais", baseUnit: BaseUnit.Gram, price: 0.0003m)));
+
+        Assert.Equal("Impossible de changer l'unité : ingrédient utilisé dans Brioche, Quiche", error.Message);
+        var stored = await service.GetAsync(oeuf.Id);
+        Assert.NotNull(stored);
+        Assert.Equal("Oeuf", stored.Name);
+        Assert.Equal(BaseUnit.Piece, stored.BaseUnit);
+        Assert.Equal(0.30m, stored.CurrentPricePerBaseUnit);
+        var history = Assert.Single(await service.GetPriceHistoryAsync(oeuf.Id));
+        Assert.Equal(0.30m, history.PricePerBaseUnit);
+    }
+
+    [Fact]
+    public async Task Save_UsedIngredient_SameUnit_StillSaves()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var oeuf = await service.SaveAsync(Input(name: "Oeuf", baseUnit: BaseUnit.Piece, price: 0.30m));
+        await AddRecipeUsingAsync(options, restaurant, "Quiche", oeuf.Id);
+
+        await service.SaveAsync(Input(id: oeuf.Id, name: "Oeuf frais", baseUnit: BaseUnit.Piece, price: 0.32m));
+
+        var stored = await service.GetAsync(oeuf.Id);
+        Assert.Equal("Oeuf frais", stored!.Name);
+        Assert.Equal(0.32m, stored.CurrentPricePerBaseUnit);
+        Assert.Equal(2, (await service.GetPriceHistoryAsync(oeuf.Id)).Count);
+    }
+
+    [Fact]
+    public async Task Save_UnitChangeWithoutPrice_Refused()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var oeuf = await service.SaveAsync(Input(name: "Oeuf", baseUnit: BaseUnit.Piece, price: 0.30m));
+
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() =>
+            service.SaveAsync(Input(id: oeuf.Id, baseUnit: BaseUnit.Gram, price: null)));
+
+        Assert.Equal("Indiquez le prix dans la nouvelle unité", error.Message);
+        var stored = await service.GetAsync(oeuf.Id);
+        Assert.Equal(BaseUnit.Piece, stored!.BaseUnit);
+        Assert.Equal(0.30m, stored.CurrentPricePerBaseUnit);
+        Assert.Single(await service.GetPriceHistoryAsync(oeuf.Id));
+    }
+
+    [Fact]
+    public async Task Save_UnitChangeOnUnusedIngredient_ResetsHistory()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var supplierId = await AddSupplierAsync(options, restaurant);
+        var oeuf = await service.SaveAsync(Input(name: "Oeuf", baseUnit: BaseUnit.Piece, price: 0.30m));
+        await service.SetPriceAsync(oeuf.Id, 0.35m, PriceSource.Receipt, null, DateTime.UtcNow);
+        var otherIngredient = await service.SaveAsync(Input(name: "Sel", price: 0.001m));
+        Assert.Equal(2, (await service.GetPriceHistoryAsync(oeuf.Id)).Count);
+
+        var before = DateTime.UtcNow;
+        await service.SaveAsync(Input(id: oeuf.Id, baseUnit: BaseUnit.Gram, price: 0.0003m, supplierId: supplierId));
+        var after = DateTime.UtcNow;
+
+        var stored = await service.GetAsync(oeuf.Id);
+        Assert.Equal(BaseUnit.Gram, stored!.BaseUnit);
+        Assert.Equal(0.0003m, stored.CurrentPricePerBaseUnit);
+        var entry = Assert.Single(await service.GetPriceHistoryAsync(oeuf.Id)); // les lignes en pièce ont disparu
+        Assert.Equal(0.0003m, entry.PricePerBaseUnit);
+        Assert.Equal(PriceSource.Manual, entry.Source);
+        Assert.Equal(supplierId, entry.SupplierId);
+        Assert.InRange(entry.Date, before, after);
+        // L'historique des autres ingrédients n'est pas touché.
+        Assert.Single(await service.GetPriceHistoryAsync(otherIngredient.Id));
+    }
+
+    [Fact]
+    public async Task Save_UnitChangeWithSameNumericPrice_StillRecordsTheNewUnitPrice()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var oeuf = await service.SaveAsync(Input(name: "Oeuf", baseUnit: BaseUnit.Piece, price: 0.30m));
+        var oldEntryId = Assert.Single(await service.GetPriceHistoryAsync(oeuf.Id)).Id;
+
+        // 0,30 pour une pièce et 0,30 pour un gramme n'ont rien à voir : l'ancienne entrée ne doit pas être gardée.
+        await service.SaveAsync(Input(id: oeuf.Id, baseUnit: BaseUnit.Gram, price: 0.30m));
+
+        var entry = Assert.Single(await service.GetPriceHistoryAsync(oeuf.Id));
+        Assert.NotEqual(oldEntryId, entry.Id);
+        Assert.Equal(0.30m, entry.PricePerBaseUnit);
+        Assert.Equal(PriceSource.Manual, entry.Source);
+        var stored = await service.GetAsync(oeuf.Id);
+        Assert.Equal(BaseUnit.Gram, stored!.BaseUnit);
+        Assert.Equal(0.30m, stored.CurrentPricePerBaseUnit);
     }
 
     // ── Références et identifiants inconnus ──────────────────────────────────

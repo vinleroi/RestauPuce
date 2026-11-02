@@ -113,6 +113,47 @@ public class IngredientFormTests
     }
 
     [Fact]
+    public void ChangeUnit_ClearsThePriceTypedForTheOldUnit()
+    {
+        var form = new IngredientForm { Name = "Oeuf", BaseUnit = BaseUnit.Piece, DisplayPrice = 0.30m };
+
+        form.ChangeUnit(BaseUnit.Gram);
+
+        Assert.Equal(BaseUnit.Gram, form.BaseUnit);
+        Assert.Null(form.DisplayPrice);
+    }
+
+    [Fact]
+    public void ChangeUnit_ToTheSameUnit_KeepsThePrice()
+    {
+        var form = new IngredientForm { Name = "Oeuf", BaseUnit = BaseUnit.Piece, DisplayPrice = 0.30m };
+
+        form.ChangeUnit(BaseUnit.Piece);
+
+        Assert.Equal(BaseUnit.Piece, form.BaseUnit);
+        Assert.Equal(0.30m, form.DisplayPrice);
+    }
+
+    [Fact]
+    public void ChangeUnit_ThenToInput_SendsNoPrice_UntilItIsTypedAgainInTheNewUnit()
+    {
+        var form = IngredientForm.From(new Ingredient
+        {
+            Name = "Oeuf", BaseUnit = BaseUnit.Piece, CurrentPricePerBaseUnit = 0.30m, YieldPercent = 100m
+        });
+
+        form.ChangeUnit(BaseUnit.Gram);
+        var untouched = form.ToInput(4);
+
+        // Sans ressaisie : unité de base changée, prix absent (le service refuse alors l'enregistrement).
+        Assert.Equal(BaseUnit.Gram, untouched.BaseUnit);
+        Assert.Null(untouched.PricePerBaseUnit);
+
+        form.DisplayPrice = 3m; // 3 €/kg
+        Assert.Equal(0.003m, form.ToInput(4).PricePerBaseUnit);
+    }
+
+    [Fact]
     public void SetAllergen_AddsAndRemovesFlagsIndependently()
     {
         var form = new IngredientForm();

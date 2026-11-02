@@ -40,6 +40,9 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
     /// <summary>
     /// Crée (<c>Id</c> null) ou met à jour un ingrédient. Un prix renseigné et différent du prix courant est consigné
     /// dans l'historique (source Manual) ; un prix null laisse le prix courant tel quel.
+    /// Le prix n'a de sens qu'avec son unité de base : changer l'unité d'un ingrédient existant est refusé s'il est utilisé
+    /// dans des recettes ; sinon le prix dans la nouvelle unité est obligatoire et il remplace tout l'historique
+    /// (exprimé dans l'ancienne unité) par une seule entrée Manual.
     /// L'ingrédient retourné n'a pas sa propriété <c>Supplier</c> chargée.
     /// </summary>
     public async Task<Ingredient> SaveAsync(IngredientInput input)
@@ -57,6 +60,11 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
             : new Ingredient();
         await RequireSupplierAsync(db, input.SupplierId);
 
+        // Contrôlé avant toute modification : un refus ne laisse rien derrière lui.
+        var unitChanged = input.Id is not null && ingredient.BaseUnit != input.BaseUnit;
+        if (unitChanged)
+            await RequireUnitChangeAllowedAsync(db, ingredient.Id, price);
+
         ingredient.Name = name;
         ingredient.Category = string.IsNullOrWhiteSpace(input.Category) ? DefaultCategory : input.Category.Trim();
         ingredient.Allergens = input.Allergens;
@@ -65,7 +73,8 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
         ingredient.AveragePieceWeightGrams = input.AveragePieceWeightGrams;
         ingredient.SupplierId = input.SupplierId;
 
-        var priceChanged = price is not null && price != ingredient.CurrentPricePerBaseUnit;
+        // Après un changement d'unité, le prix saisi est toujours consigné, même s'il a la même valeur numérique que l'ancien.
+        var priceChanged = unitChanged || (price is not null && price != ingredient.CurrentPricePerBaseUnit);
         if (priceChanged)
             ingredient.CurrentPricePerBaseUnit = price;
 
@@ -75,6 +84,11 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
         // L'identifiant d'un nouvel ingrédient n'existe qu'après le premier enregistrement : une transaction
         // garantit qu'on n'obtient jamais un ingrédient avec un prix courant mais sans entrée d'historique.
         await using var transaction = await db.Database.BeginTransactionAsync();
+
+        // L'ancien historique est exprimé dans l'ancienne unité : il disparaît avec elle, dans la même transaction.
+        if (unitChanged)
+            await db.IngredientPrices.Where(p => p.IngredientId == ingredient.Id).ExecuteDeleteAsync();
+
         await db.SaveChangesAsync();
 
         if (priceChanged)
@@ -159,6 +173,19 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
         await db.SaveChangesAsync();
 
         return new DeleteResult(true, []);
+    }
+
+    // Un prix par unité de base ne vaut que pour son unité : passer de la pièce au gramme sans le ressaisir multiplierait
+    // ou diviserait le coût de toutes les recettes par 1000.
+    private static async Task RequireUnitChangeAllowedAsync(ChefOsDbContext db, int ingredientId, decimal? newPrice)
+    {
+        var recipes = await RecipeNamesUsingAsync(db, ingredientId);
+        if (recipes.Count > 0)
+            throw new DomainValidationException(
+                "Impossible de changer l'unité : ingrédient utilisé dans " + string.Join(", ", recipes));
+
+        if (newPrice is null)
+            throw new DomainValidationException("Indiquez le prix dans la nouvelle unité");
     }
 
     private static async Task<List<string>> RecipeNamesUsingAsync(ChefOsDbContext db, int ingredientId) =>

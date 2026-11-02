@@ -58,7 +58,9 @@ else
             </MudItem>
 
             <MudItem xs="12" sm="6" md="4">
-                <MudSelect T="BaseUnit" @bind-Value="_form.BaseUnit" Label="Unité de base" ToStringFunc="Ui.BaseUnitLabel" Variant="Variant.Outlined" Margin="Margin.Dense">
+                <MudSelect T="BaseUnit" Value="_form.BaseUnit" ValueChanged="ChangeUnit" Label="Unité de base" ToStringFunc="Ui.BaseUnitLabel"
+                           Disabled="UnitLocked" HelperText="@(UnitLocked ? "Unité verrouillée : ingrédient utilisé dans des recettes" : null)"
+                           Variant="Variant.Outlined" Margin="Margin.Dense">
                     @foreach (var unit in Enum.GetValues<BaseUnit>())
                     {
                         <MudSelectItem T="BaseUnit" Value="@unit">@Ui.BaseUnitLabel(unit)</MudSelectItem>
@@ -68,7 +70,7 @@ else
             <MudItem xs="12" sm="6" md="4">
                 <MudNumericField T="decimal?" @bind-Value="_form.DisplayPrice" Culture="Ui.Fr" Format="0.00####" InputMode="DecimalInput"
                                  Label="Prix" Adornment="Adornment.End" AdornmentText="@($"€ / {DisplayUnit}")"
-                                 HelperText="@(_ingredient is null ? null : "Vider le champ conserve le prix actuel")"
+                                 HelperText="@PriceHelperText"
                                  HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
             </MudItem>
             <MudItem xs="12" sm="6" md="4">
@@ -221,6 +223,16 @@ else
 
     private string DisplayUnit => UnitConverter.DisplayUnitLabel(_form.BaseUnit);
 
+    // Le prix est par unité de base : tant qu'une recette utilise l'ingrédient, changer l'unité fausserait son coût (le service le refuse aussi).
+    private bool UnitLocked => _ingredient is not null && _usage.Count > 0;
+
+    private bool UnitChanged => _ingredient is not null && _form.BaseUnit != _ingredient.BaseUnit;
+
+    private string? PriceHelperText =>
+        _ingredient is null ? null
+        : UnitChanged ? "Prix à ressaisir dans la nouvelle unité"
+        : "Vider le champ conserve le prix actuel";
+
     protected override async Task OnParametersSetAsync()
     {
         // /ingredients/new puis /ingredients/{id} (après la création) réutilisent le même composant : on recharge quand l'id change.
@@ -287,6 +299,15 @@ else
     }
 
     private void SetCategory(string? category) => _form.Category = category;
+
+    // Sur un ingrédient existant, le prix saisi pour l'ancienne unité n'a plus de sens : on le vide pour qu'il soit ressaisi.
+    private void ChangeUnit(BaseUnit unit)
+    {
+        if (_ingredient is null)
+            _form.BaseUnit = unit;
+        else
+            _form.ChangeUnit(unit);
+    }
 
     private Task<IEnumerable<string>> SearchCategoriesAsync(string? text, CancellationToken cancellationToken) =>
         Task.FromResult(_categories.Where(category => Ui.ContainsText(category, text)));
