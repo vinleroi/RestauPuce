@@ -39,6 +39,27 @@ public class ClaimsTenantContextTests
     }
 
     [Fact]
+    public void InCircuit_AuthenticationStateWinsOverAHttpContextCarryingAnotherRestaurant()
+    {
+        // Après une reconnexion, HttpContext est celui de la nouvelle connexion : son cookie peut venir d'un changement de
+        // restaurant fait dans un autre onglet (7), alors que la page affichée appartient toujours au restaurant du circuit (12).
+        var http = new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = UserOf(7) } };
+        var tenant = new ClaimsTenantContext(CircuitOf(UserOf(12)), http);
+
+        Assert.Equal(12, tenant.CurrentRestaurantId);
+    }
+
+    [Fact]
+    public void InCircuit_AuthenticationStateWithoutRestaurant_DoesNotFallBackToHttpContext()
+    {
+        // L'état du circuit fait foi même quand il n'a pas de restaurant : on ne bascule pas sur le cookie d'une autre connexion.
+        var http = new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = UserOf(7) } };
+        var tenant = new ClaimsTenantContext(CircuitOf(UserWith(new Claim(ClaimTypes.NameIdentifier, "u1"))), http);
+
+        Assert.Null(tenant.CurrentRestaurantId);
+    }
+
+    [Fact]
     public void OutsideRequestAndCircuit_ReturnsNullWithoutThrowing()
     {
         // Démarrage de l'application : ni HttpContext, ni état d'authentification (GetAuthenticationStateAsync lèverait).
@@ -55,6 +76,17 @@ public class ClaimsTenantContextTests
         var tenant = new ClaimsTenantContext(auth, new HttpContextAccessor());
 
         Assert.Null(tenant.CurrentRestaurantId);
+    }
+
+    [Fact]
+    public void PendingAuthenticationState_FallsBackToHttpContext_WithoutBlocking()
+    {
+        var auth = new ServerAuthenticationStateProvider();
+        auth.SetAuthenticationState(new TaskCompletionSource<AuthenticationState>().Task);
+        var http = new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = UserOf(7) } };
+        var tenant = new ClaimsTenantContext(auth, http);
+
+        Assert.Equal(7, tenant.CurrentRestaurantId);
     }
 
     [Theory]
