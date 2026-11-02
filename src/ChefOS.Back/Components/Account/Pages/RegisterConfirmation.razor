@@ -10,22 +10,22 @@
 @inject NavigationManager NavigationManager
 @inject IdentityRedirectManager RedirectManager
 
-<PageTitle>Register confirmation</PageTitle>
+<PageTitle>Confirmation d'inscription — ChefOS</PageTitle>
 
-<h1>Register confirmation</h1>
+<h1>Confirmation d'inscription</h1>
 
 <StatusMessage Message="@statusMessage" />
 
 @if (emailConfirmationLink is not null)
 {
     <p>
-        This app does not currently have a real email sender registered, see <a href="https://aka.ms/aspaccountconf">these docs</a> for how to configure a real email sender.
-        Normally this would be emailed: <a href="@emailConfirmationLink">Click here to confirm your account</a>
+        Cette application n'envoie pas encore de véritables e-mails (voir <a href="https://aka.ms/aspaccountconf">cette documentation</a> pour en configurer l'envoi).
+        Normalement, ce lien vous serait envoyé par e-mail : <a href="@emailConfirmationLink">Cliquez ici pour confirmer votre compte</a>
     </p>
 }
 else
 {
-    <p role="alert">Please check your email to confirm your account.</p>
+    <p role="alert">Vérifiez votre boîte e-mail pour confirmer votre compte.</p>
 }
 
 @code {
@@ -53,7 +53,7 @@ else
         if (user is null)
         {
             HttpContext.Response.StatusCode = StatusCodes.Status404NotFound;
-            statusMessage = "Error finding user for unspecified email";
+            statusMessage = "Erreur : aucun utilisateur ne correspond à cette adresse e-mail";
         }
         else if (EmailSender is IdentityNoOpEmailSender)
         {

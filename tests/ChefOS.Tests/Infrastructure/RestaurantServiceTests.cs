@@ -265,20 +265,20 @@ public class RestaurantServiceTests(PostgresFixture postgres)
     }
 
     [Theory]
-    [InlineData(-0.01, 0.21, 0.35)]
-    [InlineData(1.01, 0.21, 0.35)]
-    [InlineData(0.12, -0.01, 0.35)]
-    [InlineData(0.12, 1.5, 0.35)]
-    [InlineData(0.12, 0.21, -0.01)]
-    [InlineData(0.12, 0.21, 1.01)]
-    public async Task UpdateSettings_RateOutOfRange_Throws(double food, double drink, double threshold)
+    [InlineData(-0.01, 0.21, 0.35, "Le taux de TVA nourriture doit être compris entre 0 et 100 %")]
+    [InlineData(1.01, 0.21, 0.35, "Le taux de TVA nourriture doit être compris entre 0 et 100 %")]
+    [InlineData(0.12, -0.01, 0.35, "Le taux de TVA boissons doit être compris entre 0 et 100 %")]
+    [InlineData(0.12, 1.5, 0.35, "Le taux de TVA boissons doit être compris entre 0 et 100 %")]
+    [InlineData(0.12, 0.21, -0.01, "Le seuil d'alerte doit être compris entre 0 et 100 %")]
+    [InlineData(0.12, 0.21, 1.01, "Le seuil d'alerte doit être compris entre 0 et 100 %")]
+    public async Task UpdateSettings_RateOutOfRange_ThrowsWithAMessageInPercent(double food, double drink, double threshold, string expectedMessage)
     {
         var options = await postgres.CreateDatabaseAsync();
         var service = CreateService(options);
         var userId = await AddUserAsync(options, "chef");
         var created = await service.CreateAsync(userId, new CreateRestaurantInput("Bistro", null, null));
 
-        await Assert.ThrowsAsync<DomainValidationException>(() => service.UpdateSettingsAsync(
+        var ex = await Assert.ThrowsAsync<DomainValidationException>(() => service.UpdateSettingsAsync(
             created.Id,
             SettingsFor(created) with
             {
@@ -286,6 +286,8 @@ public class RestaurantServiceTests(PostgresFixture postgres)
                 DefaultDrinkVatRate = (decimal)drink,
                 FoodCostAlertThreshold = (decimal)threshold
             }));
+
+        Assert.Equal(expectedMessage, ex.Message);
     }
 
     [Theory]

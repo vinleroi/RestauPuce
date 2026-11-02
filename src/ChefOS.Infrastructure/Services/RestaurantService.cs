@@ -68,9 +68,9 @@ public partial class RestaurantService(IDbContextFactory<ChefOsDbContext> factor
     public async Task UpdateSettingsAsync(int restaurantId, RestaurantSettingsInput input)
     {
         var name = RequireName(input.Name);
-        RequireRate(input.DefaultFoodVatRate, "Le taux de TVA des plats");
-        RequireRate(input.DefaultDrinkVatRate, "Le taux de TVA des boissons");
-        RequireRate(input.FoodCostAlertThreshold, "Le seuil d'alerte du coût matière");
+        RequireRate(input.DefaultFoodVatRate, "Le taux de TVA nourriture");
+        RequireRate(input.DefaultDrinkVatRate, "Le taux de TVA boissons");
+        RequireRate(input.FoodCostAlertThreshold, "Le seuil d'alerte");
 
         if (!SlugPattern().IsMatch(input.Slug))
             throw new DomainValidationException("Le lien ne peut contenir que des minuscules, chiffres et tirets");
@@ -129,10 +129,11 @@ public partial class RestaurantService(IDbContextFactory<ChefOsDbContext> factor
         return name.Trim();
     }
 
+    // Les taux sont stockés en fraction (0,12), mais le chef les saisit et les lit en pourcentage : le message parle en %.
     private static void RequireRate(decimal rate, string label)
     {
         if (rate is < 0m or > 1m)
-            throw new DomainValidationException($"{label} doit être compris entre 0 et 1");
+            throw new DomainValidationException($"{label} doit être compris entre 0 et 100 %");
     }
 
     private static string? NullIfBlank(string? value) =>

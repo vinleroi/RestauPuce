@@ -47,6 +47,7 @@ if (string.IsNullOrWhiteSpace(connectionString))
     throw new InvalidOperationException("La chaîne de connexion « ChefOs » n'est pas configurée.");
 
 builder.Services.AddChefOsInfrastructure(connectionString);
+builder.Services.AddChefOsDemoSeeder();
 builder.Services.AddHttpContextAccessor();
 // Restaurant courant lu dans le claim « chefos:restaurant » : il pilote l'isolation multi-restaurant du contexte.
 builder.Services.AddScoped<ITenantContext, ClaimsTenantContext>();
@@ -56,6 +57,7 @@ builder.Services.AddIdentityCore<ApplicationUser>(options => options.SignIn.Requ
     .AddEntityFrameworkStores<ChefOsDbContext>()
     .AddSignInManager()
     .AddDefaultTokenProviders()
+    .AddErrorDescriber<FrenchIdentityErrorDescriber>()
     .AddClaimsPrincipalFactory<ChefOsClaimsPrincipalFactory>();
 
 builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();

@@ -1,9 +1,19 @@
+using ChefOS.Infrastructure;
+using ChefOS.Infrastructure.Data;
 using ChefOS.Vitrine.Components;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents();
+
+var connectionString = builder.Configuration.GetConnectionString("ChefOs");
+if (string.IsNullOrWhiteSpace(connectionString))
+    throw new InvalidOperationException("La chaîne de connexion « ChefOs » n'est pas configurée.");
+
+builder.Services.AddChefOsInfrastructure(connectionString);
+// Site public, sans utilisateur connecté : aucun restaurant courant. Les pages liront un restaurant par son slug.
+builder.Services.AddSingleton<ITenantContext>(new FixedTenantContext(null));
 
 var app = builder.Build();
 

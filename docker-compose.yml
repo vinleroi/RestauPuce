@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: chefos
       POSTGRES_PASSWORD: chefos_dev
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - chefos-pg:/var/lib/postgresql/data
 

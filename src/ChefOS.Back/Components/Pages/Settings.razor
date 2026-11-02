@@ -1,0 +1,175 @@
+@page "/settings"
+
+@using System.Security.Claims
+@using ChefOS.Core.Common
+@using ChefOS.Core.Restaurants
+@using ChefOS.Infrastructure.Data
+@using ChefOS.Infrastructure.Services
+
+@inject RestaurantService RestaurantService
+@inject ITenantContext Tenant
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+<PageTitle>Réglages — ChefOS</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_restaurant is null)
+{
+    <MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Réglages</MudText>
+    <MudAlert Severity="Severity.Warning">Aucun restaurant actif : choisissez-en un dans le menu en haut à droite.</MudAlert>
+}
+else
+{
+    <MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Réglages</MudText>
+
+    @if (!_canEdit)
+    {
+        <MudAlert Severity="Severity.Info" Class="mb-4">
+            Seul le propriétaire du restaurant peut modifier ces réglages. Vous les consultez en lecture seule.
+        </MudAlert>
+    }
+
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Restaurant</MudText>
+        <MudGrid Spacing="3">
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Name" Label="Nom" Required="true" RequiredError="Le nom est obligatoire"
+                              ReadOnly="!_canEdit" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Slug" Immediate="true" Label="Lien public"
+                              HelperText="@(_form.PublicPath is { } path ? $"Aperçu : {path}" : "Minuscules, chiffres et tirets")"
+                              ReadOnly="!_canEdit" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Address" Label="Adresse" HelperText="Facultative"
+                              ReadOnly="!_canEdit" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.VatNumber" Label="Numéro de TVA" Placeholder="BE0123.456.789" HelperText="Facultatif"
+                              ReadOnly="!_canEdit" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Taux par défaut</MudText>
+        <MudGrid Spacing="3">
+            <MudItem xs="12" sm="6" md="4">
+                <MudNumericField T="decimal?" @bind-Value="_form.FoodVatPercent" Culture="Ui.Fr" Format="0.##" InputMode="DecimalInput"
+                                 Label="TVA nourriture" Adornment="Adornment.End" AdornmentText="%" HelperText="Proposée pour un nouveau plat"
+                                 ReadOnly="!_canEdit" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="4">
+                <MudNumericField T="decimal?" @bind-Value="_form.DrinkVatPercent" Culture="Ui.Fr" Format="0.##" InputMode="DecimalInput"
+                                 Label="TVA boissons" Adornment="Adornment.End" AdornmentText="%"
+                                 ReadOnly="!_canEdit" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="4">
+                <MudNumericField T="decimal?" @bind-Value="_form.AlertThresholdPercent" Culture="Ui.Fr" Format="0.##" InputMode="DecimalInput"
+                                 Label="Seuil d'alerte du food cost" Adornment="Adornment.End" AdornmentText="%" HelperText="Au-delà, le plat passe en rouge"
+                                 ReadOnly="!_canEdit" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    @if (_canEdit)
+    {
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveAsync" Disabled="_busy">
+            Enregistrer
+        </MudButton>
+    }
+}
+
+@code {
+    /// <summary>Présent après un enregistrement qui a rechargé la page (le nom a changé) : il rend le message de confirmation.</summary>
+    [SupplyParameterFromQuery(Name = "enregistre")]
+    public bool JustSaved { get; set; }
+
+    private bool _loading = true;
+    private bool _busy;
+    private bool _canEdit;
+    private Restaurant? _restaurant;
+    private SettingsForm _form = new();
+
+    // Clavier à virgule sur mobile (la valeur par défaut de MudNumericField est « numeric », sans séparateur décimal sur iOS).
+    private const InputMode DecimalInput = InputMode.@decimal;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            if (Tenant.CurrentRestaurantId is not { } restaurantId)
+                return;
+
+            _restaurant = await RestaurantService.GetAsync(restaurantId);
+            if (_restaurant is null)
+                return;
+
+            _form = SettingsForm.From(_restaurant);
+            _canEdit = await IsOwnerAsync(restaurantId);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender || !JustSaved)
+            return;
+
+        Snackbar.Add("Réglages enregistrés", Severity.Success);
+        Navigation.NavigateTo("settings", replace: true);
+    }
+
+    // Les réglages sont réservés au propriétaire ; les autres membres les consultent sans pouvoir les modifier.
+    private async Task<bool> IsOwnerAsync(int restaurantId)
+    {
+        var user = (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User;
+        if (user.FindFirstValue(ClaimTypes.NameIdentifier) is not { } userId)
+            return false;
+
+        var memberships = await RestaurantService.GetMembershipsAsync(userId);
+        return memberships.Any(m => m.RestaurantId == restaurantId && m.Role == MembershipRole.Owner);
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!_canEdit || _restaurant is null)
+            return;
+
+        _busy = true;
+        try
+        {
+            var input = _form.ToInput();
+            var nameChanged = input.Name.Trim() != _restaurant.Name;
+            await RestaurantService.UpdateSettingsAsync(_restaurant.Id, input);
+
+            _restaurant = await RestaurantService.GetAsync(_restaurant.Id);
+            if (_restaurant is not null)
+                _form = SettingsForm.From(_restaurant);
+
+            // Le sélecteur de restaurant de la barre du haut a lu le nom au chargement du layout : un rechargement complet l'actualise.
+            // Le message de confirmation ne survit pas au rechargement ; la page le réaffiche d'après le paramètre « enregistre ».
+            if (nameChanged)
+                Navigation.NavigateTo("settings?enregistre=true", forceLoad: true);
+            else
+                Snackbar.Add("Réglages enregistrés", Severity.Success);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

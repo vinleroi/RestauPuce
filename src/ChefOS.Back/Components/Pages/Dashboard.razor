@@ -1,0 +1,78 @@
+@page "/"
+
+@using ChefOS.Core.Restaurants
+@using ChefOS.Infrastructure.Data
+@using ChefOS.Infrastructure.Services
+
+@inject DashboardService DashboardService
+@inject RestaurantService RestaurantService
+@inject ITenantContext Tenant
+
+<PageTitle>Tableau de bord — ChefOS</PageTitle>
+
+<MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Tableau de bord</MudText>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_summary is not null)
+{
+    <MudGrid Spacing="3" Class="mb-4">
+        <MudItem xs="12" sm="4">@Kpi("Plats", _summary.DishCount.ToString(Ui.Fr))</MudItem>
+        <MudItem xs="12" sm="4">@Kpi("Préparations", _summary.PreparationCount.ToString(Ui.Fr))</MudItem>
+        <MudItem xs="12" sm="4">@Kpi("Food cost moyen", _summary.AverageFoodCost is { } average ? Ui.Percent(average) : "—")</MudItem>
+    </MudGrid>
+
+    <MudPaper Elevation="1" Class="pa-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Plats à surveiller</MudText>
+
+        <MudTable T="WatchItem" Items="_summary.WatchList" Hover="true" Dense="true" Elevation="0">
+            <HeaderContent>
+                <MudTh>Plat</MudTh>
+                <MudTh>Food cost</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Plat">
+                    <MudLink Href="@($"/recipes/{context.RecipeId}")">@context.Name</MudLink>
+                </MudTd>
+                <MudTd DataLabel="Food cost">
+                    <FoodCostChip Level="context.Level" FoodCostPercent="context.FoodCostPercent" Threshold="_threshold" />
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText Class="pa-4">Aucun plat à surveiller 👌</MudText>
+            </NoRecordsContent>
+        </MudTable>
+    </MudPaper>
+}
+
+@code {
+    private static readonly Restaurant Defaults = new();
+
+    private DashboardSummary? _summary;
+    private decimal _threshold = Defaults.FoodCostAlertThreshold;
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _summary = await DashboardService.GetSummaryAsync();
+
+            // Le seuil sert à l'infobulle de la pastille rouge (« Au-dessus du seuil d'alerte (35 %) »).
+            var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;
+            _threshold = restaurant?.FoodCostAlertThreshold ?? Defaults.FoodCostAlertThreshold;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private RenderFragment Kpi(string label, string value) =>
+        @<MudPaper Elevation="1" Class="pa-4">
+            <MudText Typo="Typo.overline" Style="color: var(--mud-palette-text-secondary)">@label</MudText>
+            <MudText Typo="Typo.h3" HtmlTag="p">@value</MudText>
+        </MudPaper>;
+}

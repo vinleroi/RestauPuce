@@ -154,5 +154,32 @@ public class UiTests
     public void CostPerOutputUnit_WithoutAUsableOutput_ShowsADash(string? output, BaseUnit? unit) =>
         Assert.Equal("—", Ui.CostPerOutputUnit(4m, output is null ? null : Invariant(output), unit));
 
+    [Theory]
+    [InlineData(FoodCostLevel.Good, "🟢", "Success", "Outlined", "Food cost maîtrisé")]
+    [InlineData(FoodCostLevel.Warning, "🟠", "Warning", "Outlined", "Food cost à surveiller")]
+    [InlineData(FoodCostLevel.Alert, "🔴", "Error", "Outlined", "Au-dessus du seuil d'alerte (35 %)")]
+    [InlineData(FoodCostLevel.Incomplete, "⚠️", "Warning", "Filled", "Coût incomplet")]
+    public void FoodCostChipStyleFor_MapsEachLevelToItsEmojiAndColour(FoodCostLevel level, string emoji, string color, string variant, string title)
+    {
+        var style = Ui.FoodCostChipStyleFor(level, 0.35m);
+
+        Assert.Equal(emoji, style.Emoji);
+        Assert.Equal(color, style.Color.ToString());
+        Assert.Equal(variant, style.Variant.ToString());
+        Assert.Equal(title, style.Title);
+    }
+
+    [Fact]
+    public void FoodCostChipStyleFor_RecallsTheRestaurantThresholdOnTheAlertChip() =>
+        Assert.Equal("Au-dessus du seuil d'alerte (32,5 %)", Ui.FoodCostChipStyleFor(FoodCostLevel.Alert, 0.325m).Title);
+
+    [Fact]
+    public void FoodCostChipStyleFor_CoversEveryLevel()
+    {
+        // Un niveau ajouté à l'énumération sans apparence correspondante lèverait une exception à l'affichage : on le détecte ici.
+        foreach (var level in Enum.GetValues<FoodCostLevel>())
+            Assert.False(string.IsNullOrEmpty(Ui.FoodCostChipStyleFor(level, 0.35m).Emoji));
+    }
+
     private static decimal Invariant(string value) => decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
 }

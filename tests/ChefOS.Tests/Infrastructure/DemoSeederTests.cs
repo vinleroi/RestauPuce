@@ -44,6 +44,7 @@ public class DemoSeederTests(PostgresFixture postgres)
         services.AddSingleton<IConfiguration>(configuration);
         services.AddSingleton<ITenantContext>(new FixedTenantContext(null));
         services.AddChefOsInfrastructure(connectionString);
+        services.AddChefOsDemoSeeder();
         var identity = services.AddIdentityCore<ApplicationUser>().AddEntityFrameworkStores<ChefOsDbContext>();
         configureIdentity?.Invoke(identity);
 

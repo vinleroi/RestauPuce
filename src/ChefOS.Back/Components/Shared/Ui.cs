@@ -5,6 +5,9 @@ using ChefOS.Core.Units;
 
 namespace ChefOS.Back.Components.Shared;
 
+/// <summary>Apparence d'une pastille de food cost : emoji devant le texte, couleur et variante MudBlazor, infobulle.</summary>
+public sealed record FoodCostChipStyle(string Emoji, MudBlazor.Color Color, MudBlazor.Variant Variant, string Title);
+
 /// <summary>
 /// Culture et formats d'affichage communs aux pages du back : montants « 12,50 € », pourcentages « 87,5 % »,
 /// libellés français des unités et des allergènes. Les arrondis ne servent qu'à l'affichage : les valeurs stockées restent exactes.
@@ -39,6 +42,20 @@ public static class Ui
         outputQuantity is > 0m && outputUnit is { } unit
             ? PricePerDisplayUnit(totalCost / outputQuantity.Value, unit)
             : NoValue;
+
+    /// <summary>
+    /// Apparence d'une pastille de food cost, seul endroit où un niveau se traduit en emoji et en couleur :
+    /// 🟢 sous 28 %, 🟠 jusqu'au seuil d'alerte, 🔴 au-delà, ⚠️ quand le coût n'est pas définitif.
+    /// </summary>
+    /// <param name="alertThreshold">Fraction au-delà de laquelle le plat est en alerte, rappelée dans l'infobulle de la pastille rouge.</param>
+    public static FoodCostChipStyle FoodCostChipStyleFor(FoodCostLevel level, decimal alertThreshold) => level switch
+    {
+        FoodCostLevel.Good => new("🟢", MudBlazor.Color.Success, MudBlazor.Variant.Outlined, "Food cost maîtrisé"),
+        FoodCostLevel.Warning => new("🟠", MudBlazor.Color.Warning, MudBlazor.Variant.Outlined, "Food cost à surveiller"),
+        FoodCostLevel.Alert => new("🔴", MudBlazor.Color.Error, MudBlazor.Variant.Outlined, $"Au-dessus du seuil d'alerte ({Percent(alertThreshold)})"),
+        FoodCostLevel.Incomplete => new("⚠️", MudBlazor.Color.Warning, MudBlazor.Variant.Filled, "Coût incomplet"),
+        _ => throw new ArgumentOutOfRangeException(nameof(level), level, null)
+    };
 
     /// <summary>Libellé court d'une unité de saisie : g, kg, ml, cl, l, pièce.</summary>
     public static string MeasureUnitLabel(MeasureUnit unit) => unit switch
