@@ -30,25 +30,29 @@
             <MudAlert Severity="Severity.Error" Class="mb-4">@errorMessage</MudAlert>
         }
 
-        <EditForm Model="Input" method="post" OnValidSubmit="CreateRestaurantAsync" FormName="onboarding">
-            <DataAnnotationsValidator />
-            <div class="mb-3">
-                <label for="Input.Name" class="form-label">Nom du restaurant</label>
-                <InputText @bind-Value="Input.Name" id="Input.Name" class="form-control" autocomplete="organization" aria-required="true" />
-                <ValidationMessage For="() => Input.Name" class="text-danger" />
-            </div>
-            <div class="mb-3">
-                <label for="Input.Address" class="form-label">Adresse</label>
-                <InputText @bind-Value="Input.Address" id="Input.Address" class="form-control" autocomplete="street-address" />
-            </div>
-            <div class="mb-4">
-                <label for="Input.VatNumber" class="form-label">Numéro de TVA</label>
-                <InputText @bind-Value="Input.VatNumber" id="Input.VatNumber" class="form-control" placeholder="BE0123.456.789" />
-            </div>
-            <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" FullWidth="true">
-                Créer mon restaurant
-            </MudButton>
-        </EditForm>
+        @* Un second envoi (double clic, touche Entrée répétée) créerait un deuxième restaurant : on désactive le bouton dès le premier.
+           Le script est sur le conteneur plutôt que sur EditForm, qui gère lui-même son onsubmit ; l'événement submit remonte jusqu'ici. *@
+        <div onsubmit="var b = this.querySelector('[type=submit]'); if (b) b.disabled = true;">
+            <EditForm Model="Input" method="post" OnValidSubmit="CreateRestaurantAsync" FormName="onboarding">
+                <DataAnnotationsValidator />
+                <div class="mb-3">
+                    <label for="Input.Name" class="form-label">Nom du restaurant</label>
+                    <InputText @bind-Value="Input.Name" id="Input.Name" class="form-control" autocomplete="organization" aria-required="true" />
+                    <ValidationMessage For="() => Input.Name" class="text-danger" />
+                </div>
+                <div class="mb-3">
+                    <label for="Input.Address" class="form-label">Adresse</label>
+                    <InputText @bind-Value="Input.Address" id="Input.Address" class="form-control" autocomplete="street-address" />
+                </div>
+                <div class="mb-4">
+                    <label for="Input.VatNumber" class="form-label">Numéro de TVA</label>
+                    <InputText @bind-Value="Input.VatNumber" id="Input.VatNumber" class="form-control" placeholder="BE0123.456.789" />
+                </div>
+                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" FullWidth="true">
+                    Créer mon restaurant
+                </MudButton>
+            </EditForm>
+        </div>
 
         <form action="Account/Logout" method="post" class="mt-4">
             <AntiforgeryToken />
@@ -78,15 +82,25 @@
             return;
         }
 
+        // Formulaire envoyé deux fois : le premier envoi a déjà créé ce restaurant, on le reprend au lieu d'en créer un autre.
+        var existing = OnboardingRules.FindOwnedRestaurant(await Restaurants.GetMembershipsAsync(user.Id), Input.Name);
+
         int restaurantId;
-        try
+        if (existing is not null)
         {
-            restaurantId = (await Restaurants.CreateAsync(user.Id, new CreateRestaurantInput(Input.Name, Input.Address, Input.VatNumber))).Id;
+            restaurantId = existing.RestaurantId;
         }
-        catch (DomainValidationException e)
+        else
         {
-            errorMessage = e.Message;
-            return;
+            try
+            {
+                restaurantId = (await Restaurants.CreateAsync(user.Id, new CreateRestaurantInput(Input.Name, Input.Address, Input.VatNumber))).Id;
+            }
+            catch (DomainValidationException e)
+            {
+                errorMessage = e.Message;
+                return;
+            }
         }
 
         // Le nouveau restaurant devient le restaurant actif, et le cookie est réémis avec son claim.
