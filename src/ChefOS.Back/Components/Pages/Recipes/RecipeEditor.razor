@@ -1,0 +1,513 @@
+@page "/recipes/new"
+@page "/recipes/{Id:int}"
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Costing
+@using ChefOS.Core.Ingredients
+@using ChefOS.Core.Recipes
+@using ChefOS.Core.Restaurants
+@using ChefOS.Core.Units
+@using ChefOS.Infrastructure.Data
+@using ChefOS.Infrastructure.Services
+
+@inject RecipeService RecipeService
+@inject RestaurantService RestaurantService
+@inject ITenantContext Tenant
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+<PageTitle>@(_notFound ? "Élément introuvable" : _savedName ?? NewTitle) — ChefOS</PageTitle>
+
+<MudButton Href="@BackHref" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" Class="mb-2">Recettes</MudButton>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_notFound)
+{
+    <MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Élément introuvable</MudText>
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        Cette recette n'existe pas, ou elle n'appartient pas au restaurant actif.
+    </MudAlert>
+    <MudButton Href="/recipes" Variant="Variant.Filled" Color="Color.Primary">Retour aux recettes</MudButton>
+}
+else
+{
+    // Recalculé à chaque rendu, donc après chaque modification du formulaire : uniquement en mémoire, jamais de lecture en base.
+    var live = _draft.Evaluate(_book);
+    var isDish = _draft.Kind == RecipeKind.Dish;
+
+    <div class="d-flex align-center flex-wrap gap-2 mb-4">
+        <MudText Typo="Typo.h4" HtmlTag="h1">@(_savedName ?? NewTitle)</MudText>
+        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@(isDish ? "Plat" : "Préparation")</MudChip>
+        @if (_isArchived)
+        {
+            <MudChip T="string" Size="Size.Small">Archivé</MudChip>
+        }
+    </div>
+
+    <MudGrid Spacing="3">
+        <MudItem xs="12" lg="8">
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" md="6">
+                        <MudTextField T="string" @bind-Value="_draft.Name" Label="Nom" Required="true" RequiredError="Le nom est obligatoire"
+                                      Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudAutocomplete T="string" Value="_draft.Category" ValueChanged="SetCategory" Label="Catégorie"
+                                         SearchFunc="SearchCategoriesAsync" CoerceValue="true" ResetValueOnEmptyText="true" Clearable="true"
+                                         MaxItems="null" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+
+                    @if (isDish)
+                    {
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudNumericField T="decimal?" @bind-Value="_draft.PriceInclVat" Culture="Ui.Fr" Format="0.00" InputMode="DecimalInput" Immediate="true"
+                                             Label="Prix de vente TTC" Adornment="Adornment.End" AdornmentText="€" Required="true"
+                                             HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudSelect T="decimal?" @bind-Value="_draft.VatRate" Label="TVA" ToStringFunc="VatLabel" Variant="Variant.Outlined" Margin="Margin.Dense">
+                                @foreach (var rate in VatChoices)
+                                {
+                                    <MudSelectItem T="decimal?" Value="@((decimal?)rate)">@Ui.Percent(rate)</MudSelectItem>
+                                }
+                            </MudSelect>
+                        </MudItem>
+                    }
+                    else
+                    {
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudNumericField T="decimal?" @bind-Value="_draft.OutputQuantity" Culture="Ui.Fr" Format="0.####" InputMode="DecimalInput" Immediate="true"
+                                             Label="Quantité produite" Required="true"
+                                             HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudSelect T="MeasureUnit" @bind-Value="_draft.OutputUnit" Label="Unité" ToStringFunc="Ui.OutputUnitLabel" Variant="Variant.Outlined" Margin="Margin.Dense">
+                                @foreach (var unit in RecipeDraft.OutputUnits)
+                                {
+                                    <MudSelectItem T="MeasureUnit" Value="@unit">@Ui.OutputUnitLabel(unit)</MudSelectItem>
+                                }
+                            </MudSelect>
+                        </MudItem>
+                    }
+                </MudGrid>
+            </MudPaper>
+
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudText Typo="Typo.h6" GutterBottom="true">Lignes</MudText>
+
+                @if (_draft.Lines.Count == 0)
+                {
+                    <MudText Class="mb-3" Style="@Muted">Aucune ligne : ajoutez les ingrédients et les préparations qui composent cette recette.</MudText>
+                }
+                else
+                {
+                    <MudSimpleTable Dense="true" Elevation="0" Class="mb-3">
+                        <thead>
+                            <tr>
+                                <th>Ingrédient ou préparation</th>
+                                <th>Quantité</th>
+                                <th>Unité</th>
+                                <th style="text-align: right">Coût</th>
+                                <th><span class="visually-hidden">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var (row, line) in _draft.Lines.Index())
+                            {
+                                var evaluation = live.Rows[row];
+                                <tr @key="line">
+                                    <td style="min-width: 280px">
+                                        <MudAutocomplete T="RecipeItem" Value="line.Item" ValueChanged="@((RecipeItem? item) => line.SetItem(item))"
+                                                         SearchFunc="SearchItemsAsync" ToStringFunc="ItemLabel" Placeholder="Rechercher…"
+                                                         OpenOnFocus="true" ResetValueOnEmptyText="true" MaxItems="30"
+                                                         Variant="Variant.Text" Margin="Margin.Dense" Dense="true"
+                                                         aria-label="@($"Ingrédient ou préparation de la ligne {row + 1}")">
+                                            <NoItemsTemplate>
+                                                <MudText Class="pa-3" Style="@Muted">Aucun résultat</MudText>
+                                            </NoItemsTemplate>
+                                        </MudAutocomplete>
+                                    </td>
+                                    <td style="min-width: 110px">
+                                        <MudNumericField T="decimal?" @bind-Value="line.Quantity" Culture="Ui.Fr" Format="0.####" InputMode="DecimalInput" Immediate="true"
+                                                         HideSpinButtons="true" Variant="Variant.Text" Margin="Margin.Dense"
+                                                         aria-label="@($"Quantité de la ligne {row + 1}")" />
+                                    </td>
+                                    <td style="min-width: 100px">
+                                        <MudSelect T="MeasureUnit" @bind-Value="line.Unit" ToStringFunc="Ui.MeasureUnitLabel" Variant="Variant.Text" Margin="Margin.Dense" Dense="true"
+                                                   aria-label="@($"Unité de la ligne {row + 1}")">
+                                            @foreach (var unit in Enum.GetValues<MeasureUnit>())
+                                            {
+                                                <MudSelectItem T="MeasureUnit" Value="@unit">@Ui.MeasureUnitLabel(unit)</MudSelectItem>
+                                            }
+                                        </MudSelect>
+                                    </td>
+                                    <td style="text-align: right; min-width: 120px">
+                                        @if (evaluation is null)
+                                        {
+                                            <span style="@Muted" title="Ligne incomplète : elle n'est pas comptée">—</span>
+                                        }
+                                        else
+                                        {
+                                            <span style="white-space: nowrap">
+                                                @if (evaluation.Cost is { } cost)
+                                                {
+                                                    @Ui.Money(cost)
+                                                }
+                                                @if (evaluation.Issues.Count > 0)
+                                                {
+                                                    <IssuesTooltip Issues="evaluation.Issues">
+                                                        <MudIcon Icon="@(evaluation.Cost is null ? Icons.Material.Filled.Error : Icons.Material.Filled.Warning)"
+                                                                 Color="@(evaluation.Cost is null ? Color.Error : Color.Warning)" Size="Size.Small" Class="ml-1"
+                                                                 title="@string.Join(" ; ", evaluation.Issues.Select(Ui.IssueText).Distinct())" />
+                                                    </IssuesTooltip>
+                                                }
+                                            </span>
+                                            @foreach (var label in evaluation.Issues.Select(i => Ui.IssueLabel(i.Kind)).Distinct())
+                                            {
+                                                <div class="mud-error-text" style="font-size: 0.75rem; white-space: normal">@label</div>
+                                            }
+                                        }
+                                    </td>
+                                    <td style="text-align: right">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => RemoveLine(line))"
+                                                       aria-label="@($"Supprimer la ligne {row + 1}")" />
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                }
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="AddLine">Ajouter une ligne</MudButton>
+            </MudPaper>
+
+            <MudPaper Elevation="1" Class="pa-4">
+                <MudTextField T="string" @bind-Value="_draft.Instructions" Label="Instructions" Lines="6" Sizing="InputSizing.Auto" MaxLines="40"
+                              Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" lg="4">
+            <div style="position: sticky; top: 80px">
+                <MudPaper Elevation="2" Class="pa-4 mb-4">
+                    <MudText Typo="Typo.h6" GutterBottom="true">Récapitulatif</MudText>
+
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText>Coût total</MudText>
+                        <MudText Typo="Typo.h6" Color="@(live.Cost.IsComplete ? Color.Default : Color.Warning)">
+                            @Ui.Money(live.Cost.TotalCost)
+                            @if (!live.Cost.IsComplete)
+                            {
+                                <span class="mud-typography-caption"> partiel</span>
+                            }
+                        </MudText>
+                    </div>
+
+                    @if (isDish)
+                    {
+                        <div class="d-flex align-center justify-space-between mb-2">
+                            <MudText>Prix HT</MudText>
+                            <MudText>@(live.Cost.PriceExclVat is { } priceExclVat ? Ui.Money(priceExclVat) : "—")</MudText>
+                        </div>
+                        <div class="d-flex align-center justify-space-between mb-2">
+                            <MudText>Food cost</MudText>
+                            <FoodCostChip Cost="live.Cost" Threshold="_threshold" />
+                        </div>
+                        <div class="d-flex align-center justify-space-between mb-2">
+                            <MudText>Marge</MudText>
+                            <MudText Color="@(live.Cost.Margin < 0m ? Color.Error : Color.Default)">
+                                @(live.Cost.Margin is { } margin ? Ui.Money(margin) : "—")
+                                @if (live.Cost.Margin is not null && !live.Cost.IsComplete)
+                                {
+                                    <span class="mud-typography-caption"> indicative</span>
+                                }
+                            </MudText>
+                        </div>
+                        <MudText Typo="Typo.caption" Style="@Muted">Seuil d'alerte du restaurant : @Ui.Percent(_threshold)</MudText>
+                    }
+                    else
+                    {
+                        <div class="d-flex align-center justify-space-between mb-2">
+                            <MudText>Quantité produite</MudText>
+                            <MudText>@(_draft.OutputQuantity is { } produced ? $"{produced.ToString("0.####", Ui.Fr)} {Ui.OutputUnitLabel(_draft.OutputUnit)}" : "—")</MudText>
+                        </div>
+                        <div class="d-flex align-center justify-space-between mb-2">
+                            <MudText>Coût par unité produite</MudText>
+                            <MudText>@Ui.CostPerOutputUnit(live.Cost.TotalCost, live.OutputQuantity, live.OutputUnit)</MudText>
+                        </div>
+                    }
+
+                    <MudText Class="mt-3" Typo="Typo.subtitle2" GutterBottom="true">Allergènes</MudText>
+                    @if (live.Allergens == EuAllergen.None)
+                    {
+                        <MudText Style="@Muted">Aucun allergène</MudText>
+                    }
+                    else
+                    {
+                        <AllergenChips Value="live.Allergens" />
+                    }
+
+                    @if (!live.Cost.IsComplete)
+                    {
+                        <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-4">
+                            <MudText Typo="Typo.subtitle2">⚠️ coût incomplet</MudText>
+                            <ul class="my-1 pl-4">
+                                @foreach (var text in live.Cost.Issues.Select(Ui.IssueText).Distinct())
+                                {
+                                    <li>@text</li>
+                                }
+                            </ul>
+                        </MudAlert>
+                    }
+                </MudPaper>
+
+                <MudPaper Elevation="1" Class="pa-4">
+                    <div class="d-flex flex-wrap gap-2">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveAsync" Disabled="_busy">
+                            Enregistrer
+                        </MudButton>
+                        <MudButton Href="@BackHref" Variant="Variant.Text" Disabled="_busy">Annuler</MudButton>
+                    </div>
+                    @if (Id is not null)
+                    {
+                        <div class="d-flex flex-wrap gap-2 mt-3">
+                            <MudButton Variant="Variant.Outlined" StartIcon="@(_isArchived ? Icons.Material.Filled.Unarchive : Icons.Material.Filled.Archive)"
+                                       OnClick="ToggleArchivedAsync" Disabled="_busy">
+                                @(_isArchived ? "Désarchiver" : "Archiver")
+                            </MudButton>
+                            <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" OnClick="DeleteAsync" Disabled="_busy">
+                                Supprimer
+                            </MudButton>
+                        </div>
+                    }
+                </MudPaper>
+
+                @if (_blockingRecipes is not null)
+                {
+                    <MudAlert Severity="Severity.Warning" Class="mt-4">
+                        <MudText>
+                            Suppression impossible : cette préparation est utilisée dans @(_blockingRecipes.Count == 1 ? "la recette suivante" : $"les {_blockingRecipes.Count} recettes suivantes").
+                        </MudText>
+                        <ul class="my-2">
+                            @foreach (var recipe in _blockingRecipes)
+                            {
+                                <li>@recipe</li>
+                            }
+                        </ul>
+                        @if (!_isArchived)
+                        {
+                            <MudText Class="mb-2">Archivez-la plutôt : elle ne sera plus proposée, mais les recettes existantes continueront de la chiffrer.</MudText>
+                            <MudButton Variant="Variant.Filled" Color="Color.Warning" StartIcon="@Icons.Material.Filled.Archive" OnClick="ToggleArchivedAsync" Disabled="_busy">
+                                Archiver la préparation
+                            </MudButton>
+                        }
+                    </MudAlert>
+                }
+            </div>
+        </MudItem>
+    </MudGrid>
+}
+
+@code {
+    [Parameter]
+    public int? Id { get; set; }
+
+    /// <summary>Type d'une nouvelle recette (<c>/recipes/new?kind=Dish|Preparation</c>) ; une recette existante garde le sien.</summary>
+    [SupplyParameterFromQuery(Name = "kind")]
+    public string? Kind { get; set; }
+
+    private static readonly Restaurant Defaults = new();
+
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    // Clavier à virgule sur mobile (la valeur par défaut de MudNumericField est « numeric », sans séparateur décimal sur iOS).
+    private const InputMode DecimalInput = InputMode.@decimal;
+
+    private bool _loading = true;
+    private bool _notFound;
+    private bool _busy;
+    private bool _hasLoaded;
+    private int? _loadedId;
+    private string? _loadedKind;
+
+    // Le livre est chargé une fois (au chargement de la page et après chaque enregistrement) : chaque modification du formulaire
+    // est chiffrée dessus, sans aller en base.
+    private RecipeBook _book = new([], []);
+    private RecipeDraft _draft = RecipeDraft.New(RecipeKind.Dish, Defaults.DefaultFoodVatRate);
+    private IReadOnlyList<RecipeItem> _candidates = [];
+    private IReadOnlyList<string> _categories = [];
+    private decimal _threshold = Defaults.FoodCostAlertThreshold;
+    private string? _savedName;
+    private bool _isArchived;
+    private IReadOnlyList<string>? _blockingRecipes;
+
+    private string NewTitle => _draft.Kind == RecipeKind.Dish ? "Nouveau plat" : "Nouvelle préparation";
+
+    private string BackHref => _draft.Kind == RecipeKind.Preparation ? "/recipes?kind=Preparation" : "/recipes";
+
+    private IEnumerable<decimal> VatChoices =>
+        _draft.VatRate is { } current && !RecipeDraft.VatRates.Contains(current)
+            ? [.. RecipeDraft.VatRates, current]
+            : RecipeDraft.VatRates;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // /recipes/new puis /recipes/{id} (après la création) réutilisent le même composant : on recharge quand l'id change.
+        // Le type n'intervient que pour une nouvelle recette.
+        if (_hasLoaded && _loadedId == Id && (Id is not null || _loadedKind == Kind))
+            return;
+
+        _hasLoaded = true;
+        _loadedId = Id;
+        _loadedKind = Kind;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync(bool showLoading = true)
+    {
+        if (showLoading)
+            _loading = true;
+
+        try
+        {
+            var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;
+            _threshold = restaurant?.FoodCostAlertThreshold ?? Defaults.FoodCostAlertThreshold;
+            _blockingRecipes = null;
+
+            var recipe = Id is { } id ? await RecipeService.GetAsync(id) : null;
+            _notFound = Id is not null && recipe is null;
+            if (_notFound)
+                return;
+
+            _book = await RecipeService.LoadBookAsync();
+            _draft = recipe is null
+                ? RecipeDraft.New(ParseKind(Kind), restaurant?.DefaultFoodVatRate ?? Defaults.DefaultFoodVatRate)
+                : RecipeDraft.From(recipe, _book);
+            _savedName = recipe?.Name;
+            _isArchived = recipe?.IsArchived ?? false;
+            _candidates = RecipeItem.Candidates(_book, excludeRecipeId: Id);
+            _categories = _book.Recipes
+                .Where(r => r.Kind == _draft.Kind && !string.IsNullOrWhiteSpace(r.Category))
+                .Select(r => r.Category!)
+                .Distinct()
+                .Order()
+                .ToList();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static RecipeKind ParseKind(string? kind) =>
+        string.Equals(kind, nameof(RecipeKind.Preparation), StringComparison.OrdinalIgnoreCase) ? RecipeKind.Preparation : RecipeKind.Dish;
+
+    private void SetCategory(string? category) => _draft.Category = category;
+
+    private Task<IEnumerable<string>> SearchCategoriesAsync(string? text, CancellationToken cancellationToken) =>
+        Task.FromResult(_categories.Where(category => Ui.ContainsText(category, text)));
+
+    // Sans accent ni casse, et le texte du champ après sélection (« 🥕 Carottes ») retrouve son élément.
+    private Task<IEnumerable<RecipeItem>> SearchItemsAsync(string? text, CancellationToken cancellationToken) =>
+        Task.FromResult(_candidates.Where(item => Ui.ContainsText(item.Label, text)));
+
+    private static string? ItemLabel(RecipeItem? item) => item?.Label;
+
+    private static string VatLabel(decimal? rate) => rate is { } value ? Ui.Percent(value) : "";
+
+    private void AddLine() => _draft.Lines.Add(new DraftLine());
+
+    private void RemoveLine(DraftLine line) => _draft.Lines.Remove(line);
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        try
+        {
+            var saved = await RecipeService.SaveAsync(_draft.ToInput());
+            Snackbar.Add(_draft.Kind == RecipeKind.Dish ? "Plat enregistré" : "Préparation enregistrée", Severity.Success);
+
+            if (Id is null)
+                Navigation.NavigateTo($"/recipes/{saved.Id}");
+            else
+                await LoadAsync(showLoading: false);
+        }
+        catch (DomainValidationException e)
+        {
+            // Champs manquants, lignes incomplètes, références inconnues, boucle de préparations… : le message du domaine suffit.
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ToggleArchivedAsync()
+    {
+        if (Id is not { } id)
+            return;
+
+        _busy = true;
+        try
+        {
+            var archive = !_isArchived;
+            await RecipeService.SetArchivedAsync(id, archive);
+
+            _isArchived = archive;
+            _blockingRecipes = null;
+            Snackbar.Add(archive ? "Recette archivée" : "Recette désarchivée", Severity.Success);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (Id is not { } id)
+            return;
+
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Supprimer la recette",
+            $"Supprimer définitivement « {_savedName} » et ses lignes ?",
+            yesText: "Supprimer",
+            cancelText: "Annuler");
+
+        if (confirmed != true)
+            return;
+
+        _busy = true;
+        try
+        {
+            var result = await RecipeService.DeleteAsync(id);
+            if (result.Deleted)
+            {
+                Snackbar.Add("Recette supprimée", Severity.Success);
+                Navigation.NavigateTo(BackHref);
+            }
+            else
+            {
+                _blockingRecipes = result.UsedInRecipes;
+            }
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

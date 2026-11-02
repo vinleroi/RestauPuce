@@ -1,4 +1,5 @@
 using ChefOS.Back.Components.Shared;
+using ChefOS.Core.Costing;
 using ChefOS.Core.Ingredients;
 using ChefOS.Core.Units;
 
@@ -103,4 +104,55 @@ public class UiTests
     [InlineData(0, 0, 1)]
     public void AxisTickStep_AimsForAboutFourIntervals(double min, double max, int expected) =>
         Assert.Equal(expected, Ui.AxisTickStep(min, max));
+
+    [Theory]
+    [InlineData(CostIssueKind.MissingPrice, "Prix manquant")]
+    [InlineData(CostIssueKind.IncompatibleUnit, "Unité incompatible — renseignez le poids moyen d'une pièce")]
+    [InlineData(CostIssueKind.InvalidOutputQuantity, "Quantité produite manquante")]
+    [InlineData(CostIssueKind.UnknownItem, "Élément introuvable")]
+    [InlineData(CostIssueKind.Cycle, "Boucle de préparations")]
+    public void IssueLabel_IsInFrench(CostIssueKind kind, string expected) =>
+        Assert.Equal(expected, Ui.IssueLabel(kind));
+
+    [Fact]
+    public void IssueText_NamesTheItemThenTheProblem() =>
+        Assert.Equal("Safran : Prix manquant", Ui.IssueText(new CostIssue(CostIssueKind.MissingPrice, "Safran", 2)));
+
+    [Fact]
+    public void IssueText_WithoutItemName_IsJustTheProblem() =>
+        Assert.Equal("Élément introuvable", Ui.IssueText(new CostIssue(CostIssueKind.UnknownItem, "", null)));
+
+    [Theory]
+    [InlineData(MeasureUnit.G, "g")]
+    [InlineData(MeasureUnit.Kg, "kg")]
+    [InlineData(MeasureUnit.Ml, "ml")]
+    [InlineData(MeasureUnit.Cl, "cl")]
+    [InlineData(MeasureUnit.L, "l")]
+    [InlineData(MeasureUnit.Piece, "pièce")]
+    public void MeasureUnitLabel_IsTheUsualAbbreviation(MeasureUnit unit, string expected) =>
+        Assert.Equal(expected, Ui.MeasureUnitLabel(unit));
+
+    [Theory]
+    [InlineData(MeasureUnit.Kg, "kg")]
+    [InlineData(MeasureUnit.L, "l")]
+    [InlineData(MeasureUnit.Piece, "pièces")]
+    public void OutputUnitLabel_IsPluralForPieces(MeasureUnit unit, string expected) =>
+        Assert.Equal(expected, Ui.OutputUnitLabel(unit));
+
+    [Theory]
+    [InlineData("1.00", "2000", BaseUnit.Milliliter, "0,50 € / l")]      // 1 € pour 2 l
+    [InlineData("4.50", "450", BaseUnit.Gram, "10,00 € / kg")]           // 4,50 € pour 450 g
+    [InlineData("3.00", "12", BaseUnit.Piece, "0,25 € / pièce")]
+    public void CostPerOutputUnit_DividesTheCostByTheQuantityProduced(string cost, string output, BaseUnit unit, string expected) =>
+        Assert.Equal(expected, Ui.CostPerOutputUnit(Invariant(cost), Invariant(output), unit));
+
+    [Theory]
+    [InlineData(null, BaseUnit.Gram)]
+    [InlineData("0", BaseUnit.Gram)]
+    [InlineData("-5", BaseUnit.Gram)]
+    [InlineData("100", null)]
+    public void CostPerOutputUnit_WithoutAUsableOutput_ShowsADash(string? output, BaseUnit? unit) =>
+        Assert.Equal("—", Ui.CostPerOutputUnit(4m, output is null ? null : Invariant(output), unit));
+
+    private static decimal Invariant(string value) => decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
 }

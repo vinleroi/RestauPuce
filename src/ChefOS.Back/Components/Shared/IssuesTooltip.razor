@@ -1,0 +1,29 @@
+@using ChefOS.Core.Costing
+
+@* Infobulle qui liste les problèmes de chiffrage (« Safran : Prix manquant ») au survol ou au focus du contenu ; sans problème, le contenu est affiché tel quel. *@
+@if (Issues.Count == 0)
+{
+    @ChildContent
+}
+else
+{
+    <MudTooltip Arrow="true" Placement="Placement.Top" ShowOnFocus="true" ShowOnClick="true">
+        <ChildContent>@ChildContent</ChildContent>
+        <TooltipContent>
+            <div class="py-1">
+                @foreach (var text in Issues.Select(Ui.IssueText).Distinct())
+                {
+                    <div>@text</div>
+                }
+            </div>
+        </TooltipContent>
+    </MudTooltip>
+}
+
+@code {
+    [Parameter]
+    public IReadOnlyList<CostIssue> Issues { get; set; } = [];
+
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+}

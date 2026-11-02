@@ -1,0 +1,41 @@
+@using ChefOS.Core.Costing
+
+@* Pastille du food cost d'un plat : 🟢 sous 28 %, 🟠 jusqu'au seuil d'alerte, 🔴 au-delà ; ⚠️ « coût incomplet » (avec la liste des problèmes en infobulle) quand le coût n'est pas définitif. *@
+@switch (FoodCostBadge.Classify(Cost, Threshold))
+{
+    case FoodCostLevel.Good:
+        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined" title="Food cost maîtrisé">🟢 @Percent</MudChip>
+        break;
+    case FoodCostLevel.Warning:
+        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" title="Food cost à surveiller">🟠 @Percent</MudChip>
+        break;
+    case FoodCostLevel.Alert:
+        <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Outlined" title="@($"Au-dessus du seuil d'alerte ({Ui.Percent(Threshold)})")">🔴 @Percent</MudChip>
+        break;
+    default:
+        if (Cost.Issues.Count == 0)
+        {
+            @* Coût complet mais pas de prix de vente : rien à pourcentager. *@
+            <MudTooltip Text="Indiquez le prix de vente pour calculer le food cost" Arrow="true">
+                <span>—</span>
+            </MudTooltip>
+        }
+        else
+        {
+            <IssuesTooltip Issues="Cost.Issues">
+                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled">⚠️ coût incomplet</MudChip>
+            </IssuesTooltip>
+        }
+        break;
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public CostResult Cost { get; set; } = default!;
+
+    /// <summary>Fraction au-delà de laquelle le plat est en alerte (0,35 pour 35 %).</summary>
+    [Parameter]
+    public decimal Threshold { get; set; }
+
+    private string Percent => Cost.FoodCostPercent is { } foodCost ? Ui.Percent(foodCost) : "";
+}

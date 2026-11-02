@@ -1,4 +1,5 @@
 using System.Globalization;
+using ChefOS.Core.Costing;
 using ChefOS.Core.Ingredients;
 using ChefOS.Core.Units;
 
@@ -29,6 +30,45 @@ public static class Ui
         pricePerBaseUnit is { } price
             ? $"{Money(UnitConverter.PriceDisplayFromBase(price, baseUnit))} / {UnitConverter.DisplayUnitLabel(baseUnit)}"
             : NoValue;
+
+    /// <summary>
+    /// Coût par unité produite d'une préparation (« 0,50 € / l ») : coût total ÷ quantité produite (en unité de base),
+    /// converti en unité d'affichage. « — » tant que la quantité produite manque ou n'est pas positive.
+    /// </summary>
+    public static string CostPerOutputUnit(decimal totalCost, decimal? outputQuantity, BaseUnit? outputUnit) =>
+        outputQuantity is > 0m && outputUnit is { } unit
+            ? PricePerDisplayUnit(totalCost / outputQuantity.Value, unit)
+            : NoValue;
+
+    /// <summary>Libellé court d'une unité de saisie : g, kg, ml, cl, l, pièce.</summary>
+    public static string MeasureUnitLabel(MeasureUnit unit) => unit switch
+    {
+        MeasureUnit.G => "g",
+        MeasureUnit.Kg => "kg",
+        MeasureUnit.Ml => "ml",
+        MeasureUnit.Cl => "cl",
+        MeasureUnit.L => "l",
+        MeasureUnit.Piece => "pièce",
+        _ => throw new ArgumentOutOfRangeException(nameof(unit), unit, null)
+    };
+
+    /// <summary>Unité de la quantité produite par une préparation : kg, l ou pièces (au pluriel : on produit plusieurs pièces).</summary>
+    public static string OutputUnitLabel(MeasureUnit unit) => unit == MeasureUnit.Piece ? "pièces" : MeasureUnitLabel(unit);
+
+    /// <summary>Libellé d'un problème de chiffrage, rédigé pour que le chef sache quoi corriger.</summary>
+    public static string IssueLabel(CostIssueKind kind) => kind switch
+    {
+        CostIssueKind.MissingPrice => "Prix manquant",
+        CostIssueKind.IncompatibleUnit => "Unité incompatible — renseignez le poids moyen d'une pièce",
+        CostIssueKind.InvalidOutputQuantity => "Quantité produite manquante",
+        CostIssueKind.UnknownItem => "Élément introuvable",
+        CostIssueKind.Cycle => "Boucle de préparations",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
+    };
+
+    /// <summary>« Safran : Prix manquant » ; sans nom d'élément (élément inconnu), le libellé seul.</summary>
+    public static string IssueText(CostIssue issue) =>
+        string.IsNullOrEmpty(issue.ItemName) ? IssueLabel(issue.Kind) : $"{issue.ItemName} : {IssueLabel(issue.Kind)}";
 
     public static string BaseUnitLabel(BaseUnit baseUnit) => baseUnit switch
     {

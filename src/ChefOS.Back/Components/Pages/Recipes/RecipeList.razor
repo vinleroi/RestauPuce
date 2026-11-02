@@ -1,0 +1,177 @@
+@page "/recipes"
+
+@using ChefOS.Core.Costing
+@using ChefOS.Core.Ingredients
+@using ChefOS.Core.Recipes
+@using ChefOS.Core.Restaurants
+@using ChefOS.Infrastructure.Data
+@using ChefOS.Infrastructure.Services
+
+@inject RecipeService RecipeService
+@inject RestaurantService RestaurantService
+@inject ITenantContext Tenant
+
+<PageTitle>Recettes — ChefOS</PageTitle>
+
+<div class="d-flex align-center flex-wrap gap-2 mb-4">
+    <MudText Typo="Typo.h4" HtmlTag="h1" Class="flex-grow-1">Recettes</MudText>
+    <MudButton Href="/recipes/new?kind=Dish" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add">
+        Nouveau plat
+    </MudButton>
+    <MudButton Href="/recipes/new?kind=Preparation" Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add">
+        Nouvelle préparation
+    </MudButton>
+</div>
+
+<MudPaper Elevation="1" Class="pa-3 mb-4">
+    <MudSwitch T="bool" @bind-Value="_showArchived" Label="Afficher les archivés" Color="Color.Primary" />
+</MudPaper>
+
+<MudTabs @bind-ActivePanelIndex="_tab" Elevation="1" Rounded="true" TabPanelsClass="pa-0" KeepPanelsAlive="true">
+    <MudTabPanel Text="@($"Plats ({Rows(RecipeKind.Dish).Count})")">
+        <MudTable T="RecipeRow" Items="Rows(RecipeKind.Dish)" Hover="true" Dense="true" Loading="_loading" Elevation="0">
+            <HeaderContent>
+                <MudTh>Nom</MudTh>
+                <MudTh>Catégorie</MudTh>
+                <MudTh Style="text-align: right">Coût</MudTh>
+                <MudTh Style="text-align: right">Prix TTC</MudTh>
+                <MudTh>Food cost</MudTh>
+                <MudTh>Allergènes</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Nom">
+                    @NameCell(context)
+                </MudTd>
+                <MudTd DataLabel="Catégorie">@(context.Recipe.Category ?? "—")</MudTd>
+                <MudTd DataLabel="Coût" Style="white-space: nowrap; text-align: right">
+                    @CostCell(context)
+                </MudTd>
+                <MudTd DataLabel="Prix TTC" Style="white-space: nowrap; text-align: right">
+                    @(context.Recipe.SellingPriceInclVat is { } price ? Ui.Money(price) : "—")
+                </MudTd>
+                <MudTd DataLabel="Food cost">
+                    <FoodCostChip Cost="context.Cost" Threshold="_threshold" />
+                </MudTd>
+                <MudTd DataLabel="Allergènes">
+                    @AllergenCell(context)
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText Class="pa-4">Aucun plat pour le moment.</MudText>
+            </NoRecordsContent>
+        </MudTable>
+    </MudTabPanel>
+
+    <MudTabPanel Text="@($"Préparations ({Rows(RecipeKind.Preparation).Count})")">
+        <MudTable T="RecipeRow" Items="Rows(RecipeKind.Preparation)" Hover="true" Dense="true" Loading="_loading" Elevation="0">
+            <HeaderContent>
+                <MudTh>Nom</MudTh>
+                <MudTh>Catégorie</MudTh>
+                <MudTh Style="text-align: right">Coût</MudTh>
+                <MudTh Style="text-align: right">Coût par unité produite</MudTh>
+                <MudTh>Allergènes</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Nom">
+                    @NameCell(context)
+                </MudTd>
+                <MudTd DataLabel="Catégorie">@(context.Recipe.Category ?? "—")</MudTd>
+                <MudTd DataLabel="Coût" Style="white-space: nowrap; text-align: right">
+                    @CostCell(context)
+                </MudTd>
+                <MudTd DataLabel="Coût par unité produite" Style="white-space: nowrap; text-align: right">
+                    @Ui.CostPerOutputUnit(context.Cost.TotalCost, context.Recipe.OutputQuantity, context.Recipe.OutputUnit)
+                </MudTd>
+                <MudTd DataLabel="Allergènes">
+                    @AllergenCell(context)
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText Class="pa-4">Aucune préparation pour le moment.</MudText>
+            </NoRecordsContent>
+        </MudTable>
+    </MudTabPanel>
+</MudTabs>
+
+@code {
+    private sealed record RecipeRow(Recipe Recipe, CostResult Cost, EuAllergen Allergens);
+
+    private static readonly Restaurant Defaults = new();
+
+    /// <summary>Onglet à ouvrir : <c>/recipes?kind=Preparation</c> (retour depuis l'éditeur d'une préparation).</summary>
+    [SupplyParameterFromQuery(Name = "kind")]
+    public string? Kind { get; set; }
+
+    private IReadOnlyList<RecipeRow> _all = [];
+    private decimal _threshold = Defaults.FoodCostAlertThreshold;
+    private bool _showArchived;
+    private bool _loading = true;
+    private int _tab;
+    private bool _tabChosen;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            // Une seule lecture alimente les deux onglets et l'interrupteur des archivées : le filtre se fait en mémoire.
+            var book = await RecipeService.LoadBookAsync();
+            _all = book.Recipes
+                .OrderBy(r => r.Name, StringComparer.InvariantCultureIgnoreCase)
+                .ThenBy(r => r.Id)
+                .Select(r => new RecipeRow(r, book.Cost(r.Id), book.Allergens(r)))
+                .ToList();
+
+            var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;
+            _threshold = restaurant?.FoodCostAlertThreshold ?? Defaults.FoodCostAlertThreshold;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (_tabChosen)
+            return;
+
+        _tabChosen = true;
+        _tab = string.Equals(Kind, nameof(RecipeKind.Preparation), StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+    }
+
+    private RenderFragment<RecipeRow> NameCell => row =>
+        @<text>
+            <MudLink Href="@($"/recipes/{row.Recipe.Id}")">@row.Recipe.Name</MudLink>
+            @if (row.Recipe.IsArchived)
+            {
+                <MudChip T="string" Size="Size.Small" Class="ml-2">Archivé</MudChip>
+            }
+        </text>;
+
+    // Un coût incomplet est un coût partiel : il ne se présente jamais seul, l'infobulle dit ce qui manque.
+    private RenderFragment<RecipeRow> CostCell => row =>
+        @<text>
+            @Ui.Money(row.Cost.TotalCost)
+            @if (!row.Cost.IsComplete)
+            {
+                <IssuesTooltip Issues="row.Cost.Issues">
+                    <MudIcon Icon="@Icons.Material.Filled.Warning" Color="Color.Warning" Size="Size.Small" Class="ml-1" title="Coût incomplet" />
+                </IssuesTooltip>
+            }
+        </text>;
+
+    private RenderFragment<RecipeRow> AllergenCell => row =>
+        @<text>
+            @if (row.Allergens == EuAllergen.None)
+            {
+                <span>—</span>
+            }
+            else
+            {
+                <AllergenChips Value="row.Allergens" />
+            }
+        </text>;
+
+    private IReadOnlyList<RecipeRow> Rows(RecipeKind kind) =>
+        _all.Where(row => row.Recipe.Kind == kind && (_showArchived || !row.Recipe.IsArchived)).ToList();
+}
