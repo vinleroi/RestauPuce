@@ -20,6 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\ChefOS.Back\ChefOS.Back.csproj" />
     <ProjectReference Include="..\..\src\ChefOS.Core\ChefOS.Core.csproj" />
     <ProjectReference Include="..\..\src\ChefOS.Infrastructure\ChefOS.Infrastructure.csproj" />
   </ItemGroup>

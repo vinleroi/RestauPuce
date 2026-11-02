@@ -1,0 +1,51 @@
+@using ChefOS.Infrastructure.Identity
+@using ChefOS.Infrastructure.Services
+@using Microsoft.AspNetCore.Identity
+
+@inject RestaurantService Restaurants
+@inject UserManager<ApplicationUser> UserManager
+
+@* Chaque restaurant est un vrai formulaire POST (rechargement complet) : le cookie doit être réémis avec le nouveau claim. *@
+@if (memberships.Count > 0)
+{
+    <MudMenu Label="@ActiveRestaurantName" StartIcon="@Icons.Material.Filled.Storefront" EndIcon="@Icons.Material.Filled.ArrowDropDown"
+             Color="Color.Inherit" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" AriaLabel="Changer de restaurant">
+        @foreach (var membership in memberships)
+        {
+            var isActive = membership.RestaurantId == activeRestaurantId;
+            <form method="post" action="@ActiveRestaurantEndpoint.Route" data-enhance="false">
+                <AntiforgeryToken />
+                <input type="hidden" name="restaurantId" value="@membership.RestaurantId" />
+                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Text" FullWidth="true" Class="justify-start px-4"
+                           StartIcon="@(isActive ? Icons.Material.Filled.Check : Icons.Material.Filled.Storefront)"
+                           Color="@(isActive ? Color.Primary : Color.Default)">
+                    @membership.RestaurantName
+                </MudButton>
+            </form>
+        }
+    </MudMenu>
+}
+
+@code {
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private IReadOnlyList<MembershipSummary> memberships = [];
+    private int? activeRestaurantId;
+
+    private string ActiveRestaurantName =>
+        memberships.FirstOrDefault(m => m.RestaurantId == activeRestaurantId)?.RestaurantName ?? "Choisir un restaurant";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthenticationState is null)
+            return;
+
+        var user = (await AuthenticationState).User;
+        if (UserManager.GetUserId(user) is not { } userId)
+            return;
+
+        activeRestaurantId = ClaimsTenantContext.GetRestaurantId(user);
+        memberships = await Restaurants.GetMembershipsAsync(userId);
+    }
+}

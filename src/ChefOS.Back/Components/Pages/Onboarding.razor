@@ -1,0 +1,112 @@
+@page "/onboarding"
+@layout EmptyLayout
+@attribute [Authorize]
+@attribute [ExcludeFromInteractiveRouting]
+
+@using System.ComponentModel.DataAnnotations
+@using ChefOS.Back.Components.Account
+@using ChefOS.Core.Common
+@using ChefOS.Infrastructure.Identity
+@using ChefOS.Infrastructure.Services
+@using Microsoft.AspNetCore.Identity
+
+@inject RestaurantService Restaurants
+@inject UserManager<ApplicationUser> UserManager
+@inject SignInManager<ApplicationUser> SignInManager
+@inject NavigationManager Navigation
+@inject IdentityRedirectManager RedirectManager
+
+<PageTitle>Votre restaurant — ChefOS</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Small" Class="py-12">
+    <MudPaper Elevation="2" Class="pa-8">
+        <MudText Typo="Typo.h4" GutterBottom="true">Bienvenue sur ChefOS</MudText>
+        <MudText Class="mb-6">
+            Créez votre restaurant pour commencer. L'adresse et le numéro de TVA sont facultatifs : vous pourrez les compléter plus tard dans les réglages.
+        </MudText>
+
+        @if (errorMessage is not null)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-4">@errorMessage</MudAlert>
+        }
+
+        <EditForm Model="Input" method="post" OnValidSubmit="CreateRestaurantAsync" FormName="onboarding">
+            <DataAnnotationsValidator />
+            <div class="mb-3">
+                <label for="Input.Name" class="form-label">Nom du restaurant</label>
+                <InputText @bind-Value="Input.Name" id="Input.Name" class="form-control" autocomplete="organization" aria-required="true" />
+                <ValidationMessage For="() => Input.Name" class="text-danger" />
+            </div>
+            <div class="mb-3">
+                <label for="Input.Address" class="form-label">Adresse</label>
+                <InputText @bind-Value="Input.Address" id="Input.Address" class="form-control" autocomplete="street-address" />
+            </div>
+            <div class="mb-4">
+                <label for="Input.VatNumber" class="form-label">Numéro de TVA</label>
+                <InputText @bind-Value="Input.VatNumber" id="Input.VatNumber" class="form-control" placeholder="BE0123.456.789" />
+            </div>
+            <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" FullWidth="true">
+                Créer mon restaurant
+            </MudButton>
+        </EditForm>
+
+        <form action="Account/Logout" method="post" class="mt-4">
+            <AntiforgeryToken />
+            <input type="hidden" name="ReturnUrl" value="" />
+            <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Text" FullWidth="true">Se déconnecter</MudButton>
+        </form>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private string? errorMessage;
+
+    [CascadingParameter]
+    private HttpContext HttpContext { get; set; } = default!;
+
+    [SupplyParameterFromForm(FormName = "onboarding")]
+    private InputModel Input { get; set; } = default!;
+
+    protected override void OnInitialized() => Input ??= new();
+
+    private async Task CreateRestaurantAsync()
+    {
+        var user = await UserManager.GetUserAsync(HttpContext.User);
+        if (user is null)
+        {
+            RedirectManager.RedirectToInvalidUser(UserManager, HttpContext);
+            return;
+        }
+
+        int restaurantId;
+        try
+        {
+            restaurantId = (await Restaurants.CreateAsync(user.Id, new CreateRestaurantInput(Input.Name, Input.Address, Input.VatNumber))).Id;
+        }
+        catch (DomainValidationException e)
+        {
+            errorMessage = e.Message;
+            return;
+        }
+
+        // Le nouveau restaurant devient le restaurant actif, et le cookie est réémis avec son claim.
+        user.ActiveRestaurantId = restaurantId;
+        var result = await UserManager.UpdateAsync(user);
+        if (!result.Succeeded)
+            throw new InvalidOperationException(
+                $"Impossible d'enregistrer le restaurant actif : {string.Join(" ", result.Errors.Select(e => e.Description))}");
+
+        await SignInManager.RefreshSignInAsync(user);
+        Navigation.NavigateTo("/");
+    }
+
+    private sealed class InputModel
+    {
+        [Required(ErrorMessage = "Le nom du restaurant est obligatoire")]
+        public string Name { get; set; } = "";
+
+        public string? Address { get; set; }
+
+        public string? VatNumber { get; set; }
+    }
+}

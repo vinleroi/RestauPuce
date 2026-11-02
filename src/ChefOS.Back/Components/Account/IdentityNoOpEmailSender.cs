@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.UI.Services;
-using ChefOS.Back.Data;
+using ChefOS.Infrastructure.Identity;
 
 namespace ChefOS.Back.Components.Account;
 

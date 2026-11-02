@@ -1,23 +1,75 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
 
-<div class="page">
-    <div class="sidebar">
-        <NavMenu />
-    </div>
+@inject NavigationManager Navigation
 
-    <main>
-        <div class="top-row px-4">
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
-        </div>
+<MudThemeProvider />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
 
-        <article class="content px-4">
-            @Body
-        </article>
-    </main>
-</div>
+<MudLayout>
+    <MudAppBar Elevation="1">
+        <AuthorizeView>
+            <MudIconButton Icon="@Icons.Material.Filled.Menu" Color="Color.Inherit" Edge="Edge.Start"
+                           OnClick="ToggleDrawer" aria-label="Afficher ou masquer le menu" />
+        </AuthorizeView>
+        <MudText Typo="Typo.h6" Class="ml-2">ChefOS</MudText>
+        <MudSpacer />
+        <AuthorizeView>
+            <RestaurantSelector />
+            <MudIconButton Href="Account/Manage" Icon="@Icons.Material.Filled.AccountCircle" Color="Color.Inherit"
+                           title="Mon compte" aria-label="Mon compte" />
+            <form action="Account/Logout" method="post">
+                <AntiforgeryToken />
+                <input type="hidden" name="ReturnUrl" value="" />
+                <MudIconButton ButtonType="ButtonType.Submit" Icon="@Icons.Material.Filled.Logout" Color="Color.Inherit"
+                               title="Se déconnecter" aria-label="Se déconnecter" />
+            </form>
+        </AuthorizeView>
+    </MudAppBar>
+
+    <AuthorizeView>
+        <MudDrawer @bind-Open="drawerOpen" ClipMode="DrawerClipMode.Always" Elevation="1">
+            <NavMenu />
+        </MudDrawer>
+    </AuthorizeView>
+
+    <MudMainContent>
+        <MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="py-6">
+            @if (!redirectingToOnboarding)
+            {
+                @Body
+            }
+        </MudContainer>
+    </MudMainContent>
+</MudLayout>
 
 <div id="blazor-error-ui" data-nosnippet>
-    An unhandled error has occurred.
-    <a href="." class="reload">Reload</a>
+    Une erreur inattendue s'est produite.
+    <a href="." class="reload">Recharger</a>
     <span class="dismiss">🗙</span>
 </div>
+
+@code {
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private bool drawerOpen = true;
+    private bool redirectingToOnboarding;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthenticationState is null)
+            return;
+
+        // Connecté sans restaurant (compte tout juste créé) : l'onboarding le crée avant toute autre page.
+        var user = (await AuthenticationState).User;
+        if (user.Identity?.IsAuthenticated == true && ClaimsTenantContext.GetRestaurantId(user) is null)
+        {
+            redirectingToOnboarding = true;
+            Navigation.NavigateTo("onboarding", forceLoad: true);
+        }
+    }
+
+    private void ToggleDrawer() => drawerOpen = !drawerOpen;
+}
