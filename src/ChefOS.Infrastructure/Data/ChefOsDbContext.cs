@@ -1,0 +1,83 @@
+using ChefOS.Core.Ingredients;
+using ChefOS.Core.Recipes;
+using ChefOS.Core.Restaurants;
+using ChefOS.Infrastructure.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+
+namespace ChefOS.Infrastructure.Data;
+
+public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantContext tenant)
+    : IdentityDbContext<ApplicationUser>(options)
+{
+    public DbSet<Restaurant> Restaurants => Set<Restaurant>();
+    public DbSet<Membership> Memberships => Set<Membership>();
+    public DbSet<Supplier> Suppliers => Set<Supplier>();
+    public DbSet<Ingredient> Ingredients => Set<Ingredient>();
+    public DbSet<IngredientPrice> IngredientPrices => Set<IngredientPrice>();
+    public DbSet<Recipe> Recipes => Set<Recipe>();
+    public DbSet<RecipeLine> RecipeLines => Set<RecipeLine>();
+
+    // Propriété d'instance : EF la réévalue à chaque requête, donc chaque contexte filtre sur son propre restaurant.
+    private int? CurrentRestaurantId => tenant.CurrentRestaurantId;
+
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+        base.OnModelCreating(builder);
+
+        builder.ApplyConfigurationsFromAssembly(typeof(ChefOsDbContext).Assembly);
+
+        builder.Entity<Supplier>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<Ingredient>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<IngredientPrice>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<Recipe>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<RecipeLine>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        EnforceTenantRules();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        EnforceTenantRules();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    /// <summary>
+    /// Empêche d'écrire hors du restaurant courant : les ajouts sont estampillés (ou rejetés s'ils visent un autre
+    /// restaurant), les modifications et suppressions d'une entité d'un autre restaurant sont rejetées.
+    /// </summary>
+    private void EnforceTenantRules()
+    {
+        var current = CurrentRestaurantId;
+
+        foreach (var entry in ChangeTracker.Entries<ITenantScoped>())
+        {
+            switch (entry.State)
+            {
+                case EntityState.Added:
+                    if (current is null)
+                        throw new InvalidOperationException(
+                            $"Impossible d'ajouter un(e) {entry.Metadata.ShortName()} sans restaurant courant.");
+
+                    if (entry.Entity.RestaurantId == 0)
+                        entry.Entity.RestaurantId = current.Value;
+                    else if (entry.Entity.RestaurantId != current.Value)
+                        throw new InvalidOperationException(
+                            $"Impossible d'ajouter un(e) {entry.Metadata.ShortName()} au restaurant {entry.Entity.RestaurantId} : le restaurant courant est {current}.");
+                    break;
+
+                case EntityState.Modified or EntityState.Deleted:
+                    // La valeur d'origine est vérifiée aussi, pour qu'on ne puisse pas "voler" une entité en changeant son RestaurantId.
+                    var restaurantId = entry.Property(nameof(ITenantScoped.RestaurantId));
+                    if (entry.Entity.RestaurantId != current || (int)restaurantId.OriginalValue! != current)
+                        throw new InvalidOperationException(
+                            $"Impossible de modifier ou supprimer un(e) {entry.Metadata.ShortName()} d'un autre restaurant que le restaurant courant ({current?.ToString() ?? "aucun"}).");
+                    break;
+            }
+        }
+    }
+}
