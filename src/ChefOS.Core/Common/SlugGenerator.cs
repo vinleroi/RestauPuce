@@ -7,7 +7,13 @@ public static class SlugGenerator
 {
     public static string FromName(string name)
     {
-        var decomposed = name.Normalize(NormalizationForm.FormD);
+        // Ligatures sans décomposition Unicode : écrites en toutes lettres pour garder un slug lisible (« Bœuf » → « boeuf »).
+        var expanded = name
+            .Replace("œ", "oe").Replace("Œ", "oe")
+            .Replace("æ", "ae").Replace("Æ", "ae")
+            .Replace("ß", "ss");
+
+        var decomposed = expanded.Normalize(NormalizationForm.FormD);
         var slug = new StringBuilder(decomposed.Length);
         var separatorPending = false;
 

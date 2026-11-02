@@ -8,5 +8,6 @@ public class SlugGeneratorTests
     [InlineData("Le Petit Bistro", "le-petit-bistro")]
     [InlineData("  Chez Hélène & Fils !! ", "chez-helene-fils")]
     [InlineData("L'Écailler du Palais", "l-ecailler-du-palais")]
+    [InlineData("Bœuf & Cœur", "boeuf-coeur")]
     public void FromName(string name, string expected) => Assert.Equal(expected, SlugGenerator.FromName(name));
 }
