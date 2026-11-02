@@ -62,7 +62,8 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
     /// <summary>
     /// Crée (<c>Id</c> null) ou met à jour une recette ; à la mise à jour, l'ensemble des lignes est remplacé par celui de
     /// <paramref name="input"/>. Refuse une recette invalide, une référence à un ingrédient ou une préparation inconnu(e)
-    /// du restaurant courant, ou une boucle de préparations. Un plat ne peut pas servir de sous-recette.
+    /// du restaurant courant, ou une boucle de préparations. Un plat ne peut pas servir de sous-recette : une préparation
+    /// déjà utilisée par d'autres recettes ne peut donc pas être transformée en plat.
     /// </summary>
     public async Task<Recipe> SaveAsync(RecipeInput input)
     {
@@ -81,6 +82,8 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
         var recipe = input.Id is { } id
             ? await RequireRecipeAsync(db, id, includeLines: true)
             : new Recipe();
+        if (input.Id is { } existingId && recipe.Kind == RecipeKind.Preparation && input.Kind == RecipeKind.Dish)
+            await RequirePreparationNotUsedAsync(db, existingId);
         await RequireReferencesAsync(db, lines);
 
         var draft = new Recipe { Id = input.Id ?? 0, Name = name, Kind = input.Kind, Lines = ToEntities(lines) };
@@ -126,11 +129,7 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
 
         var recipe = await RequireRecipeAsync(db, id);
 
-        var usedInRecipes = await db.Recipes
-            .Where(r => r.Lines.Any(l => l.SubRecipeId == id))
-            .OrderBy(r => r.Name)
-            .Select(r => r.Name)
-            .ToListAsync();
+        var usedInRecipes = await RecipeNamesUsingAsync(db, id);
         if (usedInRecipes.Count > 0)
             return new DeleteResult(false, usedInRecipes);
 
@@ -139,6 +138,22 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
         await db.SaveChangesAsync();
 
         return new DeleteResult(true, []);
+    }
+
+    /// <summary>Noms des recettes qui utilisent <paramref name="recipeId"/> comme sous-préparation, triés par nom.</summary>
+    private static async Task<List<string>> RecipeNamesUsingAsync(ChefOsDbContext db, int recipeId) =>
+        await db.Recipes
+            .Where(r => r.Lines.Any(l => l.SubRecipeId == recipeId))
+            .OrderBy(r => r.Name)
+            .Select(r => r.Name)
+            .ToListAsync();
+
+    private static async Task RequirePreparationNotUsedAsync(ChefOsDbContext db, int recipeId)
+    {
+        var usedInRecipes = await RecipeNamesUsingAsync(db, recipeId);
+        if (usedInRecipes.Count > 0)
+            throw new DomainValidationException(
+                "Cette préparation est utilisée dans d'autres recettes : " + string.Join(", ", usedInRecipes));
     }
 
     private static async Task<Recipe> RequireRecipeAsync(ChefOsDbContext db, int id, bool includeLines = false)

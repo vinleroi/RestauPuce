@@ -408,6 +408,46 @@ public class RecipeServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Save_UsedPreparationToDish_Refused()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var os = await AddIngredientAsync(options, restaurant, "Os de veau", 0.004m);
+        var fond = await service.SaveAsync(Preparation("Fond", [Grams(os, 500m)]));
+        await service.SaveAsync(Preparation("Sauce", [Millilitres(fond.Id, 250m)]));
+        await service.SaveAsync(Dish("Carbonnade", [Millilitres(fond.Id, 100m)]));
+
+        var ex = await Assert.ThrowsAsync<DomainValidationException>(
+            () => service.SaveAsync(Dish("Fond", [Grams(os, 100m)], id: fond.Id)));
+
+        Assert.Equal("Cette préparation est utilisée dans d'autres recettes : Carbonnade, Sauce", ex.Message);
+        var stored = await service.GetAsync(fond.Id);
+        Assert.Equal(RecipeKind.Preparation, stored!.Kind);
+        var line = Assert.Single(stored.Lines);
+        Assert.Equal(500m, line.Quantity);
+        Assert.Equal(1000m, stored.OutputQuantity);
+    }
+
+    [Fact]
+    public async Task Save_UnusedPreparationToDish_Allowed()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var os = await AddIngredientAsync(options, restaurant, "Os de veau", 0.004m);
+        var fond = await service.SaveAsync(Preparation("Fond", [Grams(os, 500m)]));
+
+        await service.SaveAsync(Dish("Fond", [Grams(os, 500m)], id: fond.Id));
+
+        var stored = await service.GetAsync(fond.Id);
+        Assert.Equal(RecipeKind.Dish, stored!.Kind);
+        Assert.Equal(22.40m, stored.SellingPriceInclVat);
+        Assert.Empty(await service.ListAsync(RecipeKind.Preparation, includeArchived: true));
+        Assert.Single(await service.ListAsync(RecipeKind.Dish));
+    }
+
+    [Fact]
     public async Task Save_ArchivedReferences_AreStillAccepted() // les recettes existantes continuent d'utiliser un élément archivé
     {
         var options = await postgres.CreateDatabaseAsync();
