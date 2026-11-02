@@ -1,0 +1,121 @@
+@page "/ingredients"
+
+@using ChefOS.Core.Ingredients
+@using ChefOS.Infrastructure.Services
+
+@inject IngredientService IngredientService
+
+<PageTitle>Ingrédients — ChefOS</PageTitle>
+
+<div class="d-flex align-center mb-4">
+    <MudText Typo="Typo.h4" HtmlTag="h1" Class="flex-grow-1">Ingrédients</MudText>
+    <MudButton Href="/ingredients/new" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add">
+        Nouvel ingrédient
+    </MudButton>
+</div>
+
+<MudPaper Elevation="1" Class="pa-3 mb-4">
+    <MudGrid Spacing="2" Class="align-center">
+        <MudItem xs="12" md="5">
+            <MudTextField T="string" @bind-Value="_search" Label="Rechercher par nom" Immediate="true" DebounceInterval="200"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true"
+                          Variant="Variant.Outlined" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4">
+            <MudSelect T="string" @bind-Value="_category" Label="Catégorie" Placeholder="Toutes les catégories" Clearable="true"
+                       Variant="Variant.Outlined" Margin="Margin.Dense">
+                @foreach (var category in _categories)
+                {
+                    <MudSelectItem T="string" Value="@category">@category</MudSelectItem>
+                }
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudSwitch T="bool" Value="_showArchived" ValueChanged="SetShowArchivedAsync" Label="Afficher les archivés" Color="Color.Primary" />
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+<MudTable T="Ingredient" Items="Filtered" Hover="true" Dense="true" Loading="_loading" Elevation="1">
+    <HeaderContent>
+        <MudTh>Nom</MudTh>
+        <MudTh>Catégorie</MudTh>
+        <MudTh Style="text-align: right">Prix</MudTh>
+        <MudTh Style="text-align: right">Rendement</MudTh>
+        <MudTh>Fournisseur</MudTh>
+        <MudTh>Allergènes</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd DataLabel="Nom">
+            <MudLink Href="@($"/ingredients/{context.Id}")">@context.Name</MudLink>
+            @if (context.IsArchived)
+            {
+                <MudChip T="string" Size="Size.Small" Class="ml-2">Archivé</MudChip>
+            }
+        </MudTd>
+        <MudTd DataLabel="Catégorie">@context.Category</MudTd>
+        <MudTd DataLabel="Prix" Style="white-space: nowrap; text-align: right">
+            @if (context.CurrentPricePerBaseUnit is null)
+            {
+                <MudText Color="Color.Warning" Typo="Typo.body2">Sans prix</MudText>
+            }
+            else
+            {
+                @Ui.PricePerDisplayUnit(context.CurrentPricePerBaseUnit, context.BaseUnit)
+            }
+        </MudTd>
+        <MudTd DataLabel="Rendement" Style="white-space: nowrap; text-align: right">@Ui.Percent(context.YieldPercent / 100m)</MudTd>
+        <MudTd DataLabel="Fournisseur">@(context.Supplier?.Name ?? "—")</MudTd>
+        <MudTd DataLabel="Allergènes">
+            @if (context.Allergens == EuAllergen.None)
+            {
+                <span>—</span>
+            }
+            else
+            {
+                <AllergenChips Value="context.Allergens" />
+            }
+        </MudTd>
+    </RowTemplate>
+    <NoRecordsContent>
+        <MudText Class="pa-4">Aucun ingrédient ne correspond.</MudText>
+    </NoRecordsContent>
+</MudTable>
+
+@code {
+    private IReadOnlyList<Ingredient> _ingredients = [];
+    private IReadOnlyList<string> _categories = [];
+    private string? _search;
+    private string? _category;
+    private bool _showArchived;
+    private bool _loading = true;
+
+    private IEnumerable<Ingredient> Filtered => _ingredients.Where(i =>
+        (_category is null || i.Category == _category) && Ui.ContainsText(i.Name, _search));
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task SetShowArchivedAsync(bool value)
+    {
+        _showArchived = value;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _ingredients = await IngredientService.ListAsync(_showArchived);
+            _categories = _ingredients.Select(i => i.Category).Distinct().Order().ToList();
+
+            // Une catégorie qui ne contenait que des archivés disparaît de la liste : on retire le filtre devenu sans objet.
+            if (_category is not null && !_categories.Contains(_category))
+                _category = null;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+}

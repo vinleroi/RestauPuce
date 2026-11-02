@@ -1,0 +1,73 @@
+@using ChefOS.Core.Common
+@using ChefOS.Core.Ingredients
+@using ChefOS.Infrastructure.Services
+
+@inject SupplierService SupplierService
+@inject ISnackbar Snackbar
+
+@* Ajout (Supplier null) et modification d'un fournisseur ; se ferme avec DialogResult.Ok(true) une fois enregistré. *@
+<MudDialog>
+    <DialogContent>
+        <MudTextField @bind-Value="_name" Label="Nom" Required="true" RequiredError="Le nom est obligatoire"
+                      Variant="Variant.Outlined" Margin="Margin.Dense" />
+        <MudTextField @bind-Value="_contactName" Label="Contact"
+                      Variant="Variant.Outlined" Margin="Margin.Dense" />
+        <MudTextField @bind-Value="_email" Label="E-mail" InputType="InputType.Email"
+                      Variant="Variant.Outlined" Margin="Margin.Dense" />
+        <MudTextField @bind-Value="_phone" Label="Téléphone" InputType="InputType.Telephone"
+                      Variant="Variant.Outlined" Margin="Margin.Dense" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Annuler</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" Disabled="_saving">Enregistrer</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter]
+    public Supplier? Supplier { get; set; }
+
+    private string _name = "";
+    private string? _contactName;
+    private string? _email;
+    private string? _phone;
+    private bool _saving;
+
+    protected override void OnInitialized()
+    {
+        if (Supplier is null)
+            return;
+
+        _name = Supplier.Name;
+        _contactName = Supplier.ContactName;
+        _email = Supplier.Email;
+        _phone = Supplier.Phone;
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task SaveAsync()
+    {
+        if (_saving)
+            return;
+
+        _saving = true;
+        try
+        {
+            await SupplierService.SaveAsync(new SupplierInput(Supplier?.Id, _name, _contactName, _email, _phone));
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (DomainValidationException e)
+        {
+            // La boîte reste ouverte pour corriger la saisie.
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

@@ -1,0 +1,118 @@
+@page "/suppliers"
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Ingredients
+@using ChefOS.Infrastructure.Services
+
+@inject SupplierService SupplierService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<PageTitle>Fournisseurs — ChefOS</PageTitle>
+
+<div class="d-flex align-center mb-4">
+    <MudText Typo="Typo.h4" HtmlTag="h1" Class="flex-grow-1">Fournisseurs</MudText>
+    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="AddAsync">
+        Nouveau fournisseur
+    </MudButton>
+</div>
+
+<MudTable T="Supplier" Items="_suppliers" Hover="true" Dense="true" Loading="_loading" Elevation="1">
+    <HeaderContent>
+        <MudTh>Nom</MudTh>
+        <MudTh>Contact</MudTh>
+        <MudTh>E-mail</MudTh>
+        <MudTh>Téléphone</MudTh>
+        <MudTh Style="width: 1%"></MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd DataLabel="Nom">@context.Name</MudTd>
+        <MudTd DataLabel="Contact">@Blank(context.ContactName)</MudTd>
+        <MudTd DataLabel="E-mail">
+            @if (context.Email is not null)
+            {
+                <MudLink Href="@($"mailto:{context.Email}")">@context.Email</MudLink>
+            }
+            else
+            {
+                @Blank(null)
+            }
+        </MudTd>
+        <MudTd DataLabel="Téléphone" Style="white-space: nowrap">@Blank(context.Phone)</MudTd>
+        <MudTd Style="white-space: nowrap; text-align: right">
+            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" title="Modifier" aria-label="@($"Modifier {context.Name}")"
+                           OnClick="() => EditAsync(context)" />
+            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" title="Supprimer" aria-label="@($"Supprimer {context.Name}")"
+                           OnClick="() => DeleteAsync(context)" />
+        </MudTd>
+    </RowTemplate>
+    <NoRecordsContent>
+        <MudText Class="pa-4">Aucun fournisseur pour le moment.</MudText>
+    </NoRecordsContent>
+</MudTable>
+
+@code {
+    private static readonly DialogOptions DialogOptions = new() { MaxWidth = MaxWidth.Small, FullWidth = true };
+
+    private IReadOnlyList<Supplier> _suppliers = [];
+    private bool _loading = true;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private static string Blank(string? value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _suppliers = await SupplierService.ListAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private Task AddAsync() => ShowDialogAsync("Nouveau fournisseur", null);
+
+    private Task EditAsync(Supplier supplier) => ShowDialogAsync("Modifier le fournisseur", supplier);
+
+    private async Task ShowDialogAsync(string title, Supplier? supplier)
+    {
+        var parameters = new DialogParameters<SupplierDialog> { { x => x.Supplier, supplier } };
+        var dialog = await DialogService.ShowAsync<SupplierDialog>(title, parameters, DialogOptions);
+
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+        {
+            Snackbar.Add("Fournisseur enregistré", Severity.Success);
+            await LoadAsync();
+        }
+    }
+
+    private async Task DeleteAsync(Supplier supplier)
+    {
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Supprimer le fournisseur",
+            $"Supprimer « {supplier.Name} » ? Les ingrédients rattachés n'auront plus de fournisseur.",
+            yesText: "Supprimer",
+            cancelText: "Annuler");
+
+        if (confirmed != true)
+            return;
+
+        try
+        {
+            await SupplierService.DeleteAsync(supplier.Id);
+            Snackbar.Add("Fournisseur supprimé", Severity.Success);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+
+        // Aussi après une erreur : « Fournisseur introuvable » signifie que la liste affichée est périmée.
+        await LoadAsync();
+    }
+}

@@ -1,0 +1,381 @@
+@page "/ingredients/new"
+@page "/ingredients/{Id:int}"
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Ingredients
+@using ChefOS.Core.Units
+@using ChefOS.Infrastructure.Services
+
+@inject IngredientService IngredientService
+@inject SupplierService SupplierService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+<PageTitle>@(_ingredient?.Name ?? "Ingrédient") — ChefOS</PageTitle>
+
+<MudButton Href="/ingredients" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" Class="mb-2">Ingrédients</MudButton>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_notFound)
+{
+    <MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Élément introuvable</MudText>
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        Cet ingrédient n'existe pas, ou il n'appartient pas au restaurant actif.
+    </MudAlert>
+    <MudButton Href="/ingredients" Variant="Variant.Filled" Color="Color.Primary">Retour aux ingrédients</MudButton>
+}
+else
+{
+    <div class="d-flex align-center flex-wrap gap-2 mb-1">
+        <MudText Typo="Typo.h4" HtmlTag="h1">@(_ingredient?.Name ?? "Nouvel ingrédient")</MudText>
+        @if (_ingredient is { IsArchived: true })
+        {
+            <MudChip T="string" Size="Size.Small">Archivé</MudChip>
+        }
+    </div>
+    @if (_ingredient is not null)
+    {
+        <MudText Class="mb-4" Style="@Muted">
+            Prix actuel : @Ui.PricePerDisplayUnit(_ingredient.CurrentPricePerBaseUnit, _ingredient.BaseUnit)
+            · Rendement : @Ui.Percent(_ingredient.YieldPercent / 100m)
+        </MudText>
+    }
+
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudGrid Spacing="3">
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Name" Label="Nom" Required="true" RequiredError="Le nom est obligatoire"
+                              Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudAutocomplete T="string" Value="_form.Category" ValueChanged="SetCategory" Label="Catégorie" Placeholder="Divers"
+                                 SearchFunc="SearchCategoriesAsync" CoerceValue="true" ResetValueOnEmptyText="true" Clearable="true"
+                                 MaxItems="null" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+
+            <MudItem xs="12" sm="6" md="4">
+                <MudSelect T="BaseUnit" @bind-Value="_form.BaseUnit" Label="Unité de base" ToStringFunc="Ui.BaseUnitLabel" Variant="Variant.Outlined" Margin="Margin.Dense">
+                    @foreach (var unit in Enum.GetValues<BaseUnit>())
+                    {
+                        <MudSelectItem T="BaseUnit" Value="@unit">@Ui.BaseUnitLabel(unit)</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="4">
+                <MudNumericField T="decimal?" @bind-Value="_form.DisplayPrice" Culture="Ui.Fr" Format="0.00####" InputMode="DecimalInput"
+                                 Label="Prix" Adornment="Adornment.End" AdornmentText="@($"€ / {DisplayUnit}")"
+                                 HelperText="@(_ingredient is null ? null : "Vider le champ conserve le prix actuel")"
+                                 HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="4">
+                <MudNumericField T="decimal?" @bind-Value="_form.YieldPercent" Culture="Ui.Fr" Format="0.##" InputMode="DecimalInput"
+                                 Label="Rendement" Adornment="Adornment.End" AdornmentText="%" HelperText="De 1 à 100 %"
+                                 HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudNumericField T="decimal?" @bind-Value="_form.AveragePieceWeightGrams" Culture="Ui.Fr" Format="0.##" InputMode="DecimalInput"
+                                 Label="Poids moyen d'une pièce" Adornment="Adornment.End" AdornmentText="g" HelperText="Facultatif"
+                                 HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+
+            <MudItem xs="12" sm="6">
+                <MudSelect T="int?" @bind-Value="_form.SupplierId" Label="Fournisseur" Placeholder="Aucun" Clearable="true"
+                           ToStringFunc="SupplierName" Variant="Variant.Outlined" Margin="Margin.Dense">
+                    @foreach (var supplier in _suppliers)
+                    {
+                        <MudSelectItem T="int?" Value="@((int?)supplier.Id)">@supplier.Name</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+
+            <MudItem xs="12">
+                <MudText Typo="Typo.subtitle1">Allergènes</MudText>
+                <MudGrid Spacing="0">
+                    @foreach (var allergen in Ui.Allergens)
+                    {
+                        var current = allergen;
+                        <MudItem xs="6" sm="4" md="3" lg="2">
+                            <MudCheckBox T="bool" Value="_form.HasAllergen(current)" ValueChanged="@((bool present) => _form.SetAllergen(current, present))"
+                                         Label="@Ui.AllergenLabel(current)" Color="Color.Primary" Size="Size.Small" />
+                        </MudItem>
+                    }
+                </MudGrid>
+            </MudItem>
+        </MudGrid>
+
+        <div class="d-flex flex-wrap gap-2 mt-4">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveAsync" Disabled="_busy">
+                Enregistrer
+            </MudButton>
+            <MudButton Href="/ingredients" Variant="Variant.Text" Disabled="_busy">Annuler</MudButton>
+            <MudSpacer />
+            @if (_ingredient is not null)
+            {
+                <MudButton Variant="Variant.Outlined" StartIcon="@(_ingredient.IsArchived ? Icons.Material.Filled.Unarchive : Icons.Material.Filled.Archive)"
+                           OnClick="ToggleArchivedAsync" Disabled="_busy">
+                    @(_ingredient.IsArchived ? "Désarchiver" : "Archiver")
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" OnClick="DeleteAsync" Disabled="_busy">
+                    Supprimer
+                </MudButton>
+            }
+        </div>
+    </MudPaper>
+
+    @if (_blockingRecipes is not null)
+    {
+        <MudAlert Severity="Severity.Warning" Class="mb-4">
+            <MudText>
+                Suppression impossible : cet ingrédient est utilisé dans @(_blockingRecipes.Count == 1 ? "la recette suivante" : $"les {_blockingRecipes.Count} recettes suivantes").
+            </MudText>
+            <ul class="my-2">
+                @foreach (var recipe in _blockingRecipes)
+                {
+                    <li>@recipe</li>
+                }
+            </ul>
+            @if (_ingredient is { IsArchived: false })
+            {
+                <MudText Class="mb-2">Archivez-le plutôt : il ne sera plus proposé, mais les recettes existantes continueront de le chiffrer.</MudText>
+                <MudButton Variant="Variant.Filled" Color="Color.Warning" StartIcon="@Icons.Material.Filled.Archive" OnClick="ToggleArchivedAsync" Disabled="_busy">
+                    Archiver l'ingrédient
+                </MudButton>
+            }
+        </MudAlert>
+    }
+
+    @if (_ingredient is not null)
+    {
+        <MudGrid Spacing="3">
+            <MudItem xs="12" md="8">
+                <MudPaper Elevation="1" Class="pa-4">
+                    <MudText Typo="Typo.h6" GutterBottom="true">Historique des prix</MudText>
+                    @if (_series.Count > 0 && _series[0].Data.Count >= 2)
+                    {
+                        <MudChart T="double" ChartType="ChartType.Line" ChartSeries="_series" ChartLabels="_chartLabels" ChartOptions="_chartOptions"
+                                  Width="100%" Height="320px" />
+                    }
+                    else
+                    {
+                        <MudText Style="@Muted">Le graphique apparaît dès que le prix a changé au moins une fois.</MudText>
+                    }
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudPaper Elevation="1" Class="pa-4">
+                    <MudText Typo="Typo.h6" GutterBottom="true">Utilisé dans</MudText>
+                    @if (_usage.Count == 0)
+                    {
+                        <MudText Style="@Muted">Aucune recette n'utilise cet ingrédient.</MudText>
+                    }
+                    else
+                    {
+                        <ul class="my-0">
+                            @foreach (var recipe in _usage)
+                            {
+                                <li>@recipe</li>
+                            }
+                        </ul>
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    }
+}
+
+@code {
+    [Parameter]
+    public int? Id { get; set; }
+
+    private bool _loading = true;
+    private bool _notFound;
+    private bool _busy;
+    private bool _hasLoaded;
+    private int? _loadedId;
+
+    private Ingredient? _ingredient;
+    private IngredientForm _form = new();
+    private IReadOnlyList<Supplier> _suppliers = [];
+    private IReadOnlyList<string> _categories = [];
+    private IReadOnlyList<string> _usage = [];
+    private IReadOnlyList<string>? _blockingRecipes;
+
+    private List<ChartSeries<double>> _series = [];
+    private string[] _chartLabels = [];
+
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    // Clavier à virgule sur mobile (la valeur par défaut de MudNumericField est « numeric », sans séparateur décimal sur iOS).
+    private const InputMode DecimalInput = InputMode.@decimal;
+
+    private readonly LineChartOptions _chartOptions = new()
+    {
+        YAxisToStringFunc = value => Ui.Money((decimal)value),
+        ShowDataMarkers = true,
+        ShowToolTips = true
+    };
+
+    private string DisplayUnit => UnitConverter.DisplayUnitLabel(_form.BaseUnit);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // /ingredients/new puis /ingredients/{id} (après la création) réutilisent le même composant : on recharge quand l'id change.
+        if (_hasLoaded && _loadedId == Id)
+            return;
+
+        _hasLoaded = true;
+        _loadedId = Id;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync(bool showLoading = true)
+    {
+        if (showLoading)
+            _loading = true;
+
+        try
+        {
+            _suppliers = await SupplierService.ListAsync();
+            _categories = (await IngredientService.ListAsync(includeArchived: true))
+                .Select(i => i.Category).Distinct().Order().ToList();
+            _blockingRecipes = null;
+
+            if (Id is not { } id)
+            {
+                _ingredient = null;
+                _notFound = false;
+                _form = new IngredientForm();
+                _usage = [];
+                _series = [];
+                return;
+            }
+
+            var ingredient = await IngredientService.GetAsync(id);
+            _notFound = ingredient is null;
+            _ingredient = ingredient;
+            if (ingredient is null)
+                return;
+
+            _form = IngredientForm.From(ingredient);
+            _usage = await IngredientService.GetUsageAsync(id);
+            BuildChart(await IngredientService.GetPriceHistoryAsync(id), ingredient.BaseUnit);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // Les prix de l'historique sont par unité de base : le graphique les affiche dans l'unité d'affichage (€/kg, €/l, €/pièce).
+    private void BuildChart(IReadOnlyList<IngredientPrice> history, BaseUnit unit)
+    {
+        var prices = history.Select(p => (double)UnitConverter.PriceDisplayFromBase(p.PricePerBaseUnit, unit)).ToArray();
+        _chartOptions.YAxisTicks = prices.Length == 0 ? 1 : Ui.AxisTickStep(prices.Min(), prices.Max());
+        _chartLabels = history.Select(p => p.Date.ToLocalTime().ToString("d", Ui.Fr)).ToArray();
+        _series =
+        [
+            new ChartSeries<double>
+            {
+                Name = $"Prix (€ / {UnitConverter.DisplayUnitLabel(unit)})",
+                Data = prices
+            }
+        ];
+    }
+
+    private void SetCategory(string? category) => _form.Category = category;
+
+    private Task<IEnumerable<string>> SearchCategoriesAsync(string? text, CancellationToken cancellationToken) =>
+        Task.FromResult(_categories.Where(category => Ui.ContainsText(category, text)));
+
+    private string SupplierName(int? supplierId) => _suppliers.FirstOrDefault(s => s.Id == supplierId)?.Name ?? "";
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        try
+        {
+            var saved = await IngredientService.SaveAsync(_form.ToInput(Id));
+            Snackbar.Add("Ingrédient enregistré", Severity.Success);
+
+            if (Id is null)
+                Navigation.NavigateTo($"/ingredients/{saved.Id}");
+            else
+                await LoadAsync(showLoading: false);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ToggleArchivedAsync()
+    {
+        if (_ingredient is null)
+            return;
+
+        _busy = true;
+        try
+        {
+            var archive = !_ingredient.IsArchived;
+            await IngredientService.SetArchivedAsync(_ingredient.Id, archive);
+
+            _ingredient.IsArchived = archive;
+            _blockingRecipes = null;
+            Snackbar.Add(archive ? "Ingrédient archivé" : "Ingrédient désarchivé", Severity.Success);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_ingredient is null)
+            return;
+
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Supprimer l'ingrédient",
+            $"Supprimer définitivement « {_ingredient.Name} » et son historique de prix ?",
+            yesText: "Supprimer",
+            cancelText: "Annuler");
+
+        if (confirmed != true)
+            return;
+
+        _busy = true;
+        try
+        {
+            var result = await IngredientService.DeleteAsync(_ingredient.Id);
+            if (result.Deleted)
+            {
+                Snackbar.Add("Ingrédient supprimé", Severity.Success);
+                Navigation.NavigateTo("/ingredients");
+            }
+            else
+            {
+                _blockingRecipes = result.UsedInRecipes;
+            }
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

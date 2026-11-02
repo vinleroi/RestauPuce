@@ -1,0 +1,17 @@
+@using ChefOS.Core.Ingredients
+
+@* Une puce par allergène présent ; rien n'est affiché sans allergène (à l'appelant d'indiquer « aucun » si besoin). *@
+@if (Value != EuAllergen.None)
+{
+    <div class="d-flex flex-wrap gap-1">
+        @foreach (var allergen in Ui.Allergens.Where(a => Value.HasFlag(a)))
+        {
+            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">@Ui.AllergenLabel(allergen)</MudChip>
+        }
+    </div>
+}
+
+@code {
+    [Parameter]
+    public EuAllergen Value { get; set; }
+}
