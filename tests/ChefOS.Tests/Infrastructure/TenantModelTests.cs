@@ -1,5 +1,6 @@
 using System.Reflection;
 using ChefOS.Core.Ingredients;
+using ChefOS.Core.Receipts;
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
 using ChefOS.Core.Units;
@@ -86,6 +87,31 @@ public class TenantModelTests(PostgresFixture postgres)
         var recipe = new Recipe { Name = "Salade", Kind = RecipeKind.Dish };
         recipe.Lines.Add(new RecipeLine { IngredientId = ingredient.Id, Quantity = 100m, Unit = MeasureUnit.G });
         db.Recipes.Add(recipe);
+
+        var receipt = new Receipt
+        {
+            SupplierId = supplier.Id,
+            SupplierNameRaw = "METRO",
+            Status = ReceiptStatus.Extracted,
+            CreatedAt = DateTime.UtcNow
+        };
+        receipt.Lines.Add(new ReceiptLine { Position = 1, RawLabel = "TOMATE 1KG", IngredientId = ingredient.Id });
+        db.Receipts.Add(receipt);
+        db.SupplierAliases.Add(new SupplierAlias
+        {
+            SupplierId = supplier.Id,
+            NormalizedLabel = "TOMATE 1KG",
+            IngredientId = ingredient.Id
+        });
+        await db.SaveChangesAsync();
+
+        db.ReceiptFiles.Add(new ReceiptFile
+        {
+            ReceiptId = receipt.Id,
+            FileName = "ticket.jpg",
+            ContentType = "image/jpeg",
+            Data = [1, 2, 3]
+        });
         await db.SaveChangesAsync();
     }
 

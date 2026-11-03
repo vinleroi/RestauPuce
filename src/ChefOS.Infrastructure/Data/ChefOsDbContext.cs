@@ -1,4 +1,5 @@
 using ChefOS.Core.Ingredients;
+using ChefOS.Core.Receipts;
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
 using ChefOS.Infrastructure.Identity;
@@ -17,6 +18,10 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
     public DbSet<IngredientPrice> IngredientPrices => Set<IngredientPrice>();
     public DbSet<Recipe> Recipes => Set<Recipe>();
     public DbSet<RecipeLine> RecipeLines => Set<RecipeLine>();
+    public DbSet<Receipt> Receipts => Set<Receipt>();
+    public DbSet<ReceiptFile> ReceiptFiles => Set<ReceiptFile>();
+    public DbSet<ReceiptLine> ReceiptLines => Set<ReceiptLine>();
+    public DbSet<SupplierAlias> SupplierAliases => Set<SupplierAlias>();
 
     // Propriété d'instance : EF la réévalue à chaque requête, donc chaque contexte filtre sur son propre restaurant.
     private int? CurrentRestaurantId => tenant.CurrentRestaurantId;
@@ -32,6 +37,10 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
         builder.Entity<IngredientPrice>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
         builder.Entity<Recipe>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
         builder.Entity<RecipeLine>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<Receipt>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<ReceiptFile>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<ReceiptLine>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<SupplierAlias>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
