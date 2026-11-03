@@ -13,7 +13,7 @@ namespace ChefOS.Infrastructure.Services;
 /// ticket appartient bien au restaurant courant se fait ici, via le contexte filtré par restaurant (qui estampille aussi les ajouts).
 /// Les octets du fichier ne sont lus que par <see cref="GetFileAsync"/> : ni les listes ni <see cref="GetAsync"/> ne les chargent.
 /// </summary>
-public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceiptReader reader, IngredientService ingredients)
+public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceiptReader reader)
 {
     private const int MaxFileBytes = 10 * 1024 * 1024;
 
@@ -34,9 +34,6 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     private const int QuantityScale = 4;
     private const int AmountScale = 2;
     private const int VatRateScale = 4;
-
-    // Échelle du prix par unité de base (numeric(18,6)), la même qu'IngredientService : le prix annoncé est celui qui est enregistré.
-    private const int PriceScale = 6;
 
     private static readonly HashSet<string> AcceptedContentTypes = new(StringComparer.Ordinal)
     {
@@ -141,7 +138,10 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         foreach (var read in extraction.Lines)
         {
             var label = (read.Label ?? string.Empty).Trim();
-            var exclVat = ReceiptLinePricing.ExclVat(read.LineTotal, read.VatRate, extraction.AmountsIncludeVat, out var vatToCheck);
+            // Un taux hors de 0–1 n'est pas une fraction de TVA (6 ou 21 au lieu de 0,06 ou 0,21) : il est traité comme inconnu, sans quoi
+            // le prix hors TVA serait faux ou la colonne numeric(5,4) déborderait. Sur un ticket TTC, la ligne est alors « TVA à vérifier ».
+            var vatRate = read.VatRate is >= 0m and <= 1m ? read.VatRate : null;
+            var exclVat = ReceiptLinePricing.ExclVat(read.LineTotal, vatRate, extraction.AmountsIncludeVat, out var vatToCheck);
             var suggestion = IngredientMatcher.Suggest(label, supplierId, aliases, allIngredients);
 
             db.ReceiptLines.Add(new ReceiptLine
@@ -153,7 +153,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
                 Unit = read.Unit,
                 UnitPrice = read.UnitPrice,
                 LineTotal = read.LineTotal,
-                VatRate = read.VatRate,
+                VatRate = vatRate,
                 LineTotalExclVat = exclVat,
                 VatToCheck = vatToCheck,
                 IngredientId = suggestion?.IngredientId,
@@ -205,8 +205,8 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     /// Enregistre le brouillon du chef : en-tête et lignes, dans l'ordre reçu. Une ligne qui porte l'identifiant d'une ligne du ticket la met
     /// à jour (elle garde son identifiant et ce que le lecteur y avait lu) ; sans identifiant, c'est une ligne ajoutée à la main ; les lignes
     /// du ticket absentes du brouillon sont supprimées. Un ingrédient différent de celui enregistré est un choix manuel (origine effacée) ;
-    /// la mention « TVA à vérifier » ne reste que si ni le taux ni le total de la ligne n'ont été modifiés. Un ticket en échec complété avec
-    /// au moins une ligne passe à <see cref="ReceiptStatus.Extracted"/>. Tout est enregistré d'un coup ou pas du tout.
+    /// la mention « TVA à vérifier » ne reste que si ni le taux ni le total de la ligne n'ont été modifiés. Un ticket en échec ou pas encore lu, complété
+    /// avec au moins une ligne, passe à <see cref="ReceiptStatus.Extracted"/>. Tout est enregistré d'un coup ou pas du tout.
     /// </summary>
     public async Task SaveDraftAsync(ReceiptDraftInput input)
     {
@@ -262,7 +262,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         receipt.SupplierId = input.SupplierId;
         receipt.ReceiptDate = ToUtc(input.ReceiptDate);
         receipt.InvoiceNumber = NullIfBlank(input.InvoiceNumber);
-        if (receipt.Status == ReceiptStatus.Failed && lines.Count > 0)
+        if (receipt.Status is ReceiptStatus.Failed or ReceiptStatus.Pending && lines.Count > 0)
         {
             receipt.Status = ReceiptStatus.Extracted;
             receipt.ErrorMessage = null;
@@ -276,20 +276,18 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     /// rien n'est écrit et le message nomme la ligne. Les lignes d'un même ingrédient donnent un seul prix, la moyenne pondérée par les quantités
     /// (Σ totaux HT ÷ Σ quantités de base), enregistré comme prix de l'ingrédient (source Receipt, fournisseur et date du ticket, ou date de création
     /// sans date lue) et repris dans <see cref="ReceiptLine.AppliedPricePerBaseUnit"/> de chacune de ces lignes. Les libellés sont mémorisés par
-    /// fournisseur (créés ou mis à jour). Les prix sont écrits d'abord, un ingrédient après l'autre (<see cref="IngredientService.SetPriceAsync"/>
-    /// ouvre son propre contexte) ; le ticket n'est marqué appliqué qu'à la fin, avec les lignes et les alias dans un seul enregistrement.
-    /// Si une écriture échoue (base indisponible…) au milieu, des prix déjà écrits restent et le ticket reste « lu » : l'appliquer à nouveau
-    /// réécrit les mêmes prix, au prix d'une entrée d'historique en double.
+    /// fournisseur (créés ou mis à jour).
+    /// Tout ou rien : une fois les lignes validées, une seule transaction réserve le ticket (passage atomique de « lu » à « appliqué », une seule
+    /// exécution l'emporte), écrit les prix, les prix de ligne et les alias, puis valide. Tout échec annule tout, statut compris : le ticket reste
+    /// « lu » et peut être appliqué à nouveau sans doublon d'historique. Deux applications simultanées : l'une réussit, l'autre est refusée
+    /// (« déjà appliqué »).
     /// </summary>
     public async Task<ApplyResult> ApplyAsync(int receiptId)
     {
         await using var db = await factory.CreateDbContextAsync();
 
         var receipt = await RequireReceiptAsync(db, receiptId, includeLines: true);
-        if (receipt.Status == ReceiptStatus.Applied)
-            throw new DomainValidationException(AlreadyAppliedMessage);
-        if (receipt.Status != ReceiptStatus.Extracted)
-            throw new DomainValidationException(NotReadyMessage);
+        RequireApplicable(receipt.Status);
 
         // Lectures et validations d'abord : aucune écriture tant que toutes les lignes ne sont pas bonnes.
         var active = receipt.Lines
@@ -303,7 +301,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
             .Where(i => ingredientIds.Contains(i.Id))
             .ToDictionaryAsync(i => i.Id);
 
-        var priced = new List<(ReceiptLine Line, Ingredient Ingredient, decimal Total, decimal BaseQuantity)>();
+        var priced = new List<(ReceiptLine Line, int IngredientId, decimal Total, decimal BaseQuantity)>();
         foreach (var line in active)
         {
             var ingredient = line.IngredientId is { } id ? byId.GetValueOrDefault(id) : null;
@@ -311,43 +309,52 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
             if (price.Issue != ReceiptLineIssue.None)
                 throw new DomainValidationException($"Ligne {line.Position + 1} « {line.RawLabel} » : {Describe(price.Issue)}");
 
-            // Sans problème, le total et la quantité de base sont renseignés.
-            priced.Add((line, ingredient!, line.LineTotalExclVat!.Value, price.BaseQuantity!.Value));
+            // Sans problème, l'ingrédient, le total et la quantité de base sont renseignés.
+            priced.Add((line, ingredient!.Id, line.LineTotalExclVat!.Value, price.BaseQuantity!.Value));
         }
 
-        var latestPriceDates = await db.IngredientPrices
-            .Where(p => ingredientIds.Contains(p.IngredientId))
-            .GroupBy(p => p.IngredientId)
-            .Select(g => new { IngredientId = g.Key, Latest = g.Max(p => p.Date) })
-            .ToDictionaryAsync(x => x.IngredientId, x => x.Latest);
-
         var supplierId = receipt.SupplierId;
+        var priceDate = DateTime.SpecifyKind(receipt.ReceiptDate ?? receipt.CreatedAt, DateTimeKind.Utc);
+
+        // Écritures : une transaction, un seul SaveChanges pour les données ; rien n'est visible tant qu'elle n'est pas validée.
+        await using var transaction = await db.Database.BeginTransactionAsync();
+
+        // Réservation du ticket : « lu » -> « appliqué » en une instruction. Si un autre appel l'a déjà pris (double clic, deux onglets), cette
+        // instruction attend sa fin puis ne trouve plus de ticket « lu » : aucune ligne modifiée, refus. Annulée avec la transaction en cas d'échec.
+        DateTime? appliedAt = DateTime.UtcNow;
+        var claimed = await db.Receipts
+            .Where(r => r.Id == receiptId && r.Status == ReceiptStatus.Extracted)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(r => r.Status, ReceiptStatus.Applied)
+                .SetProperty(r => r.AppliedAt, appliedAt));
+        if (claimed != 1)
+            throw new DomainValidationException(await RefusalAsync(db, receiptId));
+
         var aliasesByLabel = (await db.SupplierAliases.Where(a => a.SupplierId == supplierId).ToListAsync())
             .ToDictionary(a => a.NormalizedLabel);
 
-        var priceDate = DateTime.SpecifyKind(receipt.ReceiptDate ?? receipt.CreatedAt, DateTimeKind.Utc);
+        // Les ingrédients sont relus dans la transaction : l'ancien prix annoncé est celui qui est remplacé. Un ingrédient disparu entre-temps
+        // fait échouer l'écriture du prix (« Ingrédient introuvable ») et annule tout.
+        var current = await db.Ingredients.Where(i => ingredientIds.Contains(i.Id)).ToDictionaryAsync(i => i.Id);
 
-        // Écritures : les prix, ingrédient par ingrédient (dans l'ordre du ticket).
         var applied = new List<AppliedPrice>();
-        foreach (var group in priced.GroupBy(p => p.Ingredient.Id))
+        foreach (var group in priced.GroupBy(p => p.IngredientId))
         {
-            var ingredient = group.First().Ingredient;
-            var unitPrice = Math.Round(
-                group.Sum(p => p.Total) / group.Sum(p => p.BaseQuantity), PriceScale, MidpointRounding.AwayFromZero);
+            var ingredient = current.GetValueOrDefault(group.Key)
+                             ?? throw new DomainValidationException(UnknownIngredientMessage);
+            var unitPrice = IngredientService.NormalizePrice(group.Sum(p => p.Total) / group.Sum(p => p.BaseQuantity));
+            var oldPrice = ingredient.CurrentPricePerBaseUnit;
 
-            // Même règle que SetPriceAsync : le prix courant n'est remplacé que par un ticket au moins aussi récent que le dernier prix connu.
-            var replacesCurrent = !latestPriceDates.TryGetValue(ingredient.Id, out var latest) || priceDate >= latest;
-
-            await ingredients.SetPriceAsync(ingredient.Id, unitPrice, PriceSource.Receipt, supplierId, priceDate);
+            var replacesCurrent = await IngredientService.AddPriceEntryAsync(
+                db, ingredient.Id, unitPrice, PriceSource.Receipt, supplierId, priceDate);
 
             applied.Add(new AppliedPrice(
-                ingredient.Id, ingredient.Name, ingredient.BaseUnit, ingredient.CurrentPricePerBaseUnit, unitPrice, replacesCurrent));
+                ingredient.Id, ingredient.Name, ingredient.BaseUnit, oldPrice, unitPrice, replacesCurrent));
             foreach (var member in group)
                 member.Line.AppliedPricePerBaseUnit = unitPrice;
         }
 
-        // Puis, en un seul enregistrement : lignes, alias et statut (appliqué en dernier).
-        foreach (var (line, ingredient, _, _) in priced)
+        foreach (var (line, ingredientId, _, _) in priced)
         {
             var label = LabelNormalizer.Normalize(line.RawLabel);
             if (label.Length == 0)
@@ -355,19 +362,18 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
 
             if (aliasesByLabel.TryGetValue(label, out var alias))
             {
-                alias.IngredientId = ingredient.Id;
+                alias.IngredientId = ingredientId;
             }
             else
             {
-                alias = new SupplierAlias { SupplierId = supplierId, NormalizedLabel = label, IngredientId = ingredient.Id };
+                alias = new SupplierAlias { SupplierId = supplierId, NormalizedLabel = label, IngredientId = ingredientId };
                 db.SupplierAliases.Add(alias);
                 aliasesByLabel[label] = alias;
             }
         }
 
-        receipt.Status = ReceiptStatus.Applied;
-        receipt.AppliedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         return new ApplyResult(applied);
     }
@@ -411,6 +417,30 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         var found = await db.Ingredients.CountAsync(i => ingredientIds.Contains(i.Id));
         if (found != ingredientIds.Count)
             throw new DomainValidationException(UnknownIngredientMessage);
+    }
+
+    private static void RequireApplicable(ReceiptStatus status)
+    {
+        if (status == ReceiptStatus.Applied)
+            throw new DomainValidationException(AlreadyAppliedMessage);
+        if (status != ReceiptStatus.Extracted)
+            throw new DomainValidationException(NotReadyMessage);
+    }
+
+    // Le ticket n'a pas pu être réservé : on relit son état actuel (un autre appel a pu l'appliquer, le supprimer ou le modifier entre-temps).
+    private static async Task<string> RefusalAsync(ChefOsDbContext db, int receiptId)
+    {
+        var status = await db.Receipts.AsNoTracking()
+            .Where(r => r.Id == receiptId)
+            .Select(r => (ReceiptStatus?)r.Status)
+            .FirstOrDefaultAsync();
+
+        return status switch
+        {
+            null => UnknownReceiptMessage,
+            ReceiptStatus.Applied => AlreadyAppliedMessage,
+            _ => NotReadyMessage
+        };
     }
 
     private static async Task MarkFailedAsync(ChefOsDbContext db, Receipt receipt, string message, CancellationToken ct)
@@ -487,13 +517,9 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         _ => throw new ArgumentOutOfRangeException(nameof(issue), issue, null)
     };
 
-    // Une date saisie sans fuseau (sélecteur de date) est prise comme une date UTC.
-    private static DateTime? ToUtc(DateTime? date) => date switch
-    {
-        null => null,
-        { Kind: DateTimeKind.Local } local => local.ToUniversalTime(),
-        { } other => DateTime.SpecifyKind(other, DateTimeKind.Utc)
-    };
+    // Le ticket porte un jour, pas une heure : on garde le jour du calendrier saisi (aucun décalage de fuseau) à minuit UTC.
+    private static DateTime? ToUtc(DateTime? date) =>
+        date is { } value ? DateTime.SpecifyKind(value.Date, DateTimeKind.Utc) : null;
 
     private static decimal? Round(decimal? value, int scale) =>
         value is { } number ? Math.Round(number, scale, MidpointRounding.AwayFromZero) : null;

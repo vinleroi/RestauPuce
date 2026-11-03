@@ -111,7 +111,7 @@ public record ReceiptLineInput(
     int? IngredientId,
     bool IsIgnored);
 
-/// <summary><paramref name="Lines"/> remplace les lignes du ticket, dans cet ordre.</summary>
+/// <summary><paramref name="Lines"/> remplace les lignes du ticket, dans cet ordre. <paramref name="ReceiptDate"/> : seul le jour du calendrier compte (enregistré à minuit UTC).</summary>
 public record ReceiptDraftInput(
     int ReceiptId,
     int? SupplierId,

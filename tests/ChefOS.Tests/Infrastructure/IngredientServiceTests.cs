@@ -227,6 +227,39 @@ public class IngredientServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task SetPrice_SameDayEarlierTime_ReplacesCurrent() // la comparaison se fait au jour UTC, pas à l'heure
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var created = await service.SaveAsync(Input());
+        var manualEvening = new DateTime(2099, 1, 15, 18, 0, 0, DateTimeKind.Utc);
+        var ticketMidnight = new DateTime(2099, 1, 15, 0, 0, 0, DateTimeKind.Utc);
+
+        await service.SetPriceAsync(created.Id, 0.010m, PriceSource.Manual, null, manualEvening);
+        await service.SetPriceAsync(created.Id, 0.012m, PriceSource.Receipt, null, ticketMidnight);
+
+        Assert.Equal(0.012m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
+        var history = await service.GetPriceHistoryAsync(created.Id);
+        Assert.Equal([ticketMidnight, manualEvening], history.Select(p => p.Date));
+    }
+
+    [Fact]
+    public async Task SetPrice_PreviousDayLateEvening_DoesNotReplaceCurrent()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var created = await service.SaveAsync(Input());
+        await service.SetPriceAsync(created.Id, 0.010m, PriceSource.Manual, null, new DateTime(2099, 1, 15, 0, 0, 1, DateTimeKind.Utc));
+
+        await service.SetPriceAsync(created.Id, 0.008m, PriceSource.Receipt, null, new DateTime(2099, 1, 14, 23, 59, 59, DateTimeKind.Utc));
+
+        Assert.Equal(0.010m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
+        Assert.Equal(2, (await service.GetPriceHistoryAsync(created.Id)).Count);
+    }
+
+    [Fact]
     public async Task SetPrice_NegativePrice_Throws()
     {
         var options = await postgres.CreateDatabaseAsync();

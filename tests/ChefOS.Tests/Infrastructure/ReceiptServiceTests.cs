@@ -54,7 +54,7 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         var factory = new TestContextFactory(options, restaurant);
         var reader = new FakeReceiptReader();
         var ingredients = new IngredientService(factory);
-        return (options, restaurant, reader, new ReceiptService(factory, reader, ingredients), ingredients);
+        return (options, restaurant, reader, new ReceiptService(factory, reader), ingredients);
     }
 
     private static ChefOsDbContext OpenContext(DbContextOptions<ChefOsDbContext> options, int restaurantId) =>
@@ -62,8 +62,7 @@ public class ReceiptServiceTests(PostgresFixture postgres)
 
     private static ReceiptService ServiceFor(DbContextOptions<ChefOsDbContext> options, int restaurantId, IReceiptReader reader)
     {
-        var factory = new TestContextFactory(options, restaurantId);
-        return new ReceiptService(factory, reader, new IngredientService(factory));
+        return new ReceiptService(new TestContextFactory(options, restaurantId), reader);
     }
 
     private static async Task<int> AddSupplierAsync(DbContextOptions<ChefOsDbContext> options, int restaurantId, string name)
@@ -495,6 +494,50 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         Assert.False(line.VatToCheck);
     }
 
+    [Fact]
+    public async Task Extract_OutOfRangeVatRate_TreatedAsUnknown()
+    {
+        var (_, _, reader, service, _) = await ArrangeAsync();
+
+        var id = await ReadAsync(service, reader, Extraction(
+            [
+                Line("A", 1m, MeasureUnit.Kg, 12.10m, vatRate: 21m),    // 21 au lieu de 0,21
+                Line("B", 1m, MeasureUnit.Kg, 5m, vatRate: 6m),         // 6 au lieu de 0,06
+                Line("C", 1m, MeasureUnit.Kg, 5m, vatRate: 1000m),      // aurait débordé numeric(5,4)
+                Line("D", 1m, MeasureUnit.Kg, 5m, vatRate: -0.06m),
+                Line("E", 1m, MeasureUnit.Kg, 2.12m, vatRate: 1m)       // 100 % : borne incluse
+            ],
+            includeVat: true));
+
+        var receipt = await LoadAsync(service, id);
+        Assert.Equal(ReceiptStatus.Extracted, receipt.Status);
+        Assert.Equal(5, receipt.Lines.Count);
+        foreach (var line in receipt.Lines.Take(4))
+        {
+            Assert.Null(line.VatRate);
+            Assert.True(line.VatToCheck);
+        }
+
+        Assert.Equal(12.10m, receipt.Lines[0].LineTotalExclVat);        // total repris tel quel, pas divisé par 22
+        Assert.Equal(5m, receipt.Lines[1].LineTotalExclVat);
+        Assert.Equal(1m, receipt.Lines[4].VatRate);
+        Assert.Equal(1.06m, receipt.Lines[4].LineTotalExclVat);
+        Assert.False(receipt.Lines[4].VatToCheck);
+    }
+
+    [Fact]
+    public async Task Extract_OutOfRangeVatRate_OnHtTicket_StoredAsUnknownWithoutFlag()
+    {
+        var (_, _, reader, service, _) = await ArrangeAsync();
+
+        var id = await ReadAsync(service, reader, Extraction([Line("A", 1m, MeasureUnit.Kg, 5m, vatRate: 21m)], includeVat: false));
+
+        var line = Assert.Single((await LoadAsync(service, id)).Lines);
+        Assert.Null(line.VatRate);
+        Assert.Equal(5m, line.LineTotalExclVat);
+        Assert.False(line.VatToCheck);
+    }
+
     // ── Lecture et liste ─────────────────────────────────────────────────────
 
     [Fact]
@@ -653,6 +696,24 @@ public class ReceiptServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task SaveDraft_PendingReceiptWithLines_BecomesExtracted()
+    {
+        var (_, _, _, service, _) = await ArrangeAsync();
+        var withLines = await service.CreateAsync(SomeBytes, "ticket.jpg", "image/jpeg");
+        var withoutLines = await service.CreateAsync(SomeBytes, "ticket.jpg", "image/jpeg");
+
+        await service.SaveDraftAsync(new ReceiptDraftInput(
+            withLines, null, null, null, [new ReceiptLineInput(null, "Sel", 1m, MeasureUnit.Kg, 2m, null, null, false)]));
+        await service.SaveDraftAsync(new ReceiptDraftInput(withoutLines, null, null, null, []));
+
+        var saved = await LoadAsync(service, withLines);
+        Assert.Equal(ReceiptStatus.Extracted, saved.Status);
+        Assert.Null(saved.ErrorMessage);
+        Assert.Single(saved.Lines);
+        Assert.Equal(ReceiptStatus.Pending, (await LoadAsync(service, withoutLines)).Status); // rien de complété : inchangé
+    }
+
+    [Fact]
     public async Task SaveDraft_Applied_Refused()
     {
         var (_, _, reader, service, ingredients) = await ArrangeAsync();
@@ -790,18 +851,25 @@ public class ReceiptServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task SaveDraft_NormalizesDateToUtc()
+    public async Task SaveDraft_Date_KeepsTheCalendarDayAtMidnightUtc()
     {
         var (_, _, reader, service, _) = await ArrangeAsync();
         var id = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 1m)]));
         var receipt = await LoadAsync(service, id);
 
-        // Une date saisie sans fuseau (sélecteur de date) est prise comme une date UTC.
-        await service.SaveDraftAsync(DraftOf(receipt) with { ReceiptDate = new DateTime(2026, 5, 20, 0, 0, 0, DateTimeKind.Unspecified) });
+        async Task<DateTime?> SaveDateAsync(DateTime? date)
+        {
+            await service.SaveDraftAsync(DraftOf(receipt) with { ReceiptDate = date });
+            return (await LoadAsync(service, id)).ReceiptDate;
+        }
 
-        var after = await LoadAsync(service, id);
-        Assert.Equal(new DateTime(2026, 5, 20, 0, 0, 0, DateTimeKind.Utc), after.ReceiptDate);
-        Assert.Equal(DateTimeKind.Utc, after.ReceiptDate!.Value.Kind);
+        // Le jour du calendrier saisi est conservé, à minuit UTC, quel que soit le Kind et l'heure : aucun décalage de fuseau.
+        var unspecified = await SaveDateAsync(new DateTime(2026, 5, 20, 0, 0, 0, DateTimeKind.Unspecified));
+        Assert.Equal(new DateTime(2026, 5, 20, 0, 0, 0, DateTimeKind.Utc), unspecified);
+        Assert.Equal(DateTimeKind.Utc, unspecified!.Value.Kind);
+        Assert.Equal(new DateTime(2026, 5, 20, 0, 0, 0, DateTimeKind.Utc), await SaveDateAsync(new DateTime(2026, 5, 20, 23, 30, 0, DateTimeKind.Local)));
+        Assert.Equal(new DateTime(2026, 5, 21, 0, 0, 0, DateTimeKind.Utc), await SaveDateAsync(new DateTime(2026, 5, 21, 8, 45, 0, DateTimeKind.Utc)));
+        Assert.Null(await SaveDateAsync(null));
     }
 
     // ── Application ──────────────────────────────────────────────────────────
@@ -1156,6 +1224,111 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         var after = (await recipes.LoadBookAsync()).Cost(dish.Id);
         Assert.Equal(0.2m, before.TotalCost);                          // 200 g × 0,001
         Assert.Equal(0.24m, after.TotalCost);                          // 200 g × 0,0012
+    }
+
+    [Fact]
+    public async Task Apply_SameDayTicket_ReplacesManualPriceEnteredToday()
+    {
+        var (_, _, reader, service, ingredients) = await ArrangeAsync();
+        var sel = await AddIngredientAsync(ingredients, "Sel");
+        // Prix manuel saisi l'après-midi du 15 janvier ; le ticket du même jour est daté de minuit (00:00 UTC).
+        await ingredients.SetPriceAsync(sel, 0.002m, PriceSource.Manual, null, new DateTime(2099, 1, 15, 15, 30, 0, DateTimeKind.Utc));
+        var sameDay = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 3m)], date: new DateOnly(2099, 1, 15)));
+        var dayBefore = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 9m)], date: new DateOnly(2099, 1, 14)));
+
+        var first = Assert.Single((await service.ApplyAsync(sameDay)).Prices);
+
+        Assert.True(first.ReplacedCurrent);                          // même jour : ce n'est pas un ticket en retard
+        Assert.Equal(0.002m, first.OldPricePerBaseUnit);
+        Assert.Equal(0.003m, first.NewPricePerBaseUnit);
+        Assert.Equal(0.003m, (await ingredients.GetAsync(sel))!.CurrentPricePerBaseUnit);
+
+        var second = Assert.Single((await service.ApplyAsync(dayBefore)).Prices);
+
+        Assert.False(second.ReplacedCurrent);                        // la veille : en retard, historique seulement
+        Assert.Equal(0.003m, second.OldPricePerBaseUnit);
+        Assert.Equal(0.009m, second.NewPricePerBaseUnit);
+        Assert.Equal(0.003m, (await ingredients.GetAsync(sel))!.CurrentPricePerBaseUnit);
+        Assert.Equal(3, (await ingredients.GetPriceHistoryAsync(sel)).Count);
+    }
+
+    [Fact]
+    public async Task Apply_ConcurrentCalls_OnlyOneApplies()
+    {
+        var (options, restaurant, reader, service, ingredients) = await ArrangeAsync();
+        var sel = await AddIngredientAsync(ingredients, "Sel", 0.002m);
+        var farine = await AddIngredientAsync(ingredients, "Farine", 0.001m);
+        var id = await ReadAsync(service, reader, Extraction(
+            [Line("Sel", 1m, MeasureUnit.Kg, 3m), Line("Farine", 2m, MeasureUnit.Kg, 4m)]));
+        var other = ServiceFor(options, restaurant, reader); // second hôte : ses propres contextes
+
+        static async Task<DomainValidationException?> TryApplyAsync(ReceiptService s, int receiptId)
+        {
+            try
+            {
+                await s.ApplyAsync(receiptId);
+                return null;
+            }
+            catch (DomainValidationException ex)
+            {
+                return ex;
+            }
+        }
+
+        var outcomes = await Task.WhenAll(
+            Task.Run(() => TryApplyAsync(service, id)),
+            Task.Run(() => TryApplyAsync(other, id)));
+
+        Assert.Single(outcomes, outcome => outcome is null);
+        var refusal = Assert.Single(outcomes, outcome => outcome is not null);
+        Assert.Equal(AlreadyAppliedMessage, refusal!.Message);
+        foreach (var ingredient in new[] { sel, farine })
+        {
+            var history = await ingredients.GetPriceHistoryAsync(ingredient);
+            Assert.Equal(1, history.Count(p => p.Source == PriceSource.Receipt)); // une seule entrée de ticket par ingrédient
+            Assert.Equal(2, history.Count);
+        }
+
+        Assert.Equal(ReceiptStatus.Applied, (await LoadAsync(service, id)).Status);
+        await using var db = OpenContext(options, restaurant);
+        Assert.Equal(2, await db.SupplierAliases.CountAsync());
+    }
+
+    [Fact]
+    public async Task Apply_FailureMidway_RollsBackEverything()
+    {
+        var (options, restaurant, reader, service, ingredients) = await ArrangeAsync();
+        await AddSupplierAsync(options, restaurant, "Metro");
+        var sel = await AddIngredientAsync(ingredients, "Sel", 0.002m);
+        var farine = await AddIngredientAsync(ingredients, "Farine", 0.001m);
+        // La ligne « Farine » passe toutes les validations (quantité et total positifs) mais son prix, 1e11 € ÷ 0,0001 g = 1e15 €/g,
+        // déborde numeric(18,6) : la base refuse l'écriture, après la réservation du ticket et l'ajout du prix du sel.
+        var id = await ReadAsync(service, reader, Extraction(
+            [Line("Sel", 1m, MeasureUnit.Kg, 3m), Line("Farine", 0.0001m, MeasureUnit.G, 100_000_000_000m)], supplier: "Metro"));
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => service.ApplyAsync(id));
+
+        var receipt = await LoadAsync(service, id);
+        Assert.Equal(ReceiptStatus.Extracted, receipt.Status);
+        Assert.Null(receipt.AppliedAt);
+        Assert.All(receipt.Lines, line => Assert.Null(line.AppliedPricePerBaseUnit));
+        foreach (var (ingredient, price) in new[] { (sel, 0.002m), (farine, 0.001m) })
+        {
+            Assert.Equal(price, (await ingredients.GetAsync(ingredient))!.CurrentPricePerBaseUnit);
+            Assert.Equal(PriceSource.Manual, Assert.Single(await ingredients.GetPriceHistoryAsync(ingredient)).Source);
+        }
+
+        await using (var db = OpenContext(options, restaurant))
+            Assert.Empty(await db.SupplierAliases.ToListAsync());
+
+        // Le chef corrige la ligne : le ticket s'applique, sans doublon d'historique.
+        await service.SaveDraftAsync(DraftOf(receipt, (line, input) => line.Position == 1 ? input with { Quantity = 1000m } : input));
+        var result = await service.ApplyAsync(id);
+
+        Assert.Equal(2, result.Prices.Count);
+        foreach (var ingredient in new[] { sel, farine })
+            Assert.Equal(2, (await ingredients.GetPriceHistoryAsync(ingredient)).Count);
+        Assert.Equal(ReceiptStatus.Applied, (await LoadAsync(service, id)).Status);
     }
 
     // ── Suppression ──────────────────────────────────────────────────────────

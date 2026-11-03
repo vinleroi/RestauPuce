@@ -104,17 +104,32 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
 
     /// <summary>
     /// Ajoute toujours une entrée d'historique (utilisé aussi par le scan de tickets). Le prix courant ne devient
-    /// <paramref name="pricePerBaseUnit"/> que si <paramref name="dateUtc"/> est égale ou postérieure à la plus récente
-    /// entrée déjà présente (ou s'il n'y a aucun historique) : un ticket en retard n'enrichit que l'historique.
+    /// <paramref name="pricePerBaseUnit"/> que si le jour UTC de <paramref name="dateUtc"/> est égal ou postérieur à celui de la plus récente
+    /// entrée déjà présente (ou s'il n'y a aucun historique) : un ticket en retard n'enrichit que l'historique. La comparaison se fait au jour
+    /// et non à l'heure : une entrée manuelle saisie à 15 h ne rend pas « en retard » le ticket du même jour, daté de minuit.
     /// </summary>
     public async Task SetPriceAsync(
         int ingredientId, decimal pricePerBaseUnit, PriceSource source, int? supplierId, DateTime dateUtc)
     {
+        await using var db = await factory.CreateDbContextAsync();
+
+        await AddPriceEntryAsync(db, ingredientId, pricePerBaseUnit, source, supplierId, dateUtc);
+
+        // Un seul SaveChanges : le prix courant et son entrée d'historique sont enregistrés ensemble ou pas du tout.
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Écrit un prix dans le contexte de l'appelant, sans l'enregistrer : l'appelant décide du <c>SaveChanges</c> et de la transaction
+    /// (le ticket appliqué écrit ses prix, ses alias et son statut d'un seul bloc). Même règles que <see cref="SetPriceAsync"/> ;
+    /// renvoie vrai quand le prix courant de l'ingrédient a été remplacé, faux quand l'entrée n'enrichit que l'historique.
+    /// </summary>
+    internal static async Task<bool> AddPriceEntryAsync(
+        ChefOsDbContext db, int ingredientId, decimal pricePerBaseUnit, PriceSource source, int? supplierId, DateTime dateUtc)
+    {
         var price = NormalizePrice(pricePerBaseUnit);
         if (dateUtc.Kind != DateTimeKind.Utc)
             throw new ArgumentException("La date du prix doit être exprimée en UTC.", nameof(dateUtc));
-
-        await using var db = await factory.CreateDbContextAsync();
 
         var ingredient = await RequireIngredientAsync(db, ingredientId);
         await RequireSupplierAsync(db, supplierId);
@@ -123,13 +138,12 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
         var latestDate = await db.IngredientPrices
             .Where(p => p.IngredientId == ingredientId)
             .MaxAsync(p => (DateTime?)p.Date);
-        if (latestDate is null || dateUtc >= latestDate)
+        var replacesCurrent = latestDate is null || dateUtc.Date >= latestDate.Value.Date;
+        if (replacesCurrent)
             ingredient.CurrentPricePerBaseUnit = price;
 
         db.IngredientPrices.Add(NewPriceEntry(ingredient.Id, price, source, supplierId, dateUtc));
-
-        // Un seul SaveChanges : le prix courant et son entrée d'historique sont enregistrés ensemble ou pas du tout.
-        await db.SaveChangesAsync();
+        return replacesCurrent;
     }
 
     public async Task<IReadOnlyList<IngredientPrice>> GetPriceHistoryAsync(int ingredientId)
@@ -237,7 +251,8 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
             throw new DomainValidationException("Le rendement doit être compris entre 1 et 100 %");
     }
 
-    private static decimal NormalizePrice(decimal price)
+    /// <summary>Prix arrondi à l'échelle de la colonne (6 décimales) : la valeur enregistrée, donc celle qu'on annonce.</summary>
+    internal static decimal NormalizePrice(decimal price)
     {
         if (price < 0m)
             throw new DomainValidationException("Le prix ne peut pas être négatif");
