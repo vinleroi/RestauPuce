@@ -388,6 +388,35 @@ public class ReceiptReviewFormTests
     public void Variation_WithoutAUsableOldOrNewPrice_IsNull(string? oldPrice, string? newPrice) =>
         Assert.Null(ReceiptReviewForm.Variation(oldPrice is null ? null : Invariant(oldPrice), newPrice is null ? null : Invariant(newPrice)));
 
+    // ── Titre du récapitulatif d'application ─────────────────────────────────
+
+    private static AppliedPrice Applied(int id, bool replacedCurrent) =>
+        new(id, $"Ingrédient {id}", BaseUnit.Gram, 0.01m, 0.012m, replacedCurrent);
+
+    [Theory]
+    [InlineData(1, "Prix mis à jour pour 1 ingrédient")]
+    [InlineData(3, "Prix mis à jour pour 3 ingrédients")]
+    public void ApplyHeadline_WhenEveryCurrentPriceWasReplaced_SaysPricesWereUpdated(int count, string expected) =>
+        Assert.Equal(expected, ReceiptReviewForm.ApplyHeadline(
+            new ApplyResult(Enumerable.Range(1, count).Select(id => Applied(id, true)).ToList())));
+
+    [Fact]
+    public void ApplyHeadline_WhenOnlyTheHistoryWasEnriched_DoesNotClaimPricesWereUpdated()
+    {
+        Assert.Equal(
+            "Historique enrichi pour 1 ingrédient (ticket plus ancien)",
+            ReceiptReviewForm.ApplyHeadline(new ApplyResult([Applied(1, false)])));
+        Assert.Equal(
+            "Historique enrichi pour 2 ingrédients (ticket plus ancien)",
+            ReceiptReviewForm.ApplyHeadline(new ApplyResult([Applied(1, false), Applied(2, false)])));
+    }
+
+    [Fact]
+    public void ApplyHeadline_WhenMixed_KeepsPricesUpdated() =>
+        Assert.Equal(
+            "Prix mis à jour pour 2 ingrédients",
+            ReceiptReviewForm.ApplyHeadline(new ApplyResult([Applied(1, true), Applied(2, false)])));
+
     // ── Origine de l'ingrédient et TVA à vérifier ────────────────────────────
 
     [Theory]

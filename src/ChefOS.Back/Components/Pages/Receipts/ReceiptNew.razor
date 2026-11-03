@@ -57,8 +57,15 @@
     // Même plafond que ReceiptService : le refuser ici évite de transférer un fichier que le serveur rejetterait.
     private const long MaxUploadBytes = 10 * 1024 * 1024;
 
+    // Redimensionner une photo ne prend que quelques secondes ; au-delà d'une minute, le navigateur est bloqué (format que la page ne sait pas décoder) :
+    // on abandonne et on envoie le fichier d'origine. Sans ce délai explicite l'appel ne s'arrête jamais (un jeton transmis désactive celui de Blazor).
+    private static readonly TimeSpan PrepareTimeout = TimeSpan.FromSeconds(60);
+
     private const string UploadingStatus = "Envoi du ticket…";
     private const string ReadingStatus = "Lecture du ticket…";
+    private const string TooLargeMessage = "Fichier trop volumineux (10 Mo maximum)";
+    private const string UnreadableMessage = "Impossible de lire le fichier : réessayez ou choisissez-en un autre";
+    private const string TransferTimeoutMessage = "Le fichier n'a pas pu être transféré à temps : réessayez avec une photo plus petite";
 
     private readonly CancellationTokenSource _cancellation = new();
 
@@ -107,15 +114,26 @@
             // Page quittée : rien à afficher.
             return;
         }
+        catch (JSDisconnectedException)
+        {
+            // Circuit fermé en cours d'envoi : plus personne à qui afficher un message.
+            return;
+        }
         catch (DomainValidationException ex)
         {
             Snackbar.Add(ex.Message, Severity.Error);
             await ResetInputAsync(input);
         }
-        catch (IOException)
+        catch (OperationCanceledException)
         {
-            // OpenReadStream dépasse la taille permise.
-            Snackbar.Add("Fichier trop volumineux (10 Mo maximum)", Severity.Error);
+            // Pas la page qui s'en va : le transfert du fichier entre le navigateur et le serveur a dépassé son délai.
+            Snackbar.Add(TransferTimeoutMessage, Severity.Error);
+            await ResetInputAsync(input);
+        }
+        catch (Exception ex) when (ex is IOException or JSException)
+        {
+            // Lecture du fichier ou transfert interrompu (la taille trop grande est refusée avant, avec son propre message).
+            Snackbar.Add(UnreadableMessage, Severity.Error);
             await ResetInputAsync(input);
         }
         finally
@@ -125,35 +143,47 @@
     }
 
     // Image : redimensionnée dans le navigateur (voir wwwroot/js/receipt-upload.js) ; PDF : tel quel. Si le module JavaScript est
-    // inutilisable, on lit le fichier directement par le canal de InputFile.
+    // inutilisable ou trop lent, on lit le fichier directement par le canal de InputFile.
     private async Task<Upload> ReadUploadAsync(IBrowserFile file, InputFile? input, CancellationToken token)
     {
-        if (input?.Element is { } element)
+        if (input?.Element is { } element && await TryPrepareAsync(element, token) is { } prepared)
         {
-            PreparedFile? prepared = null;
-            try
-            {
-                _module ??= await JS.InvokeAsync<IJSObjectReference>("import", token, "./js/receipt-upload.js");
-                prepared = await _module.InvokeAsync<PreparedFile?>("prepare", token, element);
-            }
-            catch (JSException)
-            {
-                // Repli ci-dessous.
-            }
+            await using var data = prepared.Data;
+            if (prepared.Length > MaxUploadBytes)
+                throw new DomainValidationException(TooLargeMessage);
 
-            if (prepared is not null)
-            {
-                await using var data = prepared.Data;
-                if (prepared.Length > MaxUploadBytes)
-                    throw new DomainValidationException("Fichier trop volumineux (10 Mo maximum)");
-
-                await using var stream = await data.OpenReadStreamAsync(MaxUploadBytes, token);
-                return new Upload(await ReadAllAsync(stream, token), prepared.Name, prepared.ContentType);
-            }
+            await using var stream = await data.OpenReadStreamAsync(MaxUploadBytes, token);
+            return new Upload(await ReadAllAsync(stream, token), prepared.Name, prepared.ContentType);
         }
+
+        // OpenReadStream refuse un fichier trop grand par une IOException : on le refuse avant, avec le message qui convient.
+        if (file.Size > MaxUploadBytes)
+            throw new DomainValidationException(TooLargeMessage);
 
         await using var original = file.OpenReadStream(MaxUploadBytes, token);
         return new Upload(await ReadAllAsync(original, token), file.Name, file.ContentType);
+    }
+
+    // Appelle le module JavaScript, au plus PrepareTimeout. Renvoie null quand il échoue (module introuvable, erreur du navigateur) ou dépasse
+    // le délai : l'appelant se replie alors sur le fichier d'origine. Un circuit fermé (JSDisconnectedException) ou la page quittée se propagent.
+    private async Task<PreparedFile?> TryPrepareAsync(ElementReference element, CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(PrepareTimeout);
+
+        try
+        {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", timeout.Token, "./js/receipt-upload.js");
+            return await _module.InvokeAsync<PreparedFile?>("prepare", timeout.Token, element);
+        }
+        catch (JSException)
+        {
+            return null;
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            return null;
+        }
     }
 
     private static async Task<byte[]> ReadAllAsync(Stream stream, CancellationToken token)
@@ -172,9 +202,9 @@
         {
             await _module.InvokeVoidAsync("reset", element);
         }
-        catch (JSException)
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or OperationCanceledException)
         {
-            // Sans importance : le chef pourra choisir un autre fichier.
+            // Sans importance : le chef pourra choisir un autre fichier. Surtout, ne pas faire échouer le gestionnaire qui affiche déjà une erreur.
         }
     }
 
@@ -189,9 +219,9 @@
             {
                 await _module.DisposeAsync();
             }
-            catch (JSDisconnectedException)
+            catch (Exception ex) when (ex is JSException or JSDisconnectedException or OperationCanceledException)
             {
-                // Circuit déjà fermé : le module est libéré avec lui.
+                // Circuit déjà fermé (ou navigateur qui ne répond plus) : le module est libéré avec lui.
             }
         }
     }

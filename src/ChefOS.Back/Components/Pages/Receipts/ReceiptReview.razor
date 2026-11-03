@@ -51,9 +51,7 @@ else
     @if (_applyResult is { } result)
     {
         <MudAlert Severity="Severity.Success" Class="mb-4">
-            <MudText Typo="Typo.subtitle1">
-                @(result.Prices.Count == 1 ? "Prix mis à jour pour 1 ingrédient" : $"Prix mis à jour pour {result.Prices.Count} ingrédients")
-            </MudText>
+            <MudText Typo="Typo.subtitle1">@ReceiptReviewForm.ApplyHeadline(result)</MudText>
             <ul class="my-1 pl-4">
                 @foreach (var price in result.Prices)
                 {
@@ -152,7 +150,8 @@ else
                     </MudItem>
                     <MudItem xs="12" sm="6">
                         <MudDatePicker @bind-Date="_form.ReceiptDate" Label="Date du ticket" Culture="Ui.Fr" DateFormat="dd/MM/yyyy"
-                                       Editable="true" Clearable="true" ReadOnly="applied" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                       MaxDate="@LatestReceiptDate" Editable="true" Clearable="true" ReadOnly="applied"
+                                       Variant="Variant.Outlined" Margin="Margin.Dense" />
                     </MudItem>
                     <MudItem xs="12" sm="6">
                         <MudTextField T="string" @bind-Value="_form.InvoiceNumber" Label="N° de facture" ReadOnly="applied"
@@ -365,6 +364,9 @@ else
 
     private string FileUrl => ReceiptFileEndpoint.RouteFor(Id);
 
+    // Même plafond que ReceiptService : demain (UTC) est permis, selon le fuseau du chef il peut déjà y être ; une date plus lointaine serait refusée.
+    private static DateTime LatestReceiptDate => DateTime.UtcNow.Date.AddDays(1);
+
     // Le jour du ticket est un jour de calendrier (minuit UTC) : il ne se convertit pas en heure locale.
     private string TicketDate =>
         (_form.ReceiptDate ?? _receipt?.CreatedAt.ToLocalTime())?.ToString("d", Ui.Fr) ?? "";
@@ -500,7 +502,7 @@ else
             saved = true;
 
             _applyResult = await ReceiptService.ApplyAsync(Id);
-            Snackbar.Add("Prix mis à jour", Severity.Success);
+            Snackbar.Add(_applyResult.Prices.All(p => !p.ReplacedCurrent) ? "Historique enrichi" : "Prix mis à jour", Severity.Success);
             await LoadAsync(showLoading: false);
             await ScrollToTopAsync();
         }

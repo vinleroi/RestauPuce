@@ -107,15 +107,16 @@ public sealed class ReceiptReaderRegistrationTests : IDisposable
     }
 
     [Fact]
-    public void Registration_ClaudeClient_RetriesOnceAndKeepsTheSdkTimeout()
+    public void Registration_ClaudeClient_RetriesOnceWithAnExplicitFiveMinuteTimeout()
     {
         using var provider = Build(("Anthropic:ApiKey", "sk-ant-test"));
 
         var client = provider.GetRequiredService<AnthropicClient>();
 
-        // Chaque nouvel essai est facturé et le SDK relance aussi après un délai dépassé : un seul. Le délai (480 s pour 16 000 jetons) reste celui du SDK.
+        // Chaque nouvel essai est facturé et le SDK relance aussi après un délai dépassé : un seul. Le délai de chaque essai est explicite (5 minutes),
+        // et non celui que le SDK déduit de la taille de la réponse permise (480 s pour 16 000 jetons).
         Assert.Equal(1, client.MaxRetries);
-        Assert.Null(client.Timeout);
+        Assert.Equal(TimeSpan.FromMinutes(5), client.Timeout);
     }
 
     [Fact]

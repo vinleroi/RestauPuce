@@ -166,6 +166,20 @@ public sealed class ReceiptReviewForm
     public static decimal? Variation(decimal? oldPrice, decimal? newPrice) =>
         oldPrice is > 0m && newPrice is { } price ? (price - oldPrice.Value) / oldPrice.Value : null;
 
+    /// <summary>
+    /// Titre du récapitulatif d'un ticket appliqué. Si aucun prix courant n'a été remplacé (ticket plus ancien que l'historique de chaque ingrédient),
+    /// seul l'historique a été enrichi : on ne dit pas que des prix ont été mis à jour. Dès qu'un prix courant a changé, le titre reste « Prix mis à jour ».
+    /// </summary>
+    public static string ApplyHeadline(ApplyResult result)
+    {
+        var count = result.Prices.Count;
+        var subject = count == 1 ? "1 ingrédient" : $"{count} ingrédients";
+
+        return result.Prices.Count > 0 && result.Prices.All(p => !p.ReplacedCurrent)
+            ? $"Historique enrichi pour {subject} (ticket plus ancien)"
+            : $"Prix mis à jour pour {subject}";
+    }
+
     /// <summary>Hausse au-delà de +5 %, baisse en dessous de −5 % ; 5 % pile reste stable.</summary>
     public static VariationLevel LevelOf(decimal variation) =>
         variation > VariationThreshold ? VariationLevel.Increase
