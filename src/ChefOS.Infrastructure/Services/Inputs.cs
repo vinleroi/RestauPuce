@@ -1,5 +1,6 @@
 using ChefOS.Core.Costing;
 using ChefOS.Core.Ingredients;
+using ChefOS.Core.Receipts;
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
 using ChefOS.Core.Units;
@@ -83,3 +84,51 @@ public record DashboardSummary(
     int PreparationCount,
     decimal? AverageFoodCost,
     IReadOnlyList<WatchItem> WatchList);
+
+// ── Tickets fournisseurs ─────────────────────────────────────────────────────
+
+/// <summary><paramref name="SupplierName"/> est le fournisseur rapproché s'il y en a un, sinon le nom lu sur le ticket ; <paramref name="Total"/> est le total lu.</summary>
+public record ReceiptSummary(
+    int Id,
+    DateTime CreatedAt,
+    DateTime? ReceiptDate,
+    string SupplierName,
+    decimal? Total,
+    ReceiptStatus Status,
+    int LineCount);
+
+/// <summary>
+/// Une ligne du brouillon. <paramref name="Id"/> null = ligne ajoutée à la main ; sinon c'est une ligne du ticket, qui garde son identifiant.
+/// <paramref name="VatRate"/> est une fraction (0,06 = 6 %) ; <paramref name="LineTotalExclVat"/> est le total hors TVA (corrigé ou saisi par le chef).
+/// </summary>
+public record ReceiptLineInput(
+    int? Id,
+    string RawLabel,
+    decimal? Quantity,
+    MeasureUnit? Unit,
+    decimal? LineTotalExclVat,
+    decimal? VatRate,
+    int? IngredientId,
+    bool IsIgnored);
+
+/// <summary><paramref name="Lines"/> remplace les lignes du ticket, dans cet ordre.</summary>
+public record ReceiptDraftInput(
+    int ReceiptId,
+    int? SupplierId,
+    DateTime? ReceiptDate,
+    string? InvoiceNumber,
+    IReadOnlyList<ReceiptLineInput> Lines);
+
+/// <summary>
+/// Prix appliqué à un ingrédient. <paramref name="ReplacedCurrent"/> est faux quand le ticket est plus ancien que le dernier prix connu :
+/// il n'enrichit alors que l'historique.
+/// </summary>
+public record AppliedPrice(
+    int IngredientId,
+    string IngredientName,
+    BaseUnit BaseUnit,
+    decimal? OldPricePerBaseUnit,
+    decimal NewPricePerBaseUnit,
+    bool ReplacedCurrent);
+
+public record ApplyResult(IReadOnlyList<AppliedPrice> Prices);
