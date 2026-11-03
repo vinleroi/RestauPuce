@@ -76,7 +76,8 @@ public static class DependencyInjection
 
         var key = apiKey.Trim();
         // Enregistré par fabrique : le conteneur possède le client et le libère à l'arrêt.
-        services.AddSingleton(_ => new AnthropicClient { ApiKey = key, Timeout = ClaudeReceiptReader.RequestTimeout });
+        // Un seul nouvel essai (2 par défaut) : le SDK relance aussi après un délai dépassé, et chaque essai est facturé ; le délai reste celui du SDK.
+        services.AddSingleton(_ => new AnthropicClient { ApiKey = key, MaxRetries = 1 });
         services.AddSingleton<IReceiptReader, ClaudeReceiptReader>();
 
         return services;

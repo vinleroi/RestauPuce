@@ -18,14 +18,15 @@ namespace ChefOS.Infrastructure.Receipts;
 /// </summary>
 public sealed class ClaudeReceiptReader(AnthropicClient client) : IReceiptReader
 {
-    /// <summary>Délai d'un appel complet à l'API (la valeur par défaut du SDK est de dix minutes, trop longue pour un écran qui attend).</summary>
-    internal static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(3);
-
     private const string Model = "claude-opus-5-5";
     private const long MaxTokens = 16000;
 
+    // L'API refuse une image de plus de 5 Mo : on l'annonce sans l'envoyer (la page de téléversement réduit déjà les photos dans le navigateur).
+    private const int MaxImageBytes = 5 * 1024 * 1024;
+
     internal const string RefusedMessage = "La lecture du ticket a été refusée";
     internal const string TooLongMessage = "Ticket trop long pour être lu";
+    internal const string ImageTooLargeMessage = "Image trop volumineuse pour la lecture (5 Mo maximum) : reprenez la photo ou réduisez-la";
 
     public const string Prompt = """
         Voici le ticket ou la facture d'un fournisseur de restaurant (photo ou PDF). Lis-le et renvoie son contenu au format demandé.
@@ -33,11 +34,12 @@ public sealed class ClaudeReceiptReader(AnthropicClient client) : IReceiptReader
         - Recopie chaque libellé exactement comme il est imprimé, sans le corriger ni le développer.
         - amounts_include_vat vaut true si les prix et les totaux du document sont TTC (TVA comprise), false s'ils sont hors TVA (HTVA). Tous les montants de la réponse sont dans cette même base.
         - Convertis les conditionnements en quantité totale : « 6 x 1L » donne 6 avec l'unité l, « 2 x 2,5 kg » donne 5 avec l'unité kg, « 24 x 33cl » donne 7,92 avec l'unité l.
+        - Quand la quantité commandée multiplie un conditionnement du libellé, multiplie-les : 2 commandés de « FILET OIGNONS 5KG » donnent 10 avec l'unité kg.
         - Pour une ligne vendue au poids, l'unité est kg ou g. Pour une ligne à la pièce ou au colis sans poids indiqué, l'unité est piece.
         - unit_price est le prix d'une unité de la quantité convertie (le prix du kg quand la quantité est en kg) ; line_total est le total de la ligne tel qu'imprimé.
-        - vat_rate est une fraction : 0.06 pour 6 %, 0.21 pour 21 %. Mets null si le taux de la ligne n'est pas indiqué.
-        - Omets les lignes de remise, de consigne, de sous-total, de total et de TVA : ne garde que les articles.
-        - La date est au format yyyy-MM-dd.
+        - vat_rate est une fraction : 0.06 pour 6 %, 0.21 pour 21 %. Quand la TVA est donnée par un code (A, B, C…), retrouve le taux de chaque ligne avec la légende imprimée sur le ticket ; sans légende lisible, mets null.
+        - Omets les lignes de remise, de consigne, de vidange, de sous-total, de total et de TVA : ne garde que les articles.
+        - Les dates sont imprimées jour/mois/année : 03/11/2026 ou 03/11/26 est le 3 novembre 2026, pas le 11 mars. Renvoie-la au format yyyy-MM-dd, et mets null si l'année n'est pas imprimée.
         - Écris les nombres avec un point décimal, sans séparateur de milliers ni symbole monétaire.
         - Quand une valeur est absente ou illisible, mets null : n'invente rien.
         """;
@@ -46,10 +48,18 @@ public sealed class ClaudeReceiptReader(AnthropicClient client) : IReceiptReader
     {
         var request = BuildRequest(content, contentType);
 
-        BetaMessage response;
         try
         {
-            response = await client.Beta.Messages.Create(request, ct);
+            var response = await client.Beta.Messages.Create(request, ct);
+
+            // Lu dans le try : le contenu de la réponse n'est décodé qu'à l'accès, et une réponse mal formée lève une exception du SDK.
+            return ReadResponse(response);
+        }
+        catch (Exception) when (ct.IsCancellationRequested)
+        {
+            // L'annulation demandée par l'appelant n'est jamais traduite, même si le SDK l'a enveloppée dans une de ses exceptions.
+            ct.ThrowIfCancellationRequested();
+            throw;
         }
         catch (AnthropicUnauthorizedException ex)
         {
@@ -77,8 +87,8 @@ public sealed class ClaudeReceiptReader(AnthropicClient client) : IReceiptReader
         }
         catch (AnthropicBadRequestException ex)
         {
-            // Fichier illisible ou trop lourd (une image de plus de 5 Mo est refusée), mais aussi appel mal formé : le motif de l'API est repris tel quel.
-            throw new InvalidOperationException($"Anthropic a refusé la requête : {ApiReason(ex)}", ex);
+            // Le motif de l'API (en anglais) reste dans l'exception d'origine, pour les journaux.
+            throw new InvalidOperationException("Anthropic a refusé la requête (format ou taille du fichier non accepté)", ex);
         }
         catch (AnthropicApiException ex)
         {
@@ -88,54 +98,34 @@ public sealed class ClaudeReceiptReader(AnthropicClient client) : IReceiptReader
         {
             throw new InvalidOperationException("Impossible de joindre Anthropic : vérifiez la connexion du serveur", ex);
         }
-        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException ex)
         {
             // Délai du client dépassé (le SDK le signale par une annulation) : ce n'est pas l'appelant qui annule.
             throw new InvalidOperationException("Anthropic met trop de temps à répondre : réessayez dans un instant", ex);
         }
-
-        return ReadResponse(response);
-    }
-
-    /// <summary>
-    /// Motif donné par l'API (<c>error.message</c>). Le SDK ne l'expose que dans le texte de l'exception (« Status Code: BadRequest » puis le corps JSON) :
-    /// on le relit de là, et tout ce qui ne ressemble pas à ce format donne un texte générique.
-    /// </summary>
-    private static string ApiReason(AnthropicApiException ex)
-    {
-        const string fallback = "requête invalide";
-
-        var start = ex.Message.IndexOf('{');
-        if (start < 0)
-            return fallback;
-
-        try
+        catch (Exception ex) when (ex is AnthropicException or JsonException)
         {
-            using var body = JsonDocument.Parse(ex.Message[start..]);
-            return body.RootElement.TryGetProperty("error", out var error)
-                   && error.TryGetProperty("message", out var message)
-                   && message.ValueKind == JsonValueKind.String
-                   && message.GetString() is { Length: > 0 } reason
-                ? reason
-                : fallback;
-        }
-        catch (JsonException)
-        {
-            return fallback;
+            // Réponse 200 mal formée (JSON invalide, champ obligatoire absent) : AnthropicInvalidDataException ou JsonException.
+            throw new InvalidOperationException(ReceiptExtractionJson.UnreadableMessage, ex);
         }
     }
 
     private static MessageCreateParams BuildRequest(byte[] content, string contentType)
     {
+        var type = contentType.Trim().ToLowerInvariant();
+        if (type is not ("image/jpeg" or "image/png" or "image/webp" or "application/pdf"))
+            throw new InvalidOperationException("Format non pris en charge (JPEG, PNG, WebP ou PDF)");
+        if (type != "application/pdf" && content.Length > MaxImageBytes)
+            throw new InvalidOperationException(ImageTooLargeMessage);
+
         var data = Convert.ToBase64String(content);
 
-        BetaContentBlockParam file = contentType.Trim().ToLowerInvariant() switch
+        BetaContentBlockParam file = type switch
         {
             "image/jpeg" => Image(data, MediaType.ImageJpeg),
             "image/png" => Image(data, MediaType.ImagePng),
             "image/webp" => Image(data, MediaType.ImageWebP),
-            "application/pdf" => new BetaRequestDocumentBlock { Source = new BetaBase64PdfSource { Data = data } },
-            _ => throw new InvalidOperationException("Format non pris en charge (JPEG, PNG, WebP ou PDF)")
+            _ => new BetaRequestDocumentBlock { Source = new BetaBase64PdfSource { Data = data } }
         };
 
         return new MessageCreateParams

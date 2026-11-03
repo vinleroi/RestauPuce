@@ -107,6 +107,18 @@ public sealed class ReceiptReaderRegistrationTests : IDisposable
     }
 
     [Fact]
+    public void Registration_ClaudeClient_RetriesOnceAndKeepsTheSdkTimeout()
+    {
+        using var provider = Build(("Anthropic:ApiKey", "sk-ant-test"));
+
+        var client = provider.GetRequiredService<AnthropicClient>();
+
+        // Chaque nouvel essai est facturé et le SDK relance aussi après un délai dépassé : un seul. Le délai (480 s pour 16 000 jetons) reste celui du SDK.
+        Assert.Equal(1, client.MaxRetries);
+        Assert.Null(client.Timeout);
+    }
+
+    [Fact]
     public void Registration_KeyInEnvironment_UsesClaudeReader()
     {
         Environment.SetEnvironmentVariable(EnvironmentKey, "sk-ant-from-environment");

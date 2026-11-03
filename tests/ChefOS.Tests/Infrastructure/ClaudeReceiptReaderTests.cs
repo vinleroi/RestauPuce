@@ -184,6 +184,23 @@ public class ClaudeReceiptReaderTests
     }
 
     [Fact]
+    public void Prompt_CoversBelgianWholesaleTickets()
+    {
+        var prompt = ClaudeReceiptReader.Prompt;
+
+        // Dates jour/mois/année.
+        Assert.Contains("jour/mois/année", prompt);
+        Assert.Contains("3 novembre 2026, pas le 11 mars", prompt);
+        // TVA par codes, résolue avec la légende du ticket.
+        Assert.Contains("(A, B, C…)", prompt);
+        Assert.Contains("légende imprimée sur le ticket", prompt);
+        // Les lignes de vidange sont omises comme celles de consigne.
+        Assert.Contains("de consigne, de vidange", prompt);
+        // Quantité commandée × conditionnement du libellé.
+        Assert.Contains("2 commandés de « FILET OIGNONS 5KG » donnent 10 avec l'unité kg", prompt);
+    }
+
+    [Fact]
     public async Task Read_Refusal_Throws()
     {
         var api = new FakeApi(() => MessageResponse(text: null, stopReason: "refusal"));
@@ -228,6 +245,7 @@ public class ClaudeReceiptReaderTests
     [InlineData(402, "billing_error", "Crédit Anthropic épuisé")]
     [InlineData(403, "permission_error", "n'a pas le droit")]
     [InlineData(404, "not_found_error", "Modèle Anthropic introuvable")]
+    [InlineData(400, "invalid_request_error", "Anthropic a refusé la requête (format ou taille du fichier non accepté)")]
     [InlineData(413, "request_too_large", "(HTTP 413)")]
     [InlineData(429, "rate_limit_error", "Quota Anthropic atteint")]
     [InlineData(500, "api_error", "indisponible ou surchargé")]
@@ -244,24 +262,99 @@ public class ClaudeReceiptReaderTests
     }
 
     [Fact]
-    public async Task Read_BadRequest_QuotesTheReasonGivenByTheApi()
+    public async Task Read_BadRequest_KeepsTheEnglishReasonOnlyInTheInnerException()
     {
         var api = new FakeApi(() => ErrorResponse(HttpStatusCode.BadRequest, "invalid_request_error", "image exceeds 5 MB maximum"));
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => ReaderFor(api).ReadAsync([1], "image/jpeg"));
 
-        Assert.Equal("Anthropic a refusé la requête : image exceeds 5 MB maximum", ex.Message);
+        Assert.Equal("Anthropic a refusé la requête (format ou taille du fichier non accepté)", ex.Message);
+        Assert.Contains("image exceeds 5 MB maximum", ex.InnerException!.Message);
+    }
+
+    [Fact]
+    public async Task Read_ImageOver5MB_FailsBeforeAnyCall()
+    {
+        var api = new FakeApi(() => MessageResponse(ExtractionJson));
+        var tooBig = new byte[5 * 1024 * 1024 + 1];
+
+        foreach (var type in new[] { "image/jpeg", "image/png", "image/webp" })
+        {
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => ReaderFor(api).ReadAsync(tooBig, type));
+            Assert.Equal("Image trop volumineuse pour la lecture (5 Mo maximum) : reprenez la photo ou réduisez-la", ex.Message);
+        }
+
+        Assert.Empty(api.Calls);
+    }
+
+    [Fact]
+    public async Task Read_ImageOfExactly5MB_IsSent()
+    {
+        var api = new FakeApi(() => MessageResponse(ExtractionJson));
+
+        await ReaderFor(api).ReadAsync(new byte[5 * 1024 * 1024], "image/jpeg");
+
+        Assert.Single(api.Calls);
+    }
+
+    [Fact]
+    public async Task Read_PdfOver5MB_IsSent()
+    {
+        var api = new FakeApi(() => MessageResponse(ExtractionJson));
+
+        await ReaderFor(api).ReadAsync(new byte[6 * 1024 * 1024], "application/pdf");
+
+        Assert.Single(api.Calls);
+    }
+
+    [Fact]
+    public async Task Read_UnsupportedTypeIsReportedBeforeTheImageSize()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => ReaderFor(new FakeApi(() => MessageResponse(ExtractionJson))).ReadAsync(new byte[6 * 1024 * 1024], "image/gif"));
+
+        Assert.Equal("Format non pris en charge (JPEG, PNG, WebP ou PDF)", ex.Message);
+    }
+
+    [Fact]
+    public async Task Read_OkResponseThatIsNotJson_IsUnreadable()
+    {
+        var api = new FakeApi(() => Json(HttpStatusCode.OK, "<html>pas du json</html>"));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => ReaderFor(api).ReadAsync([1], "image/jpeg"));
+
+        Assert.Equal("Réponse de lecture illisible", ex.Message);
         Assert.NotNull(ex.InnerException);
     }
 
     [Fact]
-    public async Task Read_BadRequestWithoutReadableBody_HasAGenericReason()
+    public async Task Read_OkResponseWithoutContent_IsUnreadable()
     {
-        var api = new FakeApi(() => Json(HttpStatusCode.BadRequest, "pas du json"));
+        var api = new FakeApi(() => Json(HttpStatusCode.OK, JsonSerializer.Serialize(new
+        {
+            id = "msg_test",
+            type = "message",
+            role = "assistant",
+            model = "claude-opus-5-5",
+            stop_reason = "end_turn",
+            stop_sequence = (string?)null,
+            usage = new { input_tokens = 10, output_tokens = 20 }
+        })));
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => ReaderFor(api).ReadAsync([1], "image/jpeg"));
 
-        Assert.Equal("Anthropic a refusé la requête : requête invalide", ex.Message);
+        Assert.Equal("Réponse de lecture illisible", ex.Message);
+        Assert.NotNull(ex.InnerException);
+    }
+
+    [Fact]
+    public async Task Read_OkResponseWithWrongContentShape_IsUnreadable()
+    {
+        var api = new FakeApi(() => Json(HttpStatusCode.OK, """{"id":"msg_test","type":"message","role":"assistant","model":"claude-opus-5-5","content":"oups","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"""));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => ReaderFor(api).ReadAsync([1], "image/jpeg"));
+
+        Assert.Equal("Réponse de lecture illisible", ex.Message);
     }
 
     [Fact]
@@ -292,5 +385,24 @@ public class ClaudeReceiptReaderTests
         var reader = ReaderFor(new FakeApi(() => MessageResponse(ExtractionJson)));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reader.ReadAsync([1], "image/jpeg", cts.Token));
+    }
+
+    [Fact]
+    public async Task Read_CancellationDuringTheCall_IsNotTranslatedEvenWhenTheSdkWrapsIt()
+    {
+        using var cts = new CancellationTokenSource();
+        var reader = ReaderFor(new CancellingApi(cts));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reader.ReadAsync([1], "image/jpeg", cts.Token));
+    }
+
+    /// <summary>Annule l'appelant en plein appel, puis échoue comme le ferait un transport interrompu (le SDK range cela dans ses propres exceptions).</summary>
+    private sealed class CancellingApi(CancellationTokenSource cts) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await cts.CancelAsync();
+            throw new HttpRequestException("transport interrompu");
+        }
     }
 }
