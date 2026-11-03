@@ -149,6 +149,83 @@ public class IngredientServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task SetPrice_OlderDate_DoesNotReplaceCurrent() // un ticket en retard n'enrichit que l'historique
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var supplierId = await AddSupplierAsync(options, restaurant);
+        var created = await service.SaveAsync(Input(price: 0.010m)); // entrée Manual datée de maintenant (jour J)
+        var fiveDaysAgo = DateTime.UtcNow.AddDays(-5);
+
+        await service.SetPriceAsync(created.Id, 0.008m, PriceSource.Receipt, supplierId, fiveDaysAgo);
+
+        Assert.Equal(0.010m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
+        var history = await service.GetPriceHistoryAsync(created.Id);
+        Assert.Equal(2, history.Count);
+        var late = history[0]; // triée par date : le ticket en retard passe avant l'entrée manuelle
+        Assert.Equal(0.008m, late.PricePerBaseUnit);
+        Assert.Equal(PriceSource.Receipt, late.Source);
+        Assert.Equal(supplierId, late.SupplierId);
+        Assert.Equal(fiveDaysAgo, late.Date);
+        Assert.Equal(0.010m, history[1].PricePerBaseUnit);
+    }
+
+    [Fact]
+    public async Task SetPrice_BetweenExistingEntries_DoesNotReplaceCurrent() // la référence est la date la plus récente de l'historique
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var created = await service.SaveAsync(Input());
+        var january = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var february = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc);
+        var march = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        await service.SetPriceAsync(created.Id, 1m, PriceSource.Receipt, null, january);
+        await service.SetPriceAsync(created.Id, 3m, PriceSource.Receipt, null, march);
+        await service.SetPriceAsync(created.Id, 2m, PriceSource.Receipt, null, february);
+
+        Assert.Equal(3m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
+        Assert.Equal([1m, 2m, 3m], (await service.GetPriceHistoryAsync(created.Id)).Select(p => p.PricePerBaseUnit));
+    }
+
+    [Fact]
+    public async Task SetPrice_NoHistory_SetsCurrentWhateverTheDate()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var created = await service.SaveAsync(Input()); // ni prix courant ni historique
+
+        await service.SetPriceAsync(created.Id, 0.008m, PriceSource.Receipt, null, DateTime.UtcNow.AddYears(-1));
+
+        Assert.Equal(0.008m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
+        Assert.Single(await service.GetPriceHistoryAsync(created.Id));
+    }
+
+    [Fact]
+    public async Task SetPrice_SameOrNewerDate_ReplacesCurrent()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var created = await service.SaveAsync(Input(price: 0.0025m));
+        var receiptDate = new DateTime(2099, 1, 15, 8, 30, 0, DateTimeKind.Utc);
+
+        await service.SetPriceAsync(created.Id, 0.010m, PriceSource.Receipt, null, receiptDate); // plus récent
+        Assert.Equal(0.010m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
+
+        await service.SetPriceAsync(created.Id, 0.012m, PriceSource.Receipt, null, receiptDate); // même date
+        Assert.Equal(0.012m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
+
+        await service.SetPriceAsync(created.Id, 0.015m, PriceSource.Receipt, null, receiptDate.AddDays(1)); // encore plus récent
+        Assert.Equal(0.015m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
+
+        Assert.Equal(4, (await service.GetPriceHistoryAsync(created.Id)).Count);
+    }
+
+    [Fact]
     public async Task SetPrice_NegativePrice_Throws()
     {
         var options = await postgres.CreateDatabaseAsync();

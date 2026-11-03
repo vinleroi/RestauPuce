@@ -103,8 +103,9 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
     }
 
     /// <summary>
-    /// Fixe le prix courant et ajoute une entrée d'historique (utilisé aussi par le scan de tickets).
-    /// Le prix courant devient toujours <paramref name="pricePerBaseUnit"/>, même si <paramref name="dateUtc"/> est antérieure à une entrée existante.
+    /// Ajoute toujours une entrée d'historique (utilisé aussi par le scan de tickets). Le prix courant ne devient
+    /// <paramref name="pricePerBaseUnit"/> que si <paramref name="dateUtc"/> est égale ou postérieure à la plus récente
+    /// entrée déjà présente (ou s'il n'y a aucun historique) : un ticket en retard n'enrichit que l'historique.
     /// </summary>
     public async Task SetPriceAsync(
         int ingredientId, decimal pricePerBaseUnit, PriceSource source, int? supplierId, DateTime dateUtc)
@@ -118,7 +119,13 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
         var ingredient = await RequireIngredientAsync(db, ingredientId);
         await RequireSupplierAsync(db, supplierId);
 
-        ingredient.CurrentPricePerBaseUnit = price;
+        // Lu avant d'ajouter l'entrée : on compare à l'historique existant, pas à la nouvelle ligne.
+        var latestDate = await db.IngredientPrices
+            .Where(p => p.IngredientId == ingredientId)
+            .MaxAsync(p => (DateTime?)p.Date);
+        if (latestDate is null || dateUtc >= latestDate)
+            ingredient.CurrentPricePerBaseUnit = price;
+
         db.IngredientPrices.Add(NewPriceEntry(ingredient.Id, price, source, supplierId, dateUtc));
 
         // Un seul SaveChanges : le prix courant et son entrée d'historique sont enregistrés ensemble ou pas du tout.
