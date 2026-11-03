@@ -11,7 +11,12 @@ public record VarianceLine(
     decimal VarianceQuantity,
     decimal? VarianceValue);
 
-/// <summary>Écart entre la consommation réelle (mesurée par inventaire) et la consommation théorique (ventes + pertes).</summary>
+/// <summary>
+/// Écart entre la consommation réelle (mesurée par inventaire) et la consommation théorique (ventes + pertes).
+/// Convention de signe : écart = réel − théorique. Un écart positif signifie qu'il a disparu plus de stock que
+/// les ventes et les pertes déclarées ne l'expliquent (perte inexpliquée : vol, sur-portionnement, pertes non déclarées) ;
+/// un écart négatif, que l'on a consommé moins que prévu (portions plus petites, théorique surestimé, comptage ou achat manquant).
+/// </summary>
 public static class InventoryVariance
 {
     /// <summary>

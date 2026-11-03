@@ -45,6 +45,24 @@ public class PriceAsOfTests
     }
 
     [Fact]
+    public void PriceAsOf_DayBoundIsExclusive_EntryAtNextMidnightDoesNotCount()
+    {
+        // Borne haute exclusive : une entrée à 00:00:00 pile le lendemain n'appartient pas au jour interrogé,
+        // alors que la dernière tick du jour (23:59:59.9999999) en fait partie.
+        var history = new[]
+        {
+            Price(1, 1, Jan10, 20m),
+            Price(2, 1, Jan15.AddDays(1), 40m),
+        };
+
+        Assert.Equal(20m, PriceAsOf.At(history, Jan15, currentPrice: 99m));
+        Assert.Equal(40m, PriceAsOf.At(history, Jan15.AddDays(1), currentPrice: 99m));
+
+        var lastTickOfDay = new[] { Price(3, 1, Jan15.AddDays(1).AddTicks(-1), 35m) };
+        Assert.Equal(35m, PriceAsOf.At(lastTickOfDay, Jan15, currentPrice: 99m));
+    }
+
+    [Fact]
     public void PriceAsOf_NoEntryBefore_UsesCurrent()
     {
         var history = new[] { Price(1, 1, Jan20, 30m) };

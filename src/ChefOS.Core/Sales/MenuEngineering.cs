@@ -26,7 +26,8 @@ public static class MenuEngineering
 
     /// <summary>
     /// Classe les plats vendus. Seuls ceux dont <c>QuantitySold &gt; 0</c> comptent (absents du résultat et de <c>n</c> sinon).
-    /// Populaire : part ≥ 0.70 × (1 / n). Marge élevée : marge unitaire ≥ marge moyenne pondérée par les quantités.
+    /// Populaire : part ≥ 0.70 × (1 / n), évalué sans 1 / n (arrondi pour la plupart des n) : qty × n ≥ 0.70 × total, exact en décimal.
+    /// Marge élevée : marge unitaire ≥ marge moyenne pondérée par les quantités.
     /// Le résultat suit l'ordre de l'entrée.
     /// </summary>
     public static IReadOnlyList<MenuClassification> Classify(IReadOnlyList<MenuItem> items)
@@ -36,14 +37,15 @@ public static class MenuEngineering
             return [];
 
         var totalQuantity = sold.Sum(i => i.QuantitySold);
-        var popularityThreshold = PopularityFactor * (1m / sold.Count);
+        // part ≥ 0.70 / n  ⇔  qty × n ≥ 0.70 × total : aucun quotient arrondi, l'égalité au seuil reste exacte.
+        var popularityFloor = PopularityFactor * totalQuantity;
         var marginThreshold = sold.Sum(i => i.QuantitySold * i.UnitMargin) / totalQuantity;
 
         return sold
             .Select(item =>
             {
                 var share = item.QuantitySold / totalQuantity;
-                var popular = share >= popularityThreshold;
+                var popular = item.QuantitySold * sold.Count >= popularityFloor;
                 var highMargin = item.UnitMargin >= marginThreshold;
                 var menuClass = (popular, highMargin) switch
                 {

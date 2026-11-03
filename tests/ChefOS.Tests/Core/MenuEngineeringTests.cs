@@ -51,6 +51,42 @@ public class MenuEngineeringTests
     }
 
     [Fact]
+    public void MenuEngineering_ThresholdInclusive_ExactWithTwentySixItems()
+    {
+        // n = 26 → seuil 0.70 / 26. Le plat 1 pèse 7 ÷ 260 : exactement sur le seuil, donc populaire.
+        // (0.70 × (1 / 26) dépasserait le seuil d'une unité de la dernière décimale : le seuil doit être exact.)
+        // Les 25 autres plats totalisent 253 (24 × 10 + 13) ; toutes les marges sont égales (= la moyenne).
+        var items = new List<MenuItem> { new(1, 7m, 5m) };
+        items.AddRange(Enumerable.Range(2, 24).Select(id => new MenuItem(id, 10m, 5m)));
+        items.Add(new MenuItem(26, 13m, 5m));
+
+        var result = MenuEngineering.Classify(items);
+
+        Assert.Equal(26, result.Count);
+        Assert.Equal(MenuClass.Etoile, result[0].Class);
+        Assert.Equal(7m / 260m, result[0].PopularityShare);
+    }
+
+    [Fact]
+    public void MenuEngineering_ThresholdInclusive_ExactForEveryItemCount()
+    {
+        // Pour chaque n de 2 à 200 : un plat de 7 portions dans un total de 10 × n pèse exactement 0.70 / n
+        // (7 ÷ (10 n)) : il doit toujours être populaire, quel que soit n (1/n n'est pas décimal pour la plupart).
+        var notPopular = new List<int>();
+        for (var n = 2; n <= 200; n++)
+        {
+            var items = new List<MenuItem> { new(1, 7m, 5m) };
+            items.AddRange(Enumerable.Range(2, n - 2).Select(id => new MenuItem(id, 1m, 5m)));
+            items.Add(new MenuItem(n, 10m * n - 7m - (n - 2), 5m)); // total = 10 × n
+
+            if (MenuEngineering.Classify(items)[0].Class != MenuClass.Etoile)
+                notPopular.Add(n);
+        }
+
+        Assert.True(notPopular.Count == 0, "Seuil de popularité inexact pour n = " + string.Join(", ", notPopular));
+    }
+
+    [Fact]
     public void MenuEngineering_JustBelowPopularityThreshold_IsNotPopular()
     {
         // n = 2 → seuil 0.35. Le plat 1 pèse 0.34 : pas populaire, mais sa marge (= moyenne) suffit → Énigme.
