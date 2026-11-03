@@ -20,10 +20,10 @@ Ce document résume les arbitrages faits pendant l'implémentation de l'étape 1
 
 ## À faire au début de l'étape 2 (avant d'ajouter `SupplierAlias` / `Receipt`)
 
-- Ajouter un test qui vérifie que chaque type `ITenantScoped` a un filtre global, ou appliquer le filtre en boucle.
-- Ajouter un test vérifiant qu'un tenant nul ne lit rien.
-- Ajouter un test `WebApplicationFactory` couvrant la chaîne claim → `ITenantContext` → filtre, ainsi que les réponses 403, 400 et 302 de `/account/active-restaurant`.
-- Scan de tickets : `IngredientService.SetPriceAsync` remplace toujours le prix courant, même avec une date plus ancienne. Décider quoi faire des tickets en retard.
+- ✅ fait (étape 2) : test qui vérifie que chaque type `ITenantScoped` a un filtre global (`TenantModelTests`).
+- ✅ fait (étape 2) : test vérifiant qu'un tenant nul ne lit rien (`TenantModelTests.NullTenant_ReadsNothing`).
+- Ajouter un test `WebApplicationFactory` couvrant la chaîne claim → `ITenantContext` → filtre, ainsi que les réponses 403, 400 et 302 de `/account/active-restaurant` et le fichier d'un ticket (`/receipts/{id}/file` : 404 hors restaurant, accès refusé sans connexion).
+- ✅ fait (étape 2) : scan de tickets, tickets en retard. `SetPriceAsync` ne remplace le prix courant que si le jour du ticket est égal ou postérieur à celui de la dernière entrée ; sinon le ticket n'enrichit que l'historique. L'entrée qui fixe le prix courant est toujours la plus récente par date (décalée de 1 µs si besoin), et une date de ticket postérieure à demain est refusée.
 
 ## À faire quand les invitations d'équipe arriveront
 
