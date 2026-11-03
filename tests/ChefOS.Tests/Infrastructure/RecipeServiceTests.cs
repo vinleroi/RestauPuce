@@ -2,6 +2,7 @@ using ChefOS.Core.Common;
 using ChefOS.Core.Costing;
 using ChefOS.Core.Ingredients;
 using ChefOS.Core.Recipes;
+using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Services;
@@ -19,6 +20,7 @@ public class RecipeServiceTests(PostgresFixture postgres)
     private const string PreparationOutputMessage = "Indiquez la quantité produite par la préparation";
     private const string LineSourceMessage = "Chaque ligne doit contenir un ingrédient ou une préparation";
     private const string QuantityMessage = "La quantité doit être supérieure à 0";
+    private const string DishInOrdersMessage = "Ce plat figure dans des commandes : archivez-le";
 
     private static RecipeService CreateService(DbContextOptions<ChefOsDbContext> options, int restaurantId) =>
         new(new TestContextFactory(options, restaurantId));
@@ -610,6 +612,43 @@ public class RecipeServiceTests(PostgresFixture postgres)
         // Une fois la sauce supprimée, le fond n'est plus utilisé par une préparation : il est supprimable.
         Assert.True((await service.DeleteAsync(fond.Id)).Deleted);
         Assert.Equal(1, await db.RecipeLines.CountAsync());
+    }
+
+    [Fact]
+    public async Task DeleteDishUsedInOrders_Refused()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var os = await AddIngredientAsync(options, restaurant, "Os de veau", 0.004m);
+        var dish = await service.SaveAsync(Dish("Carbonnade", [Grams(os, 100m)]));
+        var unordered = await service.SaveAsync(Dish("Stoemp", [Grams(os, 50m)]));
+        var orderedAt = new DateTime(2026, 11, 3, 12, 0, 0, DateTimeKind.Utc);
+        await using (var db = OpenContext(options, restaurant))
+        {
+            var order = new Order
+            {
+                Number = 1,
+                CreatedAt = orderedAt,
+                Source = OrderSource.Salle,
+                Status = OrderStatus.Servie,
+                StatusChangedAt = orderedAt
+            };
+            order.Lines.Add(new OrderLine { RecipeId = dish.Id, Quantity = 2, UnitPriceInclVat = 22.40m, VatRate = 0.12m });
+            db.Orders.Add(order);
+            await db.SaveChangesAsync();
+        }
+
+        var ex = await Assert.ThrowsAsync<DomainValidationException>(() => service.DeleteAsync(dish.Id));
+
+        Assert.Equal(DishInOrdersMessage, ex.Message);
+        Assert.NotNull(await service.GetAsync(dish.Id));
+        await using var check = OpenContext(options, restaurant);
+        Assert.Single(await check.OrderLines.ToListAsync());
+
+        // Archiver reste possible, et un plat jamais commandé se supprime toujours.
+        await service.SetArchivedAsync(dish.Id, true);
+        Assert.True((await service.DeleteAsync(unordered.Id)).Deleted);
     }
 
     [Fact]

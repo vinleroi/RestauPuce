@@ -2,6 +2,7 @@ using ChefOS.Core.Ingredients;
 using ChefOS.Core.Receipts;
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
+using ChefOS.Core.Sales;
 using ChefOS.Infrastructure.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +23,12 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
     public DbSet<ReceiptFile> ReceiptFiles => Set<ReceiptFile>();
     public DbSet<ReceiptLine> ReceiptLines => Set<ReceiptLine>();
     public DbSet<SupplierAlias> SupplierAliases => Set<SupplierAlias>();
+    public DbSet<SalesEntry> SalesEntries => Set<SalesEntry>();
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<OrderLine> OrderLines => Set<OrderLine>();
+    public DbSet<WasteEntry> WasteEntries => Set<WasteEntry>();
+    public DbSet<StockCount> StockCounts => Set<StockCount>();
+    public DbSet<StockCountLine> StockCountLines => Set<StockCountLine>();
 
     // Propriété d'instance : EF la réévalue à chaque requête, donc chaque contexte filtre sur son propre restaurant.
     private int? CurrentRestaurantId => tenant.CurrentRestaurantId;
@@ -41,6 +48,12 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
         builder.Entity<ReceiptFile>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
         builder.Entity<ReceiptLine>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
         builder.Entity<SupplierAlias>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<SalesEntry>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<Order>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<OrderLine>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<WasteEntry>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<StockCount>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<StockCountLine>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

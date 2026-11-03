@@ -18,6 +18,7 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
     private const string UnknownRecipeMessage = "Recette introuvable";
     private const string UnknownIngredientMessage = "Ingrédient introuvable";
     private const string UnknownPreparationMessage = "Préparation introuvable";
+    private const string DishInOrdersMessage = "Ce plat figure dans des commandes : archivez-le";
 
     // Échelles des colonnes numeric : arrondir avant de valider évite qu'une quantité positive soit stockée comme 0.
     private const int QuantityScale = 4;
@@ -122,7 +123,10 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
 
     /// <summary>
     /// Supprime la recette et ses lignes, sauf si elle sert de sous-préparation : le résultat liste alors les recettes concernées.
+    /// Un plat qui figure dans des commandes ne se supprime pas (une commande garde ses plats) : il s'archive.
+    /// Ses ventes saisies et ses pertes, elles, partent avec lui par cascade en base.
     /// </summary>
+    /// <exception cref="DomainValidationException">La recette est inconnue ou figure dans des commandes.</exception>
     public async Task<DeleteResult> DeleteAsync(int id)
     {
         await using var db = await factory.CreateDbContextAsync();
@@ -132,6 +136,9 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
         var usedInRecipes = await RecipeNamesUsingAsync(db, id);
         if (usedInRecipes.Count > 0)
             return new DeleteResult(false, usedInRecipes);
+
+        if (await db.OrderLines.AnyAsync(l => l.RecipeId == id))
+            throw new DomainValidationException(DishInOrdersMessage);
 
         // Les lignes de la recette suivent par cascade en base.
         db.Recipes.Remove(recipe);

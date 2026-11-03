@@ -3,6 +3,7 @@ using ChefOS.Core.Ingredients;
 using ChefOS.Core.Receipts;
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
+using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
 using ChefOS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
@@ -112,6 +113,46 @@ public class TenantModelTests(PostgresFixture postgres)
             ContentType = "image/jpeg",
             Data = [1, 2, 3]
         });
+
+        var day = new DateTime(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc);
+        db.SalesEntries.Add(new SalesEntry
+        {
+            RecipeId = recipe.Id,
+            Date = day,
+            Service = ServicePeriod.Midi,
+            Quantity = 12m,
+            UnitPriceInclVat = 14.5m,
+            VatRate = 0.12m,
+            UpdatedAt = day
+        });
+        var order = new Order
+        {
+            Number = 1,
+            CreatedAt = day,
+            Source = OrderSource.Salle,
+            Status = OrderStatus.Nouvelle,
+            StatusChangedAt = day
+        };
+        order.Lines.Add(new OrderLine { RecipeId = recipe.Id, Quantity = 2, UnitPriceInclVat = 14.5m, VatRate = 0.12m });
+        db.Orders.Add(order);
+        db.WasteEntries.Add(new WasteEntry
+        {
+            Date = day,
+            IngredientId = ingredient.Id,
+            Quantity = 250m,
+            Unit = MeasureUnit.G,
+            Reason = WasteReason.Perime,
+            CreatedAt = day
+        });
+        var stockCount = new StockCount { Date = day, Status = StockCountStatus.Brouillon };
+        stockCount.Lines.Add(new StockCountLine
+        {
+            IngredientId = ingredient.Id,
+            Quantity = 2m,
+            Unit = MeasureUnit.Kg,
+            BaseQuantity = 2000m
+        });
+        db.StockCounts.Add(stockCount);
         await db.SaveChangesAsync();
     }
 
