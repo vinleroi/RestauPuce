@@ -1,6 +1,7 @@
 using ChefOS.Back.Components.Shared;
 using ChefOS.Core.Costing;
 using ChefOS.Core.Ingredients;
+using ChefOS.Core.Receipts;
 using ChefOS.Core.Units;
 
 namespace ChefOS.Tests.Back;
@@ -180,6 +181,44 @@ public class UiTests
         foreach (var level in Enum.GetValues<FoodCostLevel>())
             Assert.False(string.IsNullOrEmpty(Ui.FoodCostChipStyleFor(level, 0.35m).Emoji));
     }
+
+    [Theory]
+    [InlineData(0.1, "+10 %")]
+    [InlineData(0.0625, "+6,25 %")]
+    [InlineData(-0.0625, "-6,25 %")]
+    [InlineData(0, "0 %")]
+    [InlineData(0.00001, "0 %")]       // trop petit pour s'afficher : ni « + » ni « -0 »
+    [InlineData(-0.00001, "0 %")]
+    public void SignedPercent_ShowsThePlusSign_AndNeverAMinusZero(double fraction, string expected) =>
+        Assert.Equal(expected, Ui.SignedPercent((decimal)fraction));
+
+    [Theory]
+    [InlineData(0.1, "▲ +10 %")]
+    [InlineData(-0.0625, "▼ -6,25 %")]
+    [InlineData(0, "0 %")]
+    [InlineData(-0.00001, "0 %")]
+    public void VariationText_PutsAnArrowInFrontOfTheVisibleVariation(double fraction, string expected) =>
+        Assert.Equal(expected, Ui.VariationText((decimal)fraction));
+
+    [Theory]
+    [InlineData(ReceiptStatus.Pending, "En attente", "Default")]
+    [InlineData(ReceiptStatus.Extracted, "Lu", "Info")]
+    [InlineData(ReceiptStatus.Failed, "Échec", "Error")]
+    [InlineData(ReceiptStatus.Applied, "Appliqué", "Success")]
+    public void ReceiptStatus_HasAFrenchLabelAndAColour(ReceiptStatus status, string label, string color)
+    {
+        Assert.Equal(label, Ui.ReceiptStatusLabel(status));
+        Assert.Equal(color, Ui.ReceiptStatusColor(status).ToString());
+    }
+
+    [Theory]
+    [InlineData(ReceiptLineIssue.None, "")]
+    [InlineData(ReceiptLineIssue.MissingIngredient, "Ingrédient à choisir")]
+    [InlineData(ReceiptLineIssue.MissingQuantity, "Quantité ou unité manquante")]
+    [InlineData(ReceiptLineIssue.IncompatibleUnit, "Unité incompatible avec l'ingrédient")]
+    [InlineData(ReceiptLineIssue.InvalidTotal, "Montant invalide")]
+    public void ReceiptIssueLabel_IsInFrench(ReceiptLineIssue issue, string expected) =>
+        Assert.Equal(expected, Ui.ReceiptIssueLabel(issue));
 
     private static decimal Invariant(string value) => decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
 }

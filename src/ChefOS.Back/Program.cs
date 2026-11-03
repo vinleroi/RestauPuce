@@ -1,6 +1,7 @@
 using System.Globalization;
 using ChefOS.Back.Components;
 using ChefOS.Back.Components.Account;
+using ChefOS.Back.Receipts;
 using ChefOS.Back.Tenancy;
 using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
@@ -102,5 +103,6 @@ app.MapRazorComponents<App>()
 // Add additional endpoints required by the Identity /Account Razor components.
 app.MapAdditionalIdentityEndpoints();
 app.MapActiveRestaurantEndpoint();
+app.MapReceiptFileEndpoint();
 
 app.Run();

@@ -1,0 +1,21 @@
+/* Le champ de fichier natif reste dans la page (le bouton qui lui sert de libellé l'active, et le clavier l'atteint) mais n'est pas visible. */
+.receipt-upload ::deep .receipt-file-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.receipt-upload ::deep .receipt-file-input:focus-visible + .mud-button-root {
+    outline: 2px solid var(--mud-palette-primary);
+    outline-offset: 2px;
+}
+
+/* Sur ordinateur (souris), « Prendre une photo » ouvrirait le même sélecteur de fichiers que l'autre bouton : on ne le montre que sur écran tactile. */
+@media (hover: hover) and (pointer: fine) {
+    .receipt-camera {
+        display: none;
+    }
+}

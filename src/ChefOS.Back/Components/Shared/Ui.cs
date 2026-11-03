@@ -1,6 +1,7 @@
 using System.Globalization;
 using ChefOS.Core.Costing;
 using ChefOS.Core.Ingredients;
+using ChefOS.Core.Receipts;
 using ChefOS.Core.Units;
 
 namespace ChefOS.Back.Components.Shared;
@@ -27,6 +28,24 @@ public static class Ui
 
     /// <summary>Pourcentage depuis une fraction (0,875 → « 87,5 % »), au plus deux décimales, sans zéro inutile.</summary>
     public static string Percent(decimal fraction) => (fraction * 100m).ToString("0.##", Fr) + " %";
+
+    /// <summary>Pourcentage signé depuis une fraction (0,1 → « +10 % », -0,0625 → « -6,25 % ») ; zéro, ou trop petit pour s'afficher, reste « 0 % ».</summary>
+    public static string SignedPercent(decimal fraction) =>
+        Math.Round(fraction * 100m, 2, MidpointRounding.AwayFromZero) switch
+        {
+            > 0m => "+" + Percent(fraction),
+            0m => Percent(0m),
+            _ => Percent(fraction)
+        };
+
+    /// <summary>Variation d'un prix avec sa flèche : « ▲ +10 % », « ▼ -6,25 % » ; « 0 % » sans variation visible.</summary>
+    public static string VariationText(decimal fraction) =>
+        Math.Round(fraction * 100m, 2, MidpointRounding.AwayFromZero) switch
+        {
+            > 0m => "▲ " + SignedPercent(fraction),
+            < 0m => "▼ " + SignedPercent(fraction),
+            _ => SignedPercent(fraction)
+        };
 
     /// <summary>Prix par unité d'affichage (« 12,50 € / kg »), converti depuis le prix par unité de base ; « — » sans prix.</summary>
     public static string PricePerDisplayUnit(decimal? pricePerBaseUnit, BaseUnit baseUnit) =>
@@ -93,6 +112,36 @@ public static class Ui
         BaseUnit.Milliliter => "Millilitre",
         BaseUnit.Piece => "Pièce",
         _ => throw new ArgumentOutOfRangeException(nameof(baseUnit), baseUnit, null)
+    };
+
+    /// <summary>Statut d'un ticket fournisseur, en français : En attente, Lu, Échec, Appliqué.</summary>
+    public static string ReceiptStatusLabel(ReceiptStatus status) => status switch
+    {
+        ReceiptStatus.Pending => "En attente",
+        ReceiptStatus.Extracted => "Lu",
+        ReceiptStatus.Failed => "Échec",
+        ReceiptStatus.Applied => "Appliqué",
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
+    };
+
+    public static MudBlazor.Color ReceiptStatusColor(ReceiptStatus status) => status switch
+    {
+        ReceiptStatus.Pending => MudBlazor.Color.Default,
+        ReceiptStatus.Extracted => MudBlazor.Color.Info,
+        ReceiptStatus.Failed => MudBlazor.Color.Error,
+        ReceiptStatus.Applied => MudBlazor.Color.Success,
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
+    };
+
+    /// <summary>Problème bloquant d'une ligne de ticket, rédigé pour que le chef sache quoi corriger ; vide quand la ligne est bonne.</summary>
+    public static string ReceiptIssueLabel(ReceiptLineIssue issue) => issue switch
+    {
+        ReceiptLineIssue.None => "",
+        ReceiptLineIssue.MissingIngredient => "Ingrédient à choisir",
+        ReceiptLineIssue.MissingQuantity => "Quantité ou unité manquante",
+        ReceiptLineIssue.IncompatibleUnit => "Unité incompatible avec l'ingrédient",
+        ReceiptLineIssue.InvalidTotal => "Montant invalide",
+        _ => throw new ArgumentOutOfRangeException(nameof(issue), issue, null)
     };
 
     /// <summary>Les 14 allergènes réglementaires de l'UE, un par valeur de l'énumération (hors <c>None</c>).</summary>

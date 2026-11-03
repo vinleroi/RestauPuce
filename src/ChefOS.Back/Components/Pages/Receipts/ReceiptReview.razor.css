@@ -1,0 +1,70 @@
+/* Aperçu du ticket : sous le formulaire sur mobile (hauteur limitée), à gauche et collé en haut sur grand écran. */
+.receipt-preview {
+    max-height: 40vh;
+    overflow: auto;
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: var(--mud-default-borderradius);
+    background-color: var(--mud-palette-background-gray);
+}
+
+.receipt-preview-image {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.receipt-preview-frame {
+    display: block;
+    width: 100%;
+    height: 40vh;
+    border: 0;
+}
+
+@media (min-width: 1280px) {
+    .receipt-preview-wrap {
+        position: sticky;
+        top: 80px;
+    }
+
+    .receipt-preview {
+        max-height: calc(100vh - 140px);
+    }
+
+    .receipt-preview-frame {
+        height: calc(100vh - 140px);
+    }
+}
+
+/* Ligne à corriger : fond et filet rouges (le libellé du problème est écrit dans la ligne, la couleur n'est pas le seul signal). */
+.receipt-line-issue {
+    background-color: var(--mud-palette-error-hover);
+    box-shadow: inset 3px 0 0 var(--mud-palette-error);
+}
+
+.receipt-line-ignored {
+    opacity: 0.55;
+}
+
+/* Variation d'un prix : ▲ rouge au-delà de +5 %, ▼ vert en dessous de -5 %, gris sinon. */
+.receipt-variation {
+    font-size: 0.8125rem;
+    font-weight: 500;
+}
+
+.receipt-variation-up {
+    color: var(--mud-palette-error);
+}
+
+.receipt-variation-down {
+    color: var(--mud-palette-success);
+}
+
+.receipt-variation-flat {
+    color: var(--mud-palette-text-secondary);
+}
+
+/* Tableau des lignes : cellules serrées, pour que les prix tiennent dans la colonne de droite sans défiler. */
+.receipt-lines ::deep th,
+.receipt-lines ::deep td {
+    padding: 4px 6px;
+}

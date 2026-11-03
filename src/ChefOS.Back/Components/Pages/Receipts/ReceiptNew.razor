@@ -1,0 +1,198 @@
+@page "/receipts/new"
+
+@implements IAsyncDisposable
+
+@using ChefOS.Core.Common
+@using ChefOS.Infrastructure.Services
+
+@inject ReceiptService ReceiptService
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+<PageTitle>Scanner un ticket — ChefOS</PageTitle>
+
+<MudButton Href="/receipts" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" Class="mb-2">Tickets</MudButton>
+
+<MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Scanner un ticket</MudText>
+
+<MudPaper Elevation="1" Class="pa-4" Style="max-width: 640px">
+    <MudText Class="mb-4">
+        Photographiez ou choisissez le ticket de caisse ou la facture de votre fournisseur (photo JPEG, PNG, WebP ou PDF, 10 Mo au maximum).
+        Les lignes lues vous seront présentées pour vérification avant toute mise à jour de prix.
+    </MudText>
+
+    @* Deux champs : « capture » ouvre directement l'appareil photo du téléphone, mais empêche alors de choisir un PDF ou une photo déjà prise. *@
+    <div class="receipt-upload d-flex flex-wrap gap-2">
+        <div class="receipt-camera">
+            <InputFile @ref="_cameraInput" id="receipt-camera-input" class="receipt-file-input" accept="@Accept" capture="environment"
+                       disabled="@_busy" OnChange="@(e => ChooseAsync(e, _cameraInput))" />
+            <MudButton HtmlTag="label" for="receipt-camera-input" Variant="Variant.Filled" Color="Color.Primary" Disabled="_busy"
+                       StartIcon="@Icons.Material.Filled.PhotoCamera">
+                @LabelOf(_cameraInput, "Prendre une photo")
+            </MudButton>
+        </div>
+        <div>
+            <InputFile @ref="_fileInput" id="receipt-file-input" class="receipt-file-input" accept="@Accept"
+                       disabled="@_busy" OnChange="@(e => ChooseAsync(e, _fileInput))" />
+            <MudButton HtmlTag="label" for="receipt-file-input" Variant="Variant.Filled" Color="Color.Primary" Disabled="_busy"
+                       StartIcon="@Icons.Material.Filled.UploadFile">
+                @LabelOf(_fileInput, "Choisir un fichier")
+            </MudButton>
+        </div>
+    </div>
+
+    @if (_busy)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mt-4" />
+        <MudText Typo="Typo.caption" Class="mt-2" Style="color: var(--mud-palette-text-secondary)">
+            La lecture peut prendre jusqu'à une minute. Restez sur cette page : en la quittant, la lecture est interrompue et pourra être relancée depuis la liste des tickets.
+        </MudText>
+    }
+</MudPaper>
+
+@code {
+    private const string Accept = "image/jpeg,image/png,image/webp,application/pdf";
+
+    // Même plafond que ReceiptService : le refuser ici évite de transférer un fichier que le serveur rejetterait.
+    private const long MaxUploadBytes = 10 * 1024 * 1024;
+
+    private const string UploadingStatus = "Envoi du ticket…";
+    private const string ReadingStatus = "Lecture du ticket…";
+
+    private readonly CancellationTokenSource _cancellation = new();
+
+    private InputFile? _cameraInput;
+    private InputFile? _fileInput;
+    private IJSObjectReference? _module;
+    private InputFile? _active;
+    private bool _busy;
+
+    private string Status { get; set; } = UploadingStatus;
+
+    // Seul le bouton utilisé annonce l'avancement ; l'autre reste grisé sous son libellé habituel.
+    private string LabelOf(InputFile? input, string idle) => _busy && _active == input ? Status : idle;
+
+    /// <summary>Fichier prêt à être enregistré : octets, nom et type (après redimensionnement d'une image).</summary>
+    private sealed record Upload(byte[] Content, string FileName, string ContentType);
+
+    /// <summary>Ce que renvoie <c>prepare</c> du module JavaScript ; <c>Data</c> est un flux, pas un message JSON.</summary>
+    private sealed record PreparedFile(string Name, string ContentType, long Length, IJSStreamReference Data);
+
+    private async Task ChooseAsync(InputFileChangeEventArgs e, InputFile? input)
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        _active = input;
+        Status = UploadingStatus;
+        var token = _cancellation.Token;
+
+        try
+        {
+            var upload = await ReadUploadAsync(e.File, input, token);
+            var id = await ReceiptService.CreateAsync(upload.Content, upload.FileName, upload.ContentType);
+
+            // La lecture peut durer plusieurs minutes. Quitter la page l'interrompt (jeton annulé à la libération du composant) :
+            // le ticket reste « en attente » et se relance depuis son écran.
+            Status = ReadingStatus;
+            StateHasChanged();
+            await ReceiptService.ExtractAsync(id, token);
+
+            Navigation.NavigateTo($"/receipts/{id}");
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Page quittée : rien à afficher.
+            return;
+        }
+        catch (DomainValidationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+            await ResetInputAsync(input);
+        }
+        catch (IOException)
+        {
+            // OpenReadStream dépasse la taille permise.
+            Snackbar.Add("Fichier trop volumineux (10 Mo maximum)", Severity.Error);
+            await ResetInputAsync(input);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // Image : redimensionnée dans le navigateur (voir wwwroot/js/receipt-upload.js) ; PDF : tel quel. Si le module JavaScript est
+    // inutilisable, on lit le fichier directement par le canal de InputFile.
+    private async Task<Upload> ReadUploadAsync(IBrowserFile file, InputFile? input, CancellationToken token)
+    {
+        if (input?.Element is { } element)
+        {
+            PreparedFile? prepared = null;
+            try
+            {
+                _module ??= await JS.InvokeAsync<IJSObjectReference>("import", token, "./js/receipt-upload.js");
+                prepared = await _module.InvokeAsync<PreparedFile?>("prepare", token, element);
+            }
+            catch (JSException)
+            {
+                // Repli ci-dessous.
+            }
+
+            if (prepared is not null)
+            {
+                await using var data = prepared.Data;
+                if (prepared.Length > MaxUploadBytes)
+                    throw new DomainValidationException("Fichier trop volumineux (10 Mo maximum)");
+
+                await using var stream = await data.OpenReadStreamAsync(MaxUploadBytes, token);
+                return new Upload(await ReadAllAsync(stream, token), prepared.Name, prepared.ContentType);
+            }
+        }
+
+        await using var original = file.OpenReadStream(MaxUploadBytes, token);
+        return new Upload(await ReadAllAsync(original, token), file.Name, file.ContentType);
+    }
+
+    private static async Task<byte[]> ReadAllAsync(Stream stream, CancellationToken token)
+    {
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer, token);
+        return buffer.ToArray();
+    }
+
+    private async Task ResetInputAsync(InputFile? input)
+    {
+        if (_module is null || input?.Element is not { } element)
+            return;
+
+        try
+        {
+            await _module.InvokeVoidAsync("reset", element);
+        }
+        catch (JSException)
+        {
+            // Sans importance : le chef pourra choisir un autre fichier.
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _cancellation.CancelAsync();
+        _cancellation.Dispose();
+
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Circuit déjà fermé : le module est libéré avec lui.
+            }
+        }
+    }
+}

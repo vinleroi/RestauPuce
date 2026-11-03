@@ -1,0 +1,650 @@
+@page "/receipts/{Id:int}"
+
+@implements IDisposable
+
+@using ChefOS.Back.Receipts
+@using ChefOS.Core.Common
+@using ChefOS.Core.Ingredients
+@using ChefOS.Core.Receipts
+@using ChefOS.Core.Units
+@using ChefOS.Infrastructure.Services
+
+@inject ReceiptService ReceiptService
+@inject IngredientService IngredientService
+@inject SupplierService SupplierService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>@(_notFound ? "Élément introuvable" : "Ticket") — ChefOS</PageTitle>
+
+<MudButton Href="/receipts" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" Class="mb-2">Tickets</MudButton>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_notFound || _receipt is null)
+{
+    <MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Élément introuvable</MudText>
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        Ce ticket n'existe pas, ou il n'appartient pas au restaurant actif.
+    </MudAlert>
+    <MudButton Href="/receipts" Variant="Variant.Filled" Color="Color.Primary">Retour aux tickets</MudButton>
+}
+else
+{
+    // Recalculé à chaque rendu, donc après chaque modification du formulaire : uniquement en mémoire, jamais de lecture en base.
+    var evaluation = _form.Evaluate(_ingredientsById);
+    var blocking = ReceiptReviewForm.BlockingIssueCount(evaluation);
+    var applied = _receipt.Status == ReceiptStatus.Applied;
+    var needsReading = _receipt.Status is ReceiptStatus.Pending or ReceiptStatus.Failed;
+
+    <div class="d-flex align-center flex-wrap gap-2 mb-4">
+        <MudText Typo="Typo.h4" HtmlTag="h1">Ticket du @TicketDate</MudText>
+        <MudChip T="string" Size="Size.Small" Color="@Ui.ReceiptStatusColor(_receipt.Status)" Variant="Variant.Outlined">
+            @Ui.ReceiptStatusLabel(_receipt.Status)
+        </MudChip>
+    </div>
+
+    @if (_applyResult is { } result)
+    {
+        <MudAlert Severity="Severity.Success" Class="mb-4">
+            <MudText Typo="Typo.subtitle1">
+                @(result.Prices.Count == 1 ? "Prix mis à jour pour 1 ingrédient" : $"Prix mis à jour pour {result.Prices.Count} ingrédients")
+            </MudText>
+            <ul class="my-1 pl-4">
+                @foreach (var price in result.Prices)
+                {
+                    var variation = ReceiptReviewForm.Variation(price.OldPricePerBaseUnit, price.NewPricePerBaseUnit);
+                    <li>
+                        <MudLink Href="@($"/ingredients/{price.IngredientId}")">@price.IngredientName</MudLink> :
+                        @Ui.PricePerDisplayUnit(price.OldPricePerBaseUnit, price.BaseUnit) → @Ui.PricePerDisplayUnit(price.NewPricePerBaseUnit, price.BaseUnit)
+                        @if (variation is { } change)
+                        {
+                            <span class="receipt-variation ml-2 @VariationClass(change)">@Ui.VariationText(change)</span>
+                        }
+                        else
+                        {
+                            <span class="ml-2" style="@Muted">(premier prix)</span>
+                        }
+                        @if (!price.ReplacedCurrent)
+                        {
+                            <span style="@Muted"> — historique seulement (ticket plus ancien)</span>
+                        }
+                    </li>
+                }
+            </ul>
+        </MudAlert>
+    }
+
+    @if (applied)
+    {
+        <MudAlert Severity="Severity.Info" Class="mb-4">
+            Ticket appliqué@(_receipt.AppliedAt is { } appliedAt ? $" le {appliedAt.ToLocalTime().ToString("d", Ui.Fr)}" : ""). Il n'est plus modifiable.
+        </MudAlert>
+    }
+    else if (needsReading)
+    {
+        var failed = _receipt.Status == ReceiptStatus.Failed;
+        <MudAlert Severity="@(failed ? Severity.Error : Severity.Info)" Class="mb-4">
+            <MudText Typo="Typo.subtitle1">
+                @(_reading ? "Lecture du ticket…" : failed ? "La lecture du ticket a échoué" : "Lecture en cours ou interrompue")
+            </MudText>
+            @if (failed && !string.IsNullOrWhiteSpace(_receipt.ErrorMessage))
+            {
+                <MudText>@_receipt.ErrorMessage</MudText>
+            }
+            <MudText Class="mb-2">Vous pouvez relancer la lecture ou saisir les lignes à la main ci-dessous.</MudText>
+            <MudButton Variant="Variant.Filled" Color="@(failed ? Color.Error : Color.Info)" StartIcon="@Icons.Material.Filled.Refresh"
+                       OnClick="RetryReadAsync" Disabled="_busy">
+                @(_reading ? "Lecture du ticket…" : "Relancer la lecture")
+            </MudButton>
+        </MudAlert>
+    }
+
+    <MudGrid Spacing="3">
+        <MudItem xs="12" lg="4">
+            <div class="receipt-preview-wrap">
+                @if (_fileName is null)
+                {
+                    <MudText Style="@Muted">Fichier du ticket introuvable.</MudText>
+                }
+                else
+                {
+                    <div class="receipt-preview">
+                        @if (_isPdf)
+                        {
+                            <iframe class="receipt-preview-frame" src="@FileUrl" title="Aperçu du ticket (PDF)"></iframe>
+                        }
+                        else
+                        {
+                            <img class="receipt-preview-image" src="@FileUrl" alt="Photo du ticket @_fileName" />
+                        }
+                    </div>
+                    <MudLink Href="@FileUrl" Target="_blank" Typo="Typo.caption">Ouvrir le fichier dans un nouvel onglet</MudLink>
+                }
+            </div>
+        </MudItem>
+
+        <MudItem xs="12" lg="8">
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" sm="6">
+                        <MudSelect T="int?" @bind-Value="_form.SupplierId" Label="Fournisseur" Placeholder="Aucun" Clearable="true"
+                                   ToStringFunc="SupplierName" ReadOnly="applied" Variant="Variant.Outlined" Margin="Margin.Dense">
+                            @foreach (var supplier in _suppliers)
+                            {
+                                <MudSelectItem T="int?" Value="@((int?)supplier.Id)">@supplier.Name</MudSelectItem>
+                            }
+                        </MudSelect>
+                        @if (!applied && _form.SupplierId is null && !string.IsNullOrWhiteSpace(_receipt.SupplierNameRaw))
+                        {
+                            <div class="d-flex align-center flex-wrap gap-2 mt-1">
+                                <MudText Typo="Typo.caption" Style="@Muted">Lu sur le ticket : « @_receipt.SupplierNameRaw »</MudText>
+                                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add"
+                                           OnClick="CreateSupplierAsync" Disabled="_busy">
+                                    Créer « @_receipt.SupplierNameRaw »
+                                </MudButton>
+                            </div>
+                        }
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <MudDatePicker @bind-Date="_form.ReceiptDate" Label="Date du ticket" Culture="Ui.Fr" DateFormat="dd/MM/yyyy"
+                                       Editable="true" Clearable="true" ReadOnly="applied" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <MudTextField T="string" @bind-Value="_form.InvoiceNumber" Label="N° de facture" ReadOnly="applied"
+                                      Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <div class="d-flex align-center flex-wrap gap-2" style="min-height: 40px">
+                            <MudText>Total lu : <strong>@(_receipt.Total is { } total ? Ui.Money(total) : "—")</strong></MudText>
+                            @if (_receipt.Total is not null)
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                         title="@(_receipt.AmountsIncludeVat ? "Les montants du ticket incluent la TVA" : "Les montants du ticket sont hors TVA")">
+                                    @(_receipt.AmountsIncludeVat ? "TTC" : "HT")
+                                </MudChip>
+                            }
+                        </div>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudText Typo="Typo.h6" GutterBottom="true">Lignes</MudText>
+
+                @if (_form.Lines.Count == 0)
+                {
+                    <MudText Class="mb-3" Style="@Muted">
+                        @(applied ? "Aucune ligne." : "Aucune ligne : ajoutez les lignes du ticket à la main.")
+                    </MudText>
+                }
+                else
+                {
+                    <div class="receipt-lines mb-3">
+                    <MudSimpleTable Dense="true" Elevation="0">
+                        <thead>
+                            <tr>
+                                <th>Libellé du ticket</th>
+                                <th>Quantité</th>
+                                <th>Total HT</th>
+                                <th>Ingrédient</th>
+                                <th>@(applied ? "Prix appliqué" : "Prix")</th>
+                                @if (!applied)
+                                {
+                                    <th>Ignorer</th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var (row, line) in _form.Lines.Index())
+                            {
+                                var result = evaluation[row];
+                                var number = row + 1;
+                                <tr @key="line" class="@RowClass(line, result)">
+                                    <td style="min-width: 115px">
+                                        <MudTextField T="string" @bind-Value="line.RawLabel" ReadOnly="applied" Variant="Variant.Text" Margin="Margin.Dense"
+                                                      Lines="1" Sizing="InputSizing.Auto" MaxLines="4"
+                                                      aria-label="@($"Libellé de la ligne {number}")" />
+                                    </td>
+                                    <td style="min-width: 130px">
+                                        <div class="d-flex gap-1">
+                                            <MudNumericField T="decimal?" @bind-Value="line.Quantity" Culture="Ui.Fr" Format="0.####" InputMode="DecimalInput" Immediate="true"
+                                                             HideSpinButtons="true" ReadOnly="applied" Variant="Variant.Text" Margin="Margin.Dense"
+                                                             aria-label="@($"Quantité de la ligne {number}")" />
+                                            <MudSelect T="MeasureUnit?" @bind-Value="line.Unit" ToStringFunc="UnitLabel" ReadOnly="applied"
+                                                       Variant="Variant.Text" Margin="Margin.Dense" Dense="true" Style="min-width: 64px"
+                                                       aria-label="@($"Unité de la ligne {number}")">
+                                                @foreach (var unit in Enum.GetValues<MeasureUnit>())
+                                                {
+                                                    <MudSelectItem T="MeasureUnit?" Value="@((MeasureUnit?)unit)">@Ui.MeasureUnitLabel(unit)</MudSelectItem>
+                                                }
+                                            </MudSelect>
+                                        </div>
+                                    </td>
+                                    <td style="min-width: 100px">
+                                        <MudNumericField T="decimal?" @bind-Value="line.LineTotalExclVat" Culture="Ui.Fr" Format="0.00" InputMode="DecimalInput" Immediate="true"
+                                                         Adornment="Adornment.End" AdornmentText="€" HideSpinButtons="true" ReadOnly="applied"
+                                                         Variant="Variant.Text" Margin="Margin.Dense"
+                                                         aria-label="@($"Total hors TVA de la ligne {number}")" />
+                                        @if (!applied && line.VatToCheck)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined"
+                                                     title="Le taux de TVA n'a pas été lu : vérifiez que ce total est bien hors TVA">TVA à vérifier</MudChip>
+                                        }
+                                    </td>
+                                    <td style="min-width: 165px">
+                                        <MudAutocomplete T="Ingredient" Value="IngredientOf(line)" ValueChanged="@((Ingredient? ingredient) => line.IngredientId = ingredient?.Id)"
+                                                         SearchFunc="SearchIngredientsAsync" ToStringFunc="IngredientName" Placeholder="Rechercher…"
+                                                         OpenOnFocus="true" ResetValueOnEmptyText="true" MaxItems="30" ReadOnly="applied"
+                                                         Variant="Variant.Text" Margin="Margin.Dense" Dense="true"
+                                                         aria-label="@($"Ingrédient de la ligne {number}")">
+                                            <NoItemsTemplate>
+                                                <MudText Class="pa-3" Style="@Muted">Aucun résultat</MudText>
+                                            </NoItemsTemplate>
+                                        </MudAutocomplete>
+                                        @if (!applied && line.IngredientId is not null && line.MatchSource is { } source)
+                                        {
+                                            @if (source == MatchSource.NameMatch)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled"
+                                                         title="Ingrédient proposé d'après le nom du libellé : vérifiez-le">à confirmer</MudChip>
+                                            }
+                                            else
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined"
+                                                         title="Ingrédient mémorisé lors d'un ticket précédent">mémorisé</MudChip>
+                                            }
+                                        }
+                                    </td>
+                                    <td style="min-width: 130px">
+                                        @if (applied)
+                                        {
+                                            @AppliedPriceText(line)
+                                        }
+                                        else if (line.IsIgnored)
+                                        {
+                                            <span style="@Muted">Ignorée</span>
+                                        }
+                                        else if (result.Issue != ReceiptLineIssue.None)
+                                        {
+                                            <div class="mud-error-text" style="font-size: 0.8125rem; white-space: normal">@Ui.ReceiptIssueLabel(result.Issue)</div>
+                                        }
+                                        else if (result.BaseUnit is { } unit)
+                                        {
+                                            <div style="white-space: nowrap">@Ui.PricePerDisplayUnit(result.PricePerBaseUnit, unit)</div>
+                                            <div style="@Muted; font-size: 0.75rem">ancien : @Ui.PricePerDisplayUnit(result.OldPricePerBaseUnit, unit)</div>
+                                            @if (result.Variation is { } variation)
+                                            {
+                                                <div class="receipt-variation @VariationClass(variation)" style="white-space: nowrap"
+                                                     title="@VariationTitle(variation)">@Ui.VariationText(variation)</div>
+                                            }
+                                        }
+                                    </td>
+                                    @if (!applied)
+                                    {
+                                        <td style="white-space: nowrap">
+                                            <MudCheckBox T="bool" @bind-Value="line.IsIgnored" Size="Size.Small" Color="Color.Primary" Dense="true"
+                                                         aria-label="@($"Ignorer la ligne {number}")" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => RemoveLine(line))"
+                                                           title="Supprimer la ligne" aria-label="@($"Supprimer la ligne {number}")" />
+                                        </td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                    </div>
+                }
+
+                @if (!applied)
+                {
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="AddLine">Ajouter une ligne</MudButton>
+                }
+            </MudPaper>
+
+            @if (!applied)
+            {
+                <MudPaper Elevation="1" Class="pa-4">
+                    @if (blocking > 0)
+                    {
+                        <MudText Class="mb-3 mud-error-text">
+                            @(blocking == 1 ? "1 ligne est à corriger avant de valider." : $"{blocking} lignes sont à corriger avant de valider.")
+                        </MudText>
+                    }
+                    <div class="d-flex flex-wrap gap-2">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Check" OnClick="ApplyAsync" Disabled="_busy">
+                            Valider et mettre à jour les prix
+                        </MudButton>
+                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveAsync" Disabled="_busy">Enregistrer</MudButton>
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" OnClick="DeleteAsync" Disabled="_busy">
+                            Supprimer le ticket
+                        </MudButton>
+                    </div>
+                </MudPaper>
+            }
+        </MudItem>
+    </MudGrid>
+}
+
+@code {
+    [Parameter]
+    public int Id { get; set; }
+
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    // Clavier à virgule sur mobile (la valeur par défaut de MudNumericField est « numeric », sans séparateur décimal sur iOS).
+    private const InputMode DecimalInput = InputMode.@decimal;
+
+    private readonly CancellationTokenSource _cancellation = new();
+
+    private bool _loading = true;
+    private bool _notFound;
+    private bool _busy;
+    private bool _reading;
+    private bool _hasLoaded;
+    private int _loadedId;
+
+    private Receipt? _receipt;
+    private ReceiptReviewForm _form = ReceiptReviewForm.From(new Receipt());
+    private ApplyResult? _applyResult;
+
+    // Chargés avec le ticket, puis jamais relus pendant la saisie : chaque modification est chiffrée sur ces données, sans aller en base.
+    private IReadOnlyList<Supplier> _suppliers = [];
+    private Dictionary<int, Ingredient> _ingredientsById = [];
+    private IReadOnlyList<Ingredient> _candidates = [];
+    private Dictionary<int, decimal?> _appliedPrices = [];
+
+    // Le fichier ne change pas : on n'en lit le type qu'une fois par ticket.
+    private int? _fileLoadedFor;
+    private string? _fileName;
+    private bool _isPdf;
+
+    private string FileUrl => ReceiptFileEndpoint.RouteFor(Id);
+
+    // Le jour du ticket est un jour de calendrier (minuit UTC) : il ne se convertit pas en heure locale.
+    private string TicketDate =>
+        (_form.ReceiptDate ?? _receipt?.CreatedAt.ToLocalTime())?.ToString("d", Ui.Fr) ?? "";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Un autre ticket (même composant, autre identifiant) se charge à neuf.
+        if (_hasLoaded && _loadedId == Id)
+            return;
+
+        _hasLoaded = true;
+        _loadedId = Id;
+        _applyResult = null;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync(bool showLoading = true)
+    {
+        if (showLoading)
+            _loading = true;
+
+        try
+        {
+            var receipt = await ReceiptService.GetAsync(Id);
+            _notFound = receipt is null;
+            _receipt = receipt;
+            if (receipt is null)
+                return;
+
+            _suppliers = await SupplierService.ListAsync();
+
+            // Tous les ingrédients, archivés compris : une ligne sur un ingrédient archivé garde son nom ; seuls les autres sont proposés.
+            var ingredients = await IngredientService.ListAsync(includeArchived: true);
+            _ingredientsById = ingredients.ToDictionary(i => i.Id);
+            _candidates = ingredients.Where(i => !i.IsArchived).OrderBy(i => i.Name, StringComparer.InvariantCultureIgnoreCase).ToList();
+            _appliedPrices = receipt.Lines.ToDictionary(l => l.Id, l => l.AppliedPricePerBaseUnit);
+
+            if (_fileLoadedFor != Id)
+            {
+                var file = await ReceiptService.GetFileAsync(Id);
+                _fileName = file?.FileName;
+                _isPdf = file is not null && string.Equals(file.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase);
+                _fileLoadedFor = Id;
+            }
+
+            _form = ReceiptReviewForm.From(receipt);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string SupplierName(int? supplierId) => _suppliers.FirstOrDefault(s => s.Id == supplierId)?.Name ?? "";
+
+    private static string UnitLabel(MeasureUnit? unit) => unit is { } value ? Ui.MeasureUnitLabel(value) : "";
+
+    private Ingredient? IngredientOf(ReceiptReviewLine line) =>
+        line.IngredientId is { } id ? _ingredientsById.GetValueOrDefault(id) : null;
+
+    private static string? IngredientName(Ingredient? ingredient) => ingredient?.Name;
+
+    private Task<IEnumerable<Ingredient>> SearchIngredientsAsync(string? text, CancellationToken cancellationToken) =>
+        Task.FromResult(_candidates.Where(ingredient => Ui.ContainsText(ingredient.Name, text)));
+
+    private static string RowClass(ReceiptReviewLine line, ReceiptLineEvaluation result) =>
+        line.IsIgnored ? "receipt-line-ignored"
+        : result.Issue != ReceiptLineIssue.None ? "receipt-line-issue"
+        : "";
+
+    // ▲ rouge au-delà de +5 %, ▼ vert en dessous de -5 %, gris sinon.
+    private static string VariationClass(decimal variation) => ReceiptReviewForm.LevelOf(variation) switch
+    {
+        VariationLevel.Increase => "receipt-variation-up",
+        VariationLevel.Decrease => "receipt-variation-down",
+        _ => "receipt-variation-flat"
+    };
+
+    private static string VariationTitle(decimal variation) => ReceiptReviewForm.LevelOf(variation) switch
+    {
+        VariationLevel.Increase => "Hausse de plus de 5 % par rapport au prix actuel",
+        VariationLevel.Decrease => "Baisse de plus de 5 % par rapport au prix actuel",
+        _ => "Variation de 5 % ou moins par rapport au prix actuel"
+    };
+
+    // Ticket appliqué : le prix retenu pour la ligne (moyenne pondérée si l'ingrédient apparaît sur plusieurs lignes).
+    private string AppliedPriceText(ReceiptReviewLine line)
+    {
+        if (line.IsIgnored)
+            return "Ignorée";
+
+        if (line.Id is not { } lineId || !_appliedPrices.TryGetValue(lineId, out var price) || IngredientOf(line) is not { } ingredient)
+            return "—";
+
+        return Ui.PricePerDisplayUnit(price, ingredient.BaseUnit);
+    }
+
+    private void AddLine() => _form.Lines.Add(new ReceiptReviewLine());
+
+    private void RemoveLine(ReceiptReviewLine line) => _form.Lines.Remove(line);
+
+    private async Task SaveAsync()
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await ReceiptService.SaveDraftAsync(_form.ToDraftInput());
+            Snackbar.Add("Ticket enregistré", Severity.Success);
+            await LoadAsync(showLoading: false);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // Enregistre le brouillon puis applique le ticket. Un message du service (il nomme la ligne en cause) s'affiche tel quel.
+    private async Task ApplyAsync()
+    {
+        if (_busy)
+            return;
+
+        if (_form.ActiveLineCount == 0)
+        {
+            Snackbar.Add("Aucune ligne à appliquer : ajoutez une ligne ou décochez « Ignorer ».", Severity.Warning);
+            return;
+        }
+
+        _busy = true;
+        var saved = false;
+        try
+        {
+            await ReceiptService.SaveDraftAsync(_form.ToDraftInput());
+            saved = true;
+
+            _applyResult = await ReceiptService.ApplyAsync(Id);
+            Snackbar.Add("Prix mis à jour", Severity.Success);
+            await LoadAsync(showLoading: false);
+            await ScrollToTopAsync();
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+
+            // Le brouillon est enregistré : on repart de ce qui est en base (les lignes ajoutées à la main y ont leur identifiant).
+            // Sans cela, une saisie qui n'a pas pu être enregistrée serait perdue.
+            if (saved)
+                await LoadAsync(showLoading: false);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CreateSupplierAsync()
+    {
+        if (_busy || _receipt is null)
+            return;
+
+        _busy = true;
+        try
+        {
+            var supplier = await SupplierService.SaveAsync(new SupplierInput(null, _receipt.SupplierNameRaw, null, null, null));
+            _suppliers = await SupplierService.ListAsync();
+            _form.SupplierId = supplier.Id;
+
+            await ReceiptService.SaveDraftAsync(_form.ToDraftInput());
+            Snackbar.Add($"Fournisseur « {supplier.Name} » créé", Severity.Success);
+            await LoadAsync(showLoading: false);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // Relit le fichier avec le lecteur. Les lignes lues remplacent celles de l'écran : on prévient si le chef en a saisi.
+    private async Task RetryReadAsync()
+    {
+        if (_busy)
+            return;
+
+        if (_form.Lines.Count > 0)
+        {
+            var confirmed = await DialogService.ShowMessageBoxAsync(
+                "Relancer la lecture",
+                "La lecture remplacera les lignes actuellement saisies. Continuer ?",
+                yesText: "Relancer",
+                cancelText: "Annuler");
+
+            if (confirmed != true)
+                return;
+        }
+
+        _busy = true;
+        _reading = true;
+        var token = _cancellation.Token;
+        try
+        {
+            await ReceiptService.ExtractAsync(Id, token);
+            await LoadAsync(showLoading: false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Page quittée : le ticket reste tel quel.
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+            _reading = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_busy)
+            return;
+
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Supprimer le ticket",
+            "Supprimer définitivement ce ticket, ses lignes et son fichier ? Les prix déjà enregistrés ne sont pas modifiés.",
+            yesText: "Supprimer",
+            cancelText: "Annuler");
+
+        if (confirmed != true)
+            return;
+
+        _busy = true;
+        try
+        {
+            await ReceiptService.DeleteAsync(Id);
+            Snackbar.Add("Ticket supprimé", Severity.Success);
+            Navigation.NavigateTo("/receipts");
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // Le récapitulatif est en haut de page : le chef vient de cliquer tout en bas.
+    private async Task ScrollToTopAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("window.scrollTo", 0, 0);
+        }
+        catch (JSException)
+        {
+            // Sans importance : le récapitulatif reste affiché.
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        _cancellation.Cancel();
+        _cancellation.Dispose();
+    }
+}

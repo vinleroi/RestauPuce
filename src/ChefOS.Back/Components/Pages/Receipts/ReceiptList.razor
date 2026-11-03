@@ -1,0 +1,61 @@
+@page "/receipts"
+
+@using ChefOS.Infrastructure.Services
+
+@inject ReceiptService ReceiptService
+
+<PageTitle>Tickets — ChefOS</PageTitle>
+
+<div class="d-flex align-center flex-wrap gap-2 mb-4">
+    <MudText Typo="Typo.h4" HtmlTag="h1" Class="flex-grow-1">Tickets</MudText>
+    <MudButton Href="/receipts/new" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.DocumentScanner">
+        Scanner un ticket
+    </MudButton>
+</div>
+
+<MudTable T="ReceiptSummary" Items="_receipts" Hover="true" Dense="true" Loading="_loading" Elevation="1">
+    <HeaderContent>
+        <MudTh>Date</MudTh>
+        <MudTh>Fournisseur</MudTh>
+        <MudTh Style="text-align: right">Total</MudTh>
+        <MudTh Style="text-align: right">Lignes</MudTh>
+        <MudTh>Statut</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd DataLabel="Date" Style="white-space: nowrap">
+            <MudLink Href="@($"/receipts/{context.Id}")">@DateText(context)</MudLink>
+        </MudTd>
+        <MudTd DataLabel="Fournisseur">@(string.IsNullOrWhiteSpace(context.SupplierName) ? "—" : context.SupplierName)</MudTd>
+        <MudTd DataLabel="Total" Style="text-align: right; white-space: nowrap">@(context.Total is { } total ? Ui.Money(total) : "—")</MudTd>
+        <MudTd DataLabel="Lignes" Style="text-align: right">@context.LineCount</MudTd>
+        <MudTd DataLabel="Statut">
+            <MudChip T="string" Size="Size.Small" Color="@Ui.ReceiptStatusColor(context.Status)" Variant="Variant.Outlined">
+                @Ui.ReceiptStatusLabel(context.Status)
+            </MudChip>
+        </MudTd>
+    </RowTemplate>
+    <NoRecordsContent>
+        <MudText Class="pa-4">Aucun ticket pour le moment. Scannez un ticket de fournisseur pour mettre vos prix à jour.</MudText>
+    </NoRecordsContent>
+</MudTable>
+
+@code {
+    private IReadOnlyList<ReceiptSummary> _receipts = [];
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _receipts = await ReceiptService.ListAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // Le jour du ticket est un jour de calendrier (minuit UTC) : il ne se convertit pas en heure locale. Sans date lue, on affiche le jour du téléversement.
+    private static string DateText(ReceiptSummary receipt) =>
+        (receipt.ReceiptDate ?? receipt.CreatedAt.ToLocalTime()).ToString("d", Ui.Fr);
+}
