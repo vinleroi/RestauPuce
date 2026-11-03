@@ -20,6 +20,8 @@ public class ReceiptLine : ITenantScoped
     /// <summary>Vrai quand le ticket est en TTC et que le taux de TVA de la ligne est inconnu : le prix hors TVA reste à confirmer.</summary>
     public bool VatToCheck { get; set; }
     public int? IngredientId { get; set; }
+    /// <summary>Origine de l'ingrédient proposé ; null quand il a été choisi à la main ou qu'il n'y en a pas.</summary>
+    public MatchSource? MatchSource { get; set; }
     public bool IsIgnored { get; set; }
     public decimal? AppliedPricePerBaseUnit { get; set; }
 }

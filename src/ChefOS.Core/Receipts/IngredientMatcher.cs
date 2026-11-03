@@ -7,12 +7,20 @@ public static class IngredientMatcher
     private const double MinimumSimilarity = 0.5;
     private const int MinimumTokenLength = 2;
 
+    // Mots vides français : ils ne disent rien de l'ingrédient (« Filet DE bœuf »).
+    private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
+    {
+        "A", "AU", "AUX", "DE", "DES", "DU", "EN", "ET", "LA", "LE", "LES"
+    };
+
     /// <summary>
-    /// Ingrédient proposé pour un libellé de ticket : d'abord un alias du même fournisseur, puis un alias valable pour tous les fournisseurs
-    /// (ces alias comparent le libellé normalisé), enfin l'ingrédient non archivé le plus proche par nom (similarité ≥ 0.5, égalité → plus petit id).
+    /// Ingrédient proposé pour un libellé de ticket, avec l'origine de la proposition : d'abord un alias du même fournisseur
+    /// (<see cref="MatchSource.SupplierAlias"/>), puis un alias valable pour tous les fournisseurs (<see cref="MatchSource.GlobalAlias"/>) ;
+    /// ces alias comparent le libellé normalisé. Enfin, l'ingrédient non archivé le plus proche par nom (<see cref="MatchSource.NameMatch"/>) :
+    /// similarité ≥ 0.5, départagée par le plus de mots communs, puis le moins de mots dans le nom de l'ingrédient (le plus précis), puis le plus petit id.
     /// Un alias qui pointe vers un ingrédient archivé ou absent de <paramref name="ingredients"/> est ignoré. Renvoie null sans proposition.
     /// </summary>
-    public static int? Suggest(string rawLabel, int? supplierId, IReadOnlyList<SupplierAlias> aliases, IReadOnlyList<Ingredient> ingredients)
+    public static IngredientSuggestion? Suggest(string rawLabel, int? supplierId, IReadOnlyList<SupplierAlias> aliases, IReadOnlyList<Ingredient> ingredients)
     {
         var normalized = LabelNormalizer.Normalize(rawLabel);
         if (normalized.Length == 0)
@@ -25,54 +33,50 @@ public static class IngredientMatcher
                 active.Add(ingredient.Id);
         }
 
-        if (supplierId is { } supplier)
-        {
-            var bySupplier = FindAlias(aliases, normalized, supplier, active);
-            if (bySupplier is not null)
-                return bySupplier;
-        }
+        if (supplierId is { } supplier
+            && FindAlias(aliases, normalized, supplier, active) is { } bySupplier)
+            return new IngredientSuggestion(bySupplier, MatchSource.SupplierAlias);
 
-        var global = FindAlias(aliases, normalized, null, active);
-        if (global is not null)
-            return global;
+        if (FindAlias(aliases, normalized, null, active) is { } global)
+            return new IngredientSuggestion(global, MatchSource.GlobalAlias);
 
-        int? best = null;
-        var bestScore = 0.0;
-        foreach (var ingredient in ingredients)
-        {
-            if (ingredient.IsArchived)
-                continue;
-
-            var score = Similarity(rawLabel, ingredient.Name);
-            if (score < MinimumSimilarity)
-                continue;
-
-            if (score > bestScore || (score == bestScore && ingredient.Id < best))
+        var labelTokens = Tokens(rawLabel);
+        var best = ingredients
+            .Where(ingredient => !ingredient.IsArchived)
+            .Select(ingredient =>
             {
-                best = ingredient.Id;
-                bestScore = score;
-            }
-        }
+                var tokens = Tokens(ingredient.Name);
+                var (score, common) = Compare(labelTokens, tokens);
+                return (ingredient.Id, Score: score, Common: common, TokenCount: tokens.Count);
+            })
+            .Where(candidate => candidate.Score >= MinimumSimilarity)
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenByDescending(candidate => candidate.Common)
+            .ThenBy(candidate => candidate.TokenCount)
+            .ThenBy(candidate => candidate.Id)
+            .Select(candidate => (int?)candidate.Id)
+            .FirstOrDefault();
 
-        return best;
+        return best is { } id ? new IngredientSuggestion(id, MatchSource.NameMatch) : null;
     }
 
     /// <summary>
     /// Part des mots du plus court des deux libellés qui se retrouvent dans l'autre, de 0 à 1. Mots = suites de [A-Z0-9] après normalisation,
-    /// de 2 caractères ou plus, sans doublons. Vaut 0 quand l'un des deux libellés n'a aucun mot.
+    /// de 2 caractères ou plus, sans doublons, hors mots vides français (de, du, la, …) et hors mots contenant un chiffre (« 1KG », « 40 », « T55 »).
+    /// Vaut 0 quand l'un des deux libellés n'a aucun mot.
     /// </summary>
-    public static double Similarity(string a, string b)
-    {
-        var tokensA = Tokens(a);
-        var tokensB = Tokens(b);
-        if (tokensA.Count == 0 || tokensB.Count == 0)
-            return 0.0;
+    public static double Similarity(string a, string b) => Compare(Tokens(a), Tokens(b)).Score;
 
-        var shorter = tokensA.Count <= tokensB.Count ? tokensA : tokensB;
-        var longer = ReferenceEquals(shorter, tokensA) ? tokensB : tokensA;
+    private static (double Score, int Common) Compare(HashSet<string> a, HashSet<string> b)
+    {
+        if (a.Count == 0 || b.Count == 0)
+            return (0.0, 0);
+
+        var shorter = a.Count <= b.Count ? a : b;
+        var longer = ReferenceEquals(shorter, a) ? b : a;
 
         var common = shorter.Count(longer.Contains);
-        return (double)common / shorter.Count;
+        return ((double)common / shorter.Count, common);
     }
 
     private static int? FindAlias(IReadOnlyList<SupplierAlias> aliases, string normalizedLabel, int? supplierId, HashSet<int> activeIngredientIds)
@@ -91,6 +95,8 @@ public static class IngredientMatcher
     private static HashSet<string> Tokens(string label)
         => LabelNormalizer.Normalize(label)
             .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Where(token => token.Length >= MinimumTokenLength)
+            .Where(token => token.Length >= MinimumTokenLength
+                            && !StopWords.Contains(token)
+                            && !token.Any(char.IsAsciiDigit))
             .ToHashSet(StringComparer.Ordinal);
 }

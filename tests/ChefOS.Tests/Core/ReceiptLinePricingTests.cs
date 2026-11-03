@@ -174,6 +174,24 @@ public class ReceiptLinePricingTests
         Assert.True(vatToCheck);
     }
 
+    [Fact]
+    public void ExclVat_TtcWithoutRateAndWithoutTotal_FlagsWithNullTotal()
+    {
+        var excl = ReceiptLinePricing.ExclVat(null, null, true, out var vatToCheck);
+
+        Assert.Null(excl);
+        Assert.True(vatToCheck);
+    }
+
+    [Fact]
+    public void ExclVat_DoesNotRound()
+    {
+        var excl = ReceiptLinePricing.ExclVat(10.00m, 0.06m, true, out var vatToCheck);
+
+        Assert.Equal(10m / 1.06m, excl);
+        Assert.False(vatToCheck);
+    }
+
     [Theory]
     [InlineData(0.06)]
     [InlineData(null)]
