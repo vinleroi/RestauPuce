@@ -156,9 +156,10 @@ public class IngredientServiceTests(PostgresFixture postgres)
         var service = CreateService(options, restaurant);
         var supplierId = await AddSupplierAsync(options, restaurant);
         var created = await service.SaveAsync(Input(price: 0.010m)); // entrée Manual datée de maintenant (jour J)
-        var fiveDaysAgo = DateTime.UtcNow.AddDays(-5);
+        // Date fixe : un UtcNow décalé aurait des ticks sous la microseconde que PostgreSQL ne restitue pas (selon la plateforme).
+        var olderDate = new DateTime(2020, 1, 10, 8, 30, 0, DateTimeKind.Utc);
 
-        await service.SetPriceAsync(created.Id, 0.008m, PriceSource.Receipt, supplierId, fiveDaysAgo);
+        await service.SetPriceAsync(created.Id, 0.008m, PriceSource.Receipt, supplierId, olderDate);
 
         Assert.Equal(0.010m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
         var history = await service.GetPriceHistoryAsync(created.Id);
@@ -167,7 +168,7 @@ public class IngredientServiceTests(PostgresFixture postgres)
         Assert.Equal(0.008m, late.PricePerBaseUnit);
         Assert.Equal(PriceSource.Receipt, late.Source);
         Assert.Equal(supplierId, late.SupplierId);
-        Assert.Equal(fiveDaysAgo, late.Date);
+        Assert.Equal(olderDate, late.Date);
         Assert.Equal(0.010m, history[1].PricePerBaseUnit);
     }
 
@@ -198,7 +199,7 @@ public class IngredientServiceTests(PostgresFixture postgres)
         var service = CreateService(options, restaurant);
         var created = await service.SaveAsync(Input()); // ni prix courant ni historique
 
-        await service.SetPriceAsync(created.Id, 0.008m, PriceSource.Receipt, null, DateTime.UtcNow.AddYears(-1));
+        await service.SetPriceAsync(created.Id, 0.008m, PriceSource.Receipt, null, new DateTime(2020, 1, 10, 8, 30, 0, DateTimeKind.Utc));
 
         Assert.Equal(0.008m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
         Assert.Single(await service.GetPriceHistoryAsync(created.Id));
