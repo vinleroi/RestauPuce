@@ -107,6 +107,8 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
     /// <paramref name="pricePerBaseUnit"/> que si le jour UTC de <paramref name="dateUtc"/> est égal ou postérieur à celui de la plus récente
     /// entrée déjà présente (ou s'il n'y a aucun historique) : un ticket en retard n'enrichit que l'historique. La comparaison se fait au jour
     /// et non à l'heure : une entrée manuelle saisie à 15 h ne rend pas « en retard » le ticket du même jour, daté de minuit.
+    /// L'entrée qui fixe le prix courant est toujours la plus récente de l'historique (le tableau de bord et la courbe lisent l'historique par date) :
+    /// si elle est datée avant la plus récente entrée du même jour, elle est enregistrée 1 µs après celle-ci (voir <see cref="AddPriceEntryAsync"/>).
     /// </summary>
     public async Task SetPriceAsync(
         int ingredientId, decimal pricePerBaseUnit, PriceSource source, int? supplierId, DateTime dateUtc)
@@ -123,6 +125,9 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
     /// Écrit un prix dans le contexte de l'appelant, sans l'enregistrer : l'appelant décide du <c>SaveChanges</c> et de la transaction
     /// (le ticket appliqué écrit ses prix, ses alias et son statut d'un seul bloc). Même règles que <see cref="SetPriceAsync"/> ;
     /// renvoie vrai quand le prix courant de l'ingrédient a été remplacé, faux quand l'entrée n'enrichit que l'historique.
+    /// Quand le prix courant est remplacé par une entrée datée avant la plus récente du même jour (ticket de minuit après une saisie de l'après-midi),
+    /// la date enregistrée est celle de cette plus récente entrée plus 1 µs (la précision de PostgreSQL) : sans cela, l'entrée qui fixe le prix courant
+    /// ne serait pas la dernière par date, et la variation affichée serait inversée.
     /// </summary>
     internal static async Task<bool> AddPriceEntryAsync(
         ChefOsDbContext db, int ingredientId, decimal pricePerBaseUnit, PriceSource source, int? supplierId, DateTime dateUtc)
@@ -142,7 +147,13 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
         if (replacesCurrent)
             ingredient.CurrentPricePerBaseUnit = price;
 
-        db.IngredientPrices.Add(NewPriceEntry(ingredient.Id, price, source, supplierId, dateUtc));
+        // Une entrée qui remplace le prix courant doit aussi être la plus récente par date. Ici elle est du même jour que la dernière entrée mais
+        // plus tôt dans la journée : elle passe 1 µs après elle (PostgreSQL ne garde pas moins).
+        var entryDate = replacesCurrent && latestDate is { } latest && latest > dateUtc
+            ? DateTime.SpecifyKind(latest.AddTicks(TimeSpan.TicksPerMicrosecond), DateTimeKind.Utc)
+            : dateUtc;
+
+        db.IngredientPrices.Add(NewPriceEntry(ingredient.Id, price, source, supplierId, entryDate));
         return replacesCurrent;
     }
 

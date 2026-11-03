@@ -3,6 +3,7 @@ using ChefOS.Core.Ingredients;
 using ChefOS.Core.Receipts;
 using ChefOS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace ChefOS.Infrastructure.Services;
 
@@ -12,8 +13,10 @@ namespace ChefOS.Infrastructure.Services;
 /// Les clés étrangères de la base sont à colonne unique : la vérification qu'un fournisseur, un ingrédient, une ligne ou un
 /// ticket appartient bien au restaurant courant se fait ici, via le contexte filtré par restaurant (qui estampille aussi les ajouts).
 /// Les octets du fichier ne sont lus que par <see cref="GetFileAsync"/> : ni les listes ni <see cref="GetAsync"/> ne les chargent.
+/// Une lecture qui échoue est journalisée (avertissement, avec l'exception d'origine et l'identifiant du ticket) ; ni le contenu du fichier
+/// ni la clé de l'API n'y figurent.
 /// </summary>
-public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceiptReader reader)
+public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceiptReader reader, ILogger<ReceiptService> logger)
 {
     private const int MaxFileBytes = 10 * 1024 * 1024;
 
@@ -29,6 +32,8 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     private const string AppliedCannotBeDeletedMessage = "Un ticket appliqué ne peut pas être supprimé";
     private const string NoLineReadMessage = "Aucune ligne n'a été lue sur ce ticket";
     private const string VatRateMessage = "Le taux de TVA doit être compris entre 0 et 100 %";
+    private const string FutureDateMessage = "La date du ticket ne peut pas être dans le futur";
+    private const string NoLineToApplyMessage = "Aucune ligne à appliquer";
 
     // Échelles des colonnes numeric : arrondir avant de valider/comparer évite qu'une valeur change à l'enregistrement.
     private const int QuantityScale = 4;
@@ -103,6 +108,8 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         catch (Exception ex)
         {
             // Y compris un délai dépassé du lecteur (TaskCanceledException sans annulation de l'appelant).
+            // Journalisé : le message français du ticket ne garde pas l'exception d'origine (motif de l'API, pile). Jamais les octets ni la clé.
+            logger.LogWarning(ex, "Lecture du ticket {ReceiptId} échouée", receiptId);
             await MarkFailedAsync(db, receipt, ex.Message, ct);
             return;
         }
@@ -122,9 +129,11 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
 
         receipt.SupplierNameRaw = supplierName;
         receipt.SupplierId = supplierId;
-        receipt.ReceiptDate = extraction.Date is { } day
+        // Une date lue dans le futur (année mal lue) serait gardée comme référence de tous les prix suivants : elle est écartée, le chef la saisit.
+        var readDay = extraction.Date is { } day
             ? DateTime.SpecifyKind(day.ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc)
-            : null;
+            : (DateTime?)null;
+        receipt.ReceiptDate = readDay is { } readable && !IsInTheFuture(readable) ? readable : null;
         receipt.InvoiceNumber = NullIfBlank(extraction.InvoiceNumber);
         receipt.AmountsIncludeVat = extraction.AmountsIncludeVat;
         receipt.Total = extraction.Total;
@@ -206,7 +215,8 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     /// à jour (elle garde son identifiant et ce que le lecteur y avait lu) ; sans identifiant, c'est une ligne ajoutée à la main ; les lignes
     /// du ticket absentes du brouillon sont supprimées. Un ingrédient différent de celui enregistré est un choix manuel (origine effacée) ;
     /// la mention « TVA à vérifier » ne reste que si ni le taux ni le total de la ligne n'ont été modifiés. Un ticket en échec ou pas encore lu, complété
-    /// avec au moins une ligne, passe à <see cref="ReceiptStatus.Extracted"/>. Tout est enregistré d'un coup ou pas du tout.
+    /// avec au moins une ligne, passe à <see cref="ReceiptStatus.Extracted"/>. Une date postérieure à demain (UTC) est refusée (voir <see cref="IsInTheFuture"/>).
+    /// Tout est enregistré d'un coup ou pas du tout.
     /// </summary>
     public async Task SaveDraftAsync(ReceiptDraftInput input)
     {
@@ -215,6 +225,10 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         var receipt = await RequireReceiptAsync(db, input.ReceiptId, includeLines: true);
         if (receipt.Status == ReceiptStatus.Applied)
             throw new DomainValidationException(AlreadyAppliedMessage);
+
+        var receiptDate = ToUtc(input.ReceiptDate);
+        if (receiptDate is { } day && IsInTheFuture(day))
+            throw new DomainValidationException(FutureDateMessage);
 
         var lines = NormalizeLines(input.Lines);
         await RequireSupplierAsync(db, input.SupplierId);
@@ -260,7 +274,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         db.ReceiptLines.RemoveRange(remaining.Values);
 
         receipt.SupplierId = input.SupplierId;
-        receipt.ReceiptDate = ToUtc(input.ReceiptDate);
+        receipt.ReceiptDate = receiptDate;
         receipt.InvoiceNumber = NullIfBlank(input.InvoiceNumber);
         if (receipt.Status is ReceiptStatus.Failed or ReceiptStatus.Pending && lines.Count > 0)
         {
@@ -280,7 +294,8 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     /// Tout ou rien : une fois les lignes validées, une seule transaction réserve le ticket (passage atomique de « lu » à « appliqué », une seule
     /// exécution l'emporte), écrit les prix, les prix de ligne et les alias, puis valide. Tout échec annule tout, statut compris : le ticket reste
     /// « lu » et peut être appliqué à nouveau sans doublon d'historique. Deux applications simultanées : l'une réussit, l'autre est refusée
-    /// (« déjà appliqué »).
+    /// (« déjà appliqué »). Sont aussi refusés, avant toute écriture, un ticket daté d'après-demain ou plus tard (voir <see cref="IsInTheFuture"/> :
+    /// il rendrait « en retard » tous les tickets suivants) et un ticket sans aucune ligne à appliquer (vide, ou toutes les lignes ignorées).
     /// </summary>
     public async Task<ApplyResult> ApplyAsync(int receiptId)
     {
@@ -288,6 +303,8 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
 
         var receipt = await RequireReceiptAsync(db, receiptId, includeLines: true);
         RequireApplicable(receipt.Status);
+        if (receipt.ReceiptDate is { } receiptDay && IsInTheFuture(receiptDay))
+            throw new DomainValidationException(FutureDateMessage);
 
         // Lectures et validations d'abord : aucune écriture tant que toutes les lignes ne sont pas bonnes.
         var active = receipt.Lines
@@ -295,6 +312,8 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
             .OrderBy(l => l.Position)
             .ThenBy(l => l.Id)
             .ToList();
+        if (active.Count == 0)
+            throw new DomainValidationException(NoLineToApplyMessage);
 
         var ingredientIds = active.Select(l => l.IngredientId).OfType<int>().Distinct().ToList();
         var byId = await db.Ingredients.AsNoTracking()
@@ -516,6 +535,13 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         ReceiptLineIssue.InvalidTotal => "montant invalide",
         _ => throw new ArgumentOutOfRangeException(nameof(issue), issue, null)
     };
+
+    /// <summary>
+    /// Vrai pour un jour postérieur à demain (UTC). Demain reste permis : selon le fuseau du chef, il peut déjà y être. Une date plus lointaine est une
+    /// erreur de saisie ou de lecture (année mal lue) : prise comme référence, elle rendrait « en retard » tous les tickets réels suivants,
+    /// dont les prix n'iraient plus qu'à l'historique.
+    /// </summary>
+    private static bool IsInTheFuture(DateTime day) => day.Date > DateTime.UtcNow.Date.AddDays(1);
 
     // Le ticket porte un jour, pas une heure : on garde le jour du calendrier saisi (aucun décalage de fuseau) à minuit UTC.
     private static DateTime? ToUtc(DateTime? date) =>

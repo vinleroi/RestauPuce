@@ -6,6 +6,8 @@ using ChefOS.Core.Units;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ChefOS.Tests.Infrastructure;
 
@@ -21,9 +23,19 @@ public class ReceiptServiceTests(PostgresFixture postgres)
     private const string AlreadyAppliedMessage = "Ce ticket a déjà été appliqué";
     private const string NotReadyMessage = "Ce ticket n'est pas prêt à être appliqué";
     private const string NoLineReadMessage = "Aucune ligne n'a été lue sur ce ticket";
+    private const string FutureDateMessage = "La date du ticket ne peut pas être dans le futur";
+    private const string NoLineToApplyMessage = "Aucune ligne à appliquer";
 
     private static readonly byte[] SomeBytes = [1, 2, 3];
-    private static readonly DateTime FutureDay = new(2099, 1, 15, 0, 0, 0, DateTimeKind.Utc);
+
+    // Dates fixes, toutes passées : un ticket daté du futur est refusé. Les prix saisis à la main sont datés avant le ticket (PriorDay), pour que
+    // celui-ci remplace le prix courant sans dépendre de l'heure à laquelle les tests s'exécutent.
+    private static readonly DateTime TicketDay = new(2026, 1, 15, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime PriorDay = new(2025, 12, 1, 12, 0, 0, DateTimeKind.Utc);
+    private static readonly DateOnly TicketDate = new(2026, 1, 15);
+
+    // Date à laquelle aucun ticket réel ne peut être daté (refus) : la plus lointaine possible n'a pas d'importance, elle reste dans le futur.
+    private static readonly DateTime FarFutureDay = new(2099, 1, 15, 0, 0, 0, DateTimeKind.Utc);
 
     // ── Mise en place ────────────────────────────────────────────────────────
 
@@ -54,15 +66,29 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         var factory = new TestContextFactory(options, restaurant);
         var reader = new FakeReceiptReader();
         var ingredients = new IngredientService(factory);
-        return (options, restaurant, reader, new ReceiptService(factory, reader), ingredients);
+        return (options, restaurant, reader, new ReceiptService(factory, reader, NullLogger<ReceiptService>.Instance), ingredients);
     }
 
     private static ChefOsDbContext OpenContext(DbContextOptions<ChefOsDbContext> options, int restaurantId) =>
         new TestContextFactory(options, restaurantId).CreateDbContext();
 
-    private static ReceiptService ServiceFor(DbContextOptions<ChefOsDbContext> options, int restaurantId, IReceiptReader reader)
+    private static ReceiptService ServiceFor(
+        DbContextOptions<ChefOsDbContext> options, int restaurantId, IReceiptReader reader, ILogger<ReceiptService>? logger = null)
     {
-        return new ReceiptService(new TestContextFactory(options, restaurantId), reader);
+        return new ReceiptService(new TestContextFactory(options, restaurantId), reader, logger ?? NullLogger<ReceiptService>.Instance);
+    }
+
+    /// <summary>Journal qui garde ses entrées, pour vérifier ce qui est consigné.</summary>
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, Exception? Exception, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, exception, formatter(state, exception)));
     }
 
     private static async Task<int> AddSupplierAsync(DbContextOptions<ChefOsDbContext> options, int restaurantId, string name)
@@ -76,7 +102,12 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         IngredientService ingredients, string name, decimal? pricePerBaseUnit = null, BaseUnit baseUnit = BaseUnit.Gram)
     {
         var ingredient = await ingredients.SaveAsync(new IngredientInput(
-            null, name, "Divers", EuAllergen.None, baseUnit, pricePerBaseUnit, 100m, null, null));
+            null, name, "Divers", EuAllergen.None, baseUnit, null, 100m, null, null));
+
+        // Le prix de départ est une entrée manuelle à date fixe (PriorDay), pas « maintenant » : un ticket daté dans le passé le remplace alors toujours.
+        if (pricePerBaseUnit is { } price)
+            await ingredients.SetPriceAsync(ingredient.Id, price, PriceSource.Manual, null, PriorDay);
+
         return ingredient.Id;
     }
 
@@ -91,7 +122,7 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         bool includeVat = false,
         decimal? total = null,
         string? invoice = null) =>
-        new(supplier, date ?? new DateOnly(2099, 1, 15), invoice, includeVat, total, lines);
+        new(supplier, date ?? TicketDate, invoice, includeVat, total, lines);
 
     /// <summary>Téléverse puis lit un ticket avec le lecteur factice et renvoie son identifiant.</summary>
     private static async Task<int> ReadAsync(ReceiptService service, FakeReceiptReader reader, ReceiptExtraction extraction)
@@ -459,6 +490,69 @@ public class ReceiptServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Extract_ReaderThrows_LogsAWarningWithTheReceiptIdAndTheException()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var failure = new InvalidOperationException("Le service de lecture est indisponible");
+        var reader = new FakeReceiptReader { Failure = failure };
+        var logger = new RecordingLogger<ReceiptService>();
+        var service = ServiceFor(options, restaurant, reader, logger);
+        var id = await service.CreateAsync(SomeBytes, "ticket.jpg", "image/jpeg");
+
+        await service.ExtractAsync(id);
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Warning, entry.Level);
+        Assert.Same(failure, entry.Exception);                       // l'exception d'origine, pas seulement son message
+        Assert.Equal($"Lecture du ticket {id} échouée", entry.Message);
+    }
+
+    [Fact]
+    public async Task Extract_Success_LogsNothing()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var reader = new FakeReceiptReader { Result = Extraction([Line("Sel", 1m, MeasureUnit.Kg, 1m)]) };
+        var logger = new RecordingLogger<ReceiptService>();
+        var service = ServiceFor(options, restaurant, reader, logger);
+        var id = await service.CreateAsync(SomeBytes, "ticket.jpg", "image/jpeg");
+
+        await service.ExtractAsync(id);
+
+        Assert.Empty(logger.Entries);
+    }
+
+    [Fact]
+    public async Task Extract_FutureDate_StoredAsNull()
+    {
+        var (_, _, reader, service, _) = await ArrangeAsync();
+
+        // Une année mal lue (2099) figerait les prix : la date est écartée, le chef la saisit, et le ticket reste exploitable.
+        var id = await ReadAsync(service, reader, Extraction(
+            [Line("Sel", 1m, MeasureUnit.Kg, 1m)], date: DateOnly.FromDateTime(FarFutureDay)));
+
+        var receipt = await LoadAsync(service, id);
+        Assert.Equal(ReceiptStatus.Extracted, receipt.Status);
+        Assert.Null(receipt.ReceiptDate);
+        Assert.Single(receipt.Lines);
+    }
+
+    [Fact]
+    public async Task Extract_TodayAndTomorrow_AreKept() // demain : le fuseau du chef peut déjà y être
+    {
+        var (_, _, reader, service, _) = await ArrangeAsync();
+        var today = DateTime.UtcNow.Date;
+        var tomorrow = today.AddDays(1);
+
+        var todayId = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 1m)], date: DateOnly.FromDateTime(today)));
+        var tomorrowId = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 1m)], date: DateOnly.FromDateTime(tomorrow)));
+
+        Assert.Equal(today, (await LoadAsync(service, todayId)).ReceiptDate);
+        Assert.Equal(tomorrow, (await LoadAsync(service, tomorrowId)).ReceiptDate);
+    }
+
+    [Fact]
     public async Task Map_TtcWithoutRate_FlagsVatToCheck()
     {
         var (_, _, reader, service, _) = await ArrangeAsync();
@@ -558,7 +652,7 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         Assert.Equal(10m, olderSummary.Total);
         Assert.Equal(ReceiptStatus.Extracted, olderSummary.Status);
         Assert.Equal(2, olderSummary.LineCount);
-        Assert.Equal(FutureDay, olderSummary.ReceiptDate);
+        Assert.Equal(TicketDay, olderSummary.ReceiptDate);
         var failedSummary = list[0];
         Assert.Equal(ReceiptStatus.Failed, failedSummary.Status);
         Assert.Equal(0, failedSummary.LineCount);
@@ -654,7 +748,7 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         await service.ExtractAsync(id);
 
         await service.SaveDraftAsync(new ReceiptDraftInput(
-            id, metro, FutureDay, "  F-9  ",
+            id, metro, TicketDay, "  F-9  ",
             [
                 new ReceiptLineInput(null, "Sel fin", 5m, MeasureUnit.Kg, 7.50m, 0.06m, sel, false),
                 new ReceiptLineInput(null, "Sacs", 1m, MeasureUnit.Piece, 3m, null, null, true)
@@ -664,7 +758,7 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         Assert.Equal(ReceiptStatus.Extracted, receipt.Status);
         Assert.Null(receipt.ErrorMessage);
         Assert.Equal(metro, receipt.SupplierId);
-        Assert.Equal(FutureDay, receipt.ReceiptDate);
+        Assert.Equal(TicketDay, receipt.ReceiptDate);
         Assert.Equal("F-9", receipt.InvoiceNumber);
         Assert.Equal(["Sel fin", "Sacs"], receipt.Lines.Select(l => l.RawLabel));
         Assert.Equal([0, 1], receipt.Lines.Select(l => l.Position));
@@ -872,6 +966,44 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         Assert.Null(await SaveDateAsync(null));
     }
 
+    [Fact]
+    public async Task SaveDraft_FutureDate_Refused()
+    {
+        var (_, _, reader, service, _) = await ArrangeAsync();
+        var id = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 1m), Line("Poivre", 1m, MeasureUnit.Kg, 9m)]));
+        var receipt = await LoadAsync(service, id);
+
+        await AssertRefusedAsync(
+            () => service.SaveDraftAsync(DraftOf(receipt, (_, input) => input with { RawLabel = "Modifié" }) with
+            {
+                ReceiptDate = FarFutureDay,
+                InvoiceNumber = "F-FUTUR"
+            }),
+            FutureDateMessage);
+
+        // Rien n'a été enregistré : ni la date, ni le numéro, ni les lignes.
+        var intact = await LoadAsync(service, id);
+        Assert.Equal(TicketDay, intact.ReceiptDate);
+        Assert.Null(intact.InvoiceNumber);
+        Assert.Equal(["Sel", "Poivre"], intact.Lines.Select(l => l.RawLabel));
+    }
+
+    [Fact]
+    public async Task SaveDraft_TodayAndTomorrow_Accepted()
+    {
+        var (_, _, reader, service, _) = await ArrangeAsync();
+        var id = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 1m)]));
+        var receipt = await LoadAsync(service, id);
+        var today = DateTime.UtcNow.Date;
+        var tomorrow = today.AddDays(1);
+
+        await service.SaveDraftAsync(DraftOf(receipt) with { ReceiptDate = today });
+        Assert.Equal(today, (await LoadAsync(service, id)).ReceiptDate);
+
+        await service.SaveDraftAsync(DraftOf(receipt) with { ReceiptDate = tomorrow });
+        Assert.Equal(tomorrow, (await LoadAsync(service, id)).ReceiptDate);
+    }
+
     // ── Application ──────────────────────────────────────────────────────────
 
     [Fact]
@@ -901,7 +1033,7 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         var entry = history[1];
         Assert.Equal(PriceSource.Receipt, entry.Source);
         Assert.Equal(metro, entry.SupplierId);
-        Assert.Equal(FutureDay, entry.Date);
+        Assert.Equal(TicketDay, entry.Date);
         Assert.Equal(0.0012m, entry.PricePerBaseUnit);
 
         await using var db = OpenContext(options, restaurant);
@@ -967,7 +1099,7 @@ public class ReceiptServiceTests(PostgresFixture postgres)
     public async Task Apply_LateReceipt_OnlyEnrichesHistory()
     {
         var (_, _, reader, service, ingredients) = await ArrangeAsync();
-        var sel = await AddIngredientAsync(ingredients, "Sel", 0.002m); // entrée manuelle datée d'aujourd'hui
+        var sel = await AddIngredientAsync(ingredients, "Sel", 0.002m); // entrée manuelle datée du 1er décembre 2025
         var id = await ReadAsync(service, reader, Extraction(
             [Line("Sel", 1m, MeasureUnit.Kg, 3m)], date: new DateOnly(2000, 1, 1)));
 
@@ -1208,6 +1340,76 @@ public class ReceiptServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Apply_FutureDate_Refused()
+    {
+        var (options, restaurant, reader, service, ingredients) = await ArrangeAsync();
+        var sel = await AddIngredientAsync(ingredients, "Sel", 0.002m);
+        var id = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 3m)]));
+        // Le service n'enregistre plus de date future : on l'écrit directement, comme dans un ticket saisi avant cette règle.
+        await using (var db = OpenContext(options, restaurant))
+            await db.Receipts.Where(r => r.Id == id).ExecuteUpdateAsync(set => set.SetProperty(r => r.ReceiptDate, (DateTime?)FarFutureDay));
+
+        await AssertRefusedAsync(() => service.ApplyAsync(id), FutureDateMessage);
+
+        // Rien n'a été écrit : statut, prix, historique, alias.
+        var receipt = await LoadAsync(service, id);
+        Assert.Equal(ReceiptStatus.Extracted, receipt.Status);
+        Assert.Null(receipt.AppliedAt);
+        Assert.Equal(0.002m, (await ingredients.GetAsync(sel))!.CurrentPricePerBaseUnit);
+        Assert.Single(await ingredients.GetPriceHistoryAsync(sel));
+        await using var check = OpenContext(options, restaurant);
+        Assert.Empty(await check.SupplierAliases.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Apply_TomorrowDate_Applies() // demain : le fuseau du chef peut déjà y être
+    {
+        var (_, _, reader, service, ingredients) = await ArrangeAsync();
+        var sel = await AddIngredientAsync(ingredients, "Sel", 0.002m);
+        var tomorrow = DateTime.UtcNow.Date.AddDays(1);
+        var id = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 3m)], date: DateOnly.FromDateTime(tomorrow)));
+
+        var price = Assert.Single((await service.ApplyAsync(id)).Prices);
+
+        Assert.True(price.ReplacedCurrent);
+        Assert.Equal(0.003m, (await ingredients.GetAsync(sel))!.CurrentPricePerBaseUnit);
+        Assert.Equal(tomorrow, (await ingredients.GetPriceHistoryAsync(sel))[^1].Date);
+    }
+
+    [Fact]
+    public async Task Apply_AllLinesIgnored_Refused()
+    {
+        var (options, restaurant, reader, service, ingredients) = await ArrangeAsync();
+        var sel = await AddIngredientAsync(ingredients, "Sel", 0.002m);
+        var id = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 3m), Line("Sacs", 1m, MeasureUnit.Piece, 4m)]));
+        var receipt = await LoadAsync(service, id);
+        await service.SaveDraftAsync(DraftOf(receipt, (_, input) => input with { IsIgnored = true }));
+
+        await AssertRefusedAsync(() => service.ApplyAsync(id), NoLineToApplyMessage);
+
+        var after = await LoadAsync(service, id);
+        Assert.Equal(ReceiptStatus.Extracted, after.Status);        // toujours applicable une fois une ligne rétablie
+        Assert.Null(after.AppliedAt);
+        Assert.Equal(0.002m, (await ingredients.GetAsync(sel))!.CurrentPricePerBaseUnit);
+        Assert.Single(await ingredients.GetPriceHistoryAsync(sel));
+        await using var db = OpenContext(options, restaurant);
+        Assert.Empty(await db.SupplierAliases.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Apply_NoLines_Refused()
+    {
+        var (_, _, reader, service, _) = await ArrangeAsync();
+        var id = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 3m)]));
+        var receipt = await LoadAsync(service, id);
+        await service.SaveDraftAsync(DraftOf(receipt) with { Lines = [] });   // le chef a supprimé toutes les lignes ; le ticket reste « lu »
+
+        await AssertRefusedAsync(() => service.ApplyAsync(id), NoLineToApplyMessage);
+
+        Assert.Equal(ReceiptStatus.Extracted, (await LoadAsync(service, id)).Status);
+    }
+
+    [Fact]
     public async Task Apply_ChangesDishCost()
     {
         var (options, restaurant, reader, service, ingredients) = await ArrangeAsync();
@@ -1232,9 +1434,10 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         var (_, _, reader, service, ingredients) = await ArrangeAsync();
         var sel = await AddIngredientAsync(ingredients, "Sel");
         // Prix manuel saisi l'après-midi du 15 janvier ; le ticket du même jour est daté de minuit (00:00 UTC).
-        await ingredients.SetPriceAsync(sel, 0.002m, PriceSource.Manual, null, new DateTime(2099, 1, 15, 15, 30, 0, DateTimeKind.Utc));
-        var sameDay = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 3m)], date: new DateOnly(2099, 1, 15)));
-        var dayBefore = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 9m)], date: new DateOnly(2099, 1, 14)));
+        var manualAfternoon = new DateTime(2026, 1, 15, 15, 30, 0, DateTimeKind.Utc);
+        await ingredients.SetPriceAsync(sel, 0.002m, PriceSource.Manual, null, manualAfternoon);
+        var sameDay = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 3m)], date: new DateOnly(2026, 1, 15)));
+        var dayBefore = await ReadAsync(service, reader, Extraction([Line("Sel", 1m, MeasureUnit.Kg, 9m)], date: new DateOnly(2026, 1, 14)));
 
         var first = Assert.Single((await service.ApplyAsync(sameDay)).Prices);
 
@@ -1249,7 +1452,12 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         Assert.Equal(0.003m, second.OldPricePerBaseUnit);
         Assert.Equal(0.009m, second.NewPricePerBaseUnit);
         Assert.Equal(0.003m, (await ingredients.GetAsync(sel))!.CurrentPricePerBaseUnit);
-        Assert.Equal(3, (await ingredients.GetPriceHistoryAsync(sel)).Count);
+        var history = await ingredients.GetPriceHistoryAsync(sel);
+        Assert.Equal(3, history.Count);
+
+        // Le ticket qui a fixé le prix courant est la dernière entrée de l'historique : il passe 1 µs après la saisie de l'après-midi (et non avant elle).
+        Assert.Equal([0.009m, 0.002m, 0.003m], history.Select(p => p.PricePerBaseUnit));
+        Assert.Equal(manualAfternoon.AddTicks(TimeSpan.TicksPerMicrosecond), history[2].Date);
     }
 
     [Fact]

@@ -311,6 +311,27 @@ public class DashboardServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task PriceChanges_ManualTodayThenTicketToday_ShowsTicketAsCurrent()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var ingredients = new IngredientService(new TestContextFactory(options, restaurant));
+        var sel = await AddUnpricedAsync(options, restaurant, "Sel");
+        // Dates fixes : prix de la veille, saisie manuelle l'après-midi du 15 janvier, puis ticket du même jour daté de minuit (il remplace la saisie).
+        await ingredients.SetPriceAsync(sel, 0.010m, PriceSource.Receipt, null, new DateTime(2026, 1, 14, 10, 0, 0, DateTimeKind.Utc));
+        await ingredients.SetPriceAsync(sel, 0.012m, PriceSource.Manual, null, new DateTime(2026, 1, 15, 15, 0, 0, DateTimeKind.Utc));
+        await ingredients.SetPriceAsync(sel, 0.015m, PriceSource.Receipt, null, new DateTime(2026, 1, 15, 0, 0, 0, DateTimeKind.Utc));
+
+        // Fenêtre très large : les dates des entrées sont fixes, la fenêtre se compte depuis maintenant.
+        var change = Assert.Single(await CreateService(options, restaurant).GetRecentPriceChangesAsync(days: 36_500));
+
+        Assert.Equal(0.015m, (await ingredients.GetAsync(sel))!.CurrentPricePerBaseUnit);
+        Assert.Equal(0.015m, change.CurrentPrice);                   // le ticket est le prix courant, pas la saisie qu'il a remplacée
+        Assert.Equal(0.012m, change.PreviousPrice);
+        Assert.Equal(0.25m, change.ChangePercent);                   // une hausse de 25 %, et non une baisse de 20 %
+    }
+
+    [Fact]
     public async Task PriceChanges_ChangePercentIsNotRounded()
     {
         var options = await postgres.CreateDatabaseAsync();

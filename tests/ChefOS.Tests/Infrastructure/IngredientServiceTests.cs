@@ -227,21 +227,40 @@ public class IngredientServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task SetPrice_SameDayEarlierTime_ReplacesCurrent() // la comparaison se fait au jour UTC, pas à l'heure
+    public async Task SetPrice_SameDayEarlierTime_BecomesLatestEntry() // comparaison au jour pour le prix courant ; l'entrée qui le fixe est la dernière
     {
         var options = await postgres.CreateDatabaseAsync();
         var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
         var service = CreateService(options, restaurant);
         var created = await service.SaveAsync(Input());
-        var manualEvening = new DateTime(2099, 1, 15, 18, 0, 0, DateTimeKind.Utc);
-        var ticketMidnight = new DateTime(2099, 1, 15, 0, 0, 0, DateTimeKind.Utc);
+        var manualEvening = new DateTime(2026, 1, 15, 18, 0, 0, DateTimeKind.Utc);
+        var ticketMidnight = new DateTime(2026, 1, 15, 0, 0, 0, DateTimeKind.Utc);
 
         await service.SetPriceAsync(created.Id, 0.010m, PriceSource.Manual, null, manualEvening);
         await service.SetPriceAsync(created.Id, 0.012m, PriceSource.Receipt, null, ticketMidnight);
 
         Assert.Equal(0.012m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
         var history = await service.GetPriceHistoryAsync(created.Id);
-        Assert.Equal([ticketMidnight, manualEvening], history.Select(p => p.Date));
+        // Le ticket, daté de minuit, passe 1 µs après la saisie du soir : il est la dernière entrée, comme le prix courant qu'il a fixé.
+        Assert.Equal([manualEvening, manualEvening.AddTicks(TimeSpan.TicksPerMicrosecond)], history.Select(p => p.Date));
+        Assert.Equal([0.010m, 0.012m], history.Select(p => p.PricePerBaseUnit));
+        Assert.Equal([PriceSource.Manual, PriceSource.Receipt], history.Select(p => p.Source));
+    }
+
+    [Fact]
+    public async Task SetPrice_SameDayLaterTime_KeepsItsOwnDate() // pas de décalage quand l'entrée est déjà la plus récente
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var created = await service.SaveAsync(Input());
+        var morning = new DateTime(2026, 1, 15, 8, 0, 0, DateTimeKind.Utc);
+        var evening = new DateTime(2026, 1, 15, 18, 0, 0, DateTimeKind.Utc);
+
+        await service.SetPriceAsync(created.Id, 0.010m, PriceSource.Manual, null, morning);
+        await service.SetPriceAsync(created.Id, 0.012m, PriceSource.Manual, null, evening);
+
+        Assert.Equal([morning, evening], (await service.GetPriceHistoryAsync(created.Id)).Select(p => p.Date));
     }
 
     [Fact]
@@ -256,7 +275,9 @@ public class IngredientServiceTests(PostgresFixture postgres)
         await service.SetPriceAsync(created.Id, 0.008m, PriceSource.Receipt, null, new DateTime(2099, 1, 14, 23, 59, 59, DateTimeKind.Utc));
 
         Assert.Equal(0.010m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
-        Assert.Equal(2, (await service.GetPriceHistoryAsync(created.Id)).Count);
+        var history = await service.GetPriceHistoryAsync(created.Id);
+        Assert.Equal(2, history.Count);
+        Assert.Equal(new DateTime(2099, 1, 14, 23, 59, 59, DateTimeKind.Utc), history[0].Date); // en retard : sa date n'est pas décalée
     }
 
     [Fact]
