@@ -1,0 +1,30 @@
+@using ChefOS.Back.Components.Pages.Receipts
+
+@* Variation d'un prix avec sa flèche (« ▲ +10 % », « ▼ -6,25 % ») dans la couleur de son niveau : rouge au-delà de +5 %, vert en dessous de -5 %, gris sinon.
+   Le niveau vient de ReceiptReviewForm.LevelOf ; ce composant est le seul endroit où il se traduit en couleur
+   (écran de validation d'un ticket, tableau de bord). La flèche et le signe disent la même chose que la couleur. *@
+<span class="price-variation @LevelClass @Class" style="@Style" title="@Title">@Ui.VariationText(Variation)</span>
+
+@code {
+    /// <summary>Variation sous forme de fraction ((nouveau − ancien) ÷ ancien : 0,1 = +10 %).</summary>
+    [Parameter, EditorRequired]
+    public decimal Variation { get; set; }
+
+    /// <summary>Classes CSS ajoutées à celles du composant (marges, par exemple).</summary>
+    [Parameter]
+    public string? Class { get; set; }
+
+    [Parameter]
+    public string? Style { get; set; }
+
+    /// <summary>Infobulle (au survol) ; aucune par défaut.</summary>
+    [Parameter]
+    public string? Title { get; set; }
+
+    private string LevelClass => ReceiptReviewForm.LevelOf(Variation) switch
+    {
+        VariationLevel.Increase => "price-variation-up",
+        VariationLevel.Decrease => "price-variation-down",
+        _ => "price-variation-flat"
+    };
+}

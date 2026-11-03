@@ -45,12 +45,42 @@ else if (_summary is not null)
             </NoRecordsContent>
         </MudTable>
     </MudPaper>
+
+    <MudPaper Elevation="1" Class="pa-4 mt-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Variations de prix (@PriceChangeDays jours)</MudText>
+
+        <MudTable T="PriceChange" Items="_priceChanges" Hover="true" Dense="true" Elevation="0">
+            <HeaderContent>
+                <MudTh>Ingrédient</MudTh>
+                <MudTh>Prix</MudTh>
+                <MudTh>Variation</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Ingrédient">
+                    <MudLink Href="@($"/ingredients/{context.IngredientId}")">@context.Name</MudLink>
+                </MudTd>
+                <MudTd DataLabel="Prix">
+                    @Ui.PricePerDisplayUnit(context.PreviousPrice, context.BaseUnit) → @Ui.PricePerDisplayUnit(context.CurrentPrice, context.BaseUnit)
+                </MudTd>
+                <MudTd DataLabel="Variation">
+                    <PriceVariation Variation="context.ChangePercent" />
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText Class="pa-4">Aucune variation notable</MudText>
+            </NoRecordsContent>
+        </MudTable>
+    </MudPaper>
 }
 
 @code {
     private static readonly Restaurant Defaults = new();
 
+    // Fenêtre des variations de prix affichées (le titre du bloc reprend ce nombre de jours).
+    private const int PriceChangeDays = 30;
+
     private DashboardSummary? _summary;
+    private IReadOnlyList<PriceChange> _priceChanges = [];
     private decimal _threshold = Defaults.FoodCostAlertThreshold;
     private bool _loading = true;
 
@@ -59,6 +89,7 @@ else if (_summary is not null)
         try
         {
             _summary = await DashboardService.GetSummaryAsync();
+            _priceChanges = await DashboardService.GetRecentPriceChangesAsync(PriceChangeDays);
 
             // Le seuil sert à l'infobulle de la pastille rouge (« Au-dessus du seuil d'alerte (35 %) »).
             var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;

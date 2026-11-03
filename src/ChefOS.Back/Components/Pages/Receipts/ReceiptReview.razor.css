@@ -45,24 +45,6 @@
     opacity: 0.55;
 }
 
-/* Variation d'un prix : ▲ rouge au-delà de +5 %, ▼ vert en dessous de -5 %, gris sinon. */
-.receipt-variation {
-    font-size: 0.8125rem;
-    font-weight: 500;
-}
-
-.receipt-variation-up {
-    color: var(--mud-palette-error);
-}
-
-.receipt-variation-down {
-    color: var(--mud-palette-success);
-}
-
-.receipt-variation-flat {
-    color: var(--mud-palette-text-secondary);
-}
-
 /* Tableau des lignes : cellules serrées, pour que les prix tiennent dans la colonne de droite sans défiler. */
 .receipt-lines ::deep th,
 .receipt-lines ::deep td {

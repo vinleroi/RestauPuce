@@ -1,0 +1,17 @@
+/* Variation d'un prix : ▲ rouge au-delà de +5 %, ▼ vert en dessous de -5 %, gris sinon. */
+.price-variation {
+    font-size: 0.8125rem;
+    font-weight: 500;
+}
+
+.price-variation-up {
+    color: var(--mud-palette-error);
+}
+
+.price-variation-down {
+    color: var(--mud-palette-success);
+}
+
+.price-variation-flat {
+    color: var(--mud-palette-text-secondary);
+}

@@ -63,7 +63,7 @@ else
                         @Ui.PricePerDisplayUnit(price.OldPricePerBaseUnit, price.BaseUnit) → @Ui.PricePerDisplayUnit(price.NewPricePerBaseUnit, price.BaseUnit)
                         @if (variation is { } change)
                         {
-                            <span class="receipt-variation ml-2 @VariationClass(change)">@Ui.VariationText(change)</span>
+                            <PriceVariation Variation="change" Class="ml-2" />
                         }
                         else
                         {
@@ -279,8 +279,7 @@ else
                                             <div style="@Muted; font-size: 0.75rem">ancien : @Ui.PricePerDisplayUnit(result.OldPricePerBaseUnit, unit)</div>
                                             @if (result.Variation is { } variation)
                                             {
-                                                <div class="receipt-variation @VariationClass(variation)" style="white-space: nowrap"
-                                                     title="@VariationTitle(variation)">@Ui.VariationText(variation)</div>
+                                                <PriceVariation Variation="variation" Style="display: block; white-space: nowrap" Title="@VariationTitle(variation)" />
                                             }
                                         }
                                     </td>
@@ -435,14 +434,6 @@ else
         line.IsIgnored ? "receipt-line-ignored"
         : result.Issue != ReceiptLineIssue.None ? "receipt-line-issue"
         : "";
-
-    // ▲ rouge au-delà de +5 %, ▼ vert en dessous de -5 %, gris sinon.
-    private static string VariationClass(decimal variation) => ReceiptReviewForm.LevelOf(variation) switch
-    {
-        VariationLevel.Increase => "receipt-variation-up",
-        VariationLevel.Decrease => "receipt-variation-down",
-        _ => "receipt-variation-flat"
-    };
 
     private static string VariationTitle(decimal variation) => ReceiptReviewForm.LevelOf(variation) switch
     {

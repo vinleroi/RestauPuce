@@ -85,6 +85,20 @@ public record DashboardSummary(
     decimal? AverageFoodCost,
     IReadOnlyList<WatchItem> WatchList);
 
+/// <summary>
+/// Variation récente du prix d'un ingrédient : comparaison de ses deux dernières entrées d'historique.
+/// Les prix sont par unité de base (<paramref name="BaseUnit"/>) ; <paramref name="ChangePercent"/> est une fraction non arrondie
+/// ((courant − précédent) ÷ précédent, négative pour une baisse) ; <paramref name="Date"/> est celle de la dernière entrée (UTC).
+/// </summary>
+public record PriceChange(
+    int IngredientId,
+    string Name,
+    BaseUnit BaseUnit,
+    decimal PreviousPrice,
+    decimal CurrentPrice,
+    decimal ChangePercent,
+    DateTime Date);
+
 // ── Tickets fournisseurs ─────────────────────────────────────────────────────
 
 /// <summary><paramref name="SupplierName"/> est le fournisseur rapproché s'il y en a un, sinon le nom lu sur le ticket ; <paramref name="Total"/> est le total lu.</summary>

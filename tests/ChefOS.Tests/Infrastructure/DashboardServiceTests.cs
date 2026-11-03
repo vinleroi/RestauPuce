@@ -19,12 +19,13 @@ public class DashboardServiceTests(PostgresFixture postgres)
     private static RecipeService CreateRecipeService(DbContextOptions<ChefOsDbContext> options, int restaurantId) =>
         new(new TestContextFactory(options, restaurantId));
 
-    /// <summary>Ingrédient en grammes à 0,01 € le gramme (rendement 100 %), ou sans prix.</summary>
+    /// <summary>Ingrédient en grammes (ou dans <paramref name="baseUnit"/>) à 0,01 € l'unité de base (rendement 100 %), ou sans prix.</summary>
     private static async Task<int> AddIngredientAsync(
-        DbContextOptions<ChefOsDbContext> options, int restaurantId, string name, decimal? pricePerGram = 0.01m)
+        DbContextOptions<ChefOsDbContext> options, int restaurantId, string name, decimal? pricePerGram = 0.01m,
+        BaseUnit baseUnit = BaseUnit.Gram)
     {
         var ingredient = await new IngredientService(new TestContextFactory(options, restaurantId)).SaveAsync(
-            new IngredientInput(null, name, "Divers", EuAllergen.None, BaseUnit.Gram, pricePerGram, 100m, null, null));
+            new IngredientInput(null, name, "Divers", EuAllergen.None, baseUnit, pricePerGram, 100m, null, null));
         return ingredient.Id;
     }
 
@@ -164,5 +165,182 @@ public class DashboardServiceTests(PostgresFixture postgres)
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService(options, null).GetSummaryAsync());
         await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService(options, restaurant + 1000).GetSummaryAsync());
+    }
+
+    // ── Variations de prix récentes ──────────────────────────────────────────
+
+    /// <summary>Date UTC « il y a <paramref name="days"/> jours » : les marges des tests se comptent en jours, jamais à la seconde.</summary>
+    private static DateTime DaysAgo(double days) => DateTime.UtcNow.AddDays(-days);
+
+    /// <summary>Ingrédient sans prix initial (donc sans historique), pour maîtriser chaque entrée datée avec <see cref="AddPriceAsync"/>.</summary>
+    private static Task<int> AddUnpricedAsync(
+        DbContextOptions<ChefOsDbContext> options, int restaurantId, string name, BaseUnit baseUnit = BaseUnit.Gram) =>
+        AddIngredientAsync(options, restaurantId, name, pricePerGram: null, baseUnit);
+
+    private static Task AddPriceAsync(
+        DbContextOptions<ChefOsDbContext> options, int restaurantId, int ingredientId, decimal price, DateTime dateUtc) =>
+        new IngredientService(new TestContextFactory(options, restaurantId))
+            .SetPriceAsync(ingredientId, price, PriceSource.Receipt, null, dateUtc);
+
+    /// <summary>Ingrédient dont les deux dernières entrées sont <paramref name="previous"/> (il y a 10 jours) puis <paramref name="current"/> (il y a 2 jours).</summary>
+    private static async Task<int> AddChangedAsync(
+        DbContextOptions<ChefOsDbContext> options, int restaurantId, string name, decimal previous, decimal current)
+    {
+        var id = await AddUnpricedAsync(options, restaurantId, name);
+        await AddPriceAsync(options, restaurantId, id, previous, DaysAgo(10));
+        await AddPriceAsync(options, restaurantId, id, current, DaysAgo(2));
+        return id;
+    }
+
+    [Fact]
+    public async Task PriceChanges_ListsRecentIncreaseOverThreshold()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var beurre = await AddUnpricedAsync(options, restaurant, "Beurre", BaseUnit.Gram);
+        var latestDate = DaysAgo(3);
+        await AddPriceAsync(options, restaurant, beurre, 0.020m, DaysAgo(60));      // plus ancienne que les deux dernières : ignorée
+        await AddPriceAsync(options, restaurant, beurre, 0.008m, DaysAgo(20));      // avant-dernière : prix précédent
+        await AddPriceAsync(options, restaurant, beurre, 0.010m, latestDate);       // dernière : prix courant (+25 %)
+
+        var changes = await service.GetRecentPriceChangesAsync();
+
+        var change = Assert.Single(changes);
+        Assert.Equal(beurre, change.IngredientId);
+        Assert.Equal("Beurre", change.Name);
+        Assert.Equal(BaseUnit.Gram, change.BaseUnit);
+        Assert.Equal(0.008m, change.PreviousPrice);
+        Assert.Equal(0.010m, change.CurrentPrice);
+        Assert.Equal(0.25m, change.ChangePercent);
+        Assert.Equal(latestDate, change.Date, TimeSpan.FromSeconds(1));             // la date de la dernière entrée
+        Assert.Equal(DateTimeKind.Utc, change.Date.Kind);
+    }
+
+    [Fact]
+    public async Task PriceChanges_IgnoresOldAndSmallChanges()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var retenu = await AddChangedAsync(options, restaurant, "Retenu", 0.010m, 0.012m);               // +20 %, il y a 2 jours
+        await AddChangedAsync(options, restaurant, "Petite hausse", 0.0100m, 0.0104m);                   // +4 % : sous le seuil de 5 %
+        await AddChangedAsync(options, restaurant, "Petite baisse", 0.0100m, 0.0096m);                   // -4 %
+        var ancien = await AddUnpricedAsync(options, restaurant, "Ancien");                              // +100 %, mais il y a 40 jours
+        await AddPriceAsync(options, restaurant, ancien, 0.010m, DaysAgo(70));
+        await AddPriceAsync(options, restaurant, ancien, 0.020m, DaysAgo(40));
+
+        var changes = await service.GetRecentPriceChangesAsync();
+
+        Assert.Equal([retenu], changes.Select(c => c.IngredientId));
+    }
+
+    [Fact]
+    public async Task PriceChanges_SkipsIngredientsWithoutTwoEntriesOrWithZeroPreviousPrice()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var retenu = await AddChangedAsync(options, restaurant, "Retenu", 0.010m, 0.015m);
+        await AddUnpricedAsync(options, restaurant, "Sans prix");                                        // aucune entrée
+        var single = await AddUnpricedAsync(options, restaurant, "Un seul prix");                        // une seule entrée : rien à comparer
+        await AddPriceAsync(options, restaurant, single, 0.010m, DaysAgo(1));
+        await AddChangedAsync(options, restaurant, "Précédent nul", 0m, 0.010m);                         // division par zéro évitée
+
+        var changes = await service.GetRecentPriceChangesAsync();
+
+        Assert.Equal([retenu], changes.Select(c => c.IngredientId));
+    }
+
+    [Fact]
+    public async Task PriceChanges_ExcludesArchivedIngredientsAndOtherRestaurants()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var a = await TestData.CreateRestaurantAsync(options, "Restaurant A");
+        var b = await TestData.CreateRestaurantAsync(options, "Restaurant B");
+        var retenu = await AddChangedAsync(options, a, "Retenu", 0.010m, 0.012m);
+        var archived = await AddChangedAsync(options, a, "Archivé", 0.010m, 0.020m);
+        await new IngredientService(new TestContextFactory(options, a)).SetArchivedAsync(archived, true);
+        await AddChangedAsync(options, b, "Autre restaurant", 0.010m, 0.030m);
+
+        var changes = await CreateService(options, a).GetRecentPriceChangesAsync();
+
+        Assert.Equal([retenu], changes.Select(c => c.IngredientId));
+        Assert.Equal(["Autre restaurant"], (await CreateService(options, b).GetRecentPriceChangesAsync()).Select(c => c.Name));
+    }
+
+    [Fact]
+    public async Task PriceChanges_IncludesDecreasesSortedAfterIncreases()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        await AddChangedAsync(options, restaurant, "Baisse", 0.010m, 0.008m);                            // -20 %
+        await AddChangedAsync(options, restaurant, "Hausse faible", 0.010m, 0.011m);                     // +10 %
+        await AddChangedAsync(options, restaurant, "Forte baisse", 0.010m, 0.005m);                      // -50 %
+        await AddChangedAsync(options, restaurant, "Forte hausse", 0.010m, 0.015m);                      // +50 %
+
+        var changes = await CreateService(options, restaurant).GetRecentPriceChangesAsync();
+
+        Assert.Equal(["Forte hausse", "Hausse faible", "Baisse", "Forte baisse"], changes.Select(c => c.Name));
+        Assert.Equal([0.5m, 0.1m, -0.2m, -0.5m], changes.Select(c => c.ChangePercent));
+    }
+
+    [Fact]
+    public async Task PriceChanges_ComparesTwoLatestEntriesByDateThenId()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+
+        // Saisies dans le désordre : l'entrée la plus récente est la première enregistrée.
+        var outOfOrder = await AddUnpricedAsync(options, restaurant, "Hors ordre");
+        await AddPriceAsync(options, restaurant, outOfOrder, 0.012m, DaysAgo(2));
+        await AddPriceAsync(options, restaurant, outOfOrder, 0.010m, DaysAgo(9));
+
+        // Même date : la dernière enregistrée (identifiant le plus grand) est la plus récente.
+        var sameInstant = await AddUnpricedAsync(options, restaurant, "Même instant");
+        var instant = DaysAgo(3);
+        await AddPriceAsync(options, restaurant, sameInstant, 0.100m, DaysAgo(20));
+        await AddPriceAsync(options, restaurant, sameInstant, 0.010m, instant);
+        await AddPriceAsync(options, restaurant, sameInstant, 0.015m, instant);
+
+        var changes = await service.GetRecentPriceChangesAsync();
+
+        Assert.Equal(["Même instant", "Hors ordre"], changes.Select(c => c.Name));                       // +50 % puis +20 %
+        Assert.Equal([(0.010m, 0.015m), (0.010m, 0.012m)], changes.Select(c => (c.PreviousPrice, c.CurrentPrice)));
+    }
+
+    [Fact]
+    public async Task PriceChanges_ChangePercentIsNotRounded()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        await AddChangedAsync(options, restaurant, "Tiers", 0.003m, 0.004m);
+
+        var change = Assert.Single(await CreateService(options, restaurant).GetRecentPriceChangesAsync());
+
+        Assert.Equal((0.004m - 0.003m) / 0.003m, change.ChangePercent);                                  // 0,3333… et non 0,33
+    }
+
+    [Fact]
+    public async Task PriceChanges_ThresholdIsInclusiveAndBothBoundsAreConfigurable()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        await AddChangedAsync(options, restaurant, "Pile 5 %", 0.100m, 0.105m);                          // +5 % exactement, il y a 2 jours
+        var older = await AddUnpricedAsync(options, restaurant, "Il y a 29 jours");
+        await AddPriceAsync(options, restaurant, older, 0.010m, DaysAgo(40));
+        await AddPriceAsync(options, restaurant, older, 0.020m, DaysAgo(29));                            // +100 %, dans les 30 jours
+        var tooOld = await AddUnpricedAsync(options, restaurant, "Il y a 31 jours");
+        await AddPriceAsync(options, restaurant, tooOld, 0.010m, DaysAgo(40));
+        await AddPriceAsync(options, restaurant, tooOld, 0.020m, DaysAgo(31));                           // +100 %, hors des 30 jours
+
+        Assert.Equal(["Il y a 29 jours", "Pile 5 %"], (await service.GetRecentPriceChangesAsync()).Select(c => c.Name));
+        Assert.Equal(["Pile 5 %"], (await service.GetRecentPriceChangesAsync(days: 7)).Select(c => c.Name));
+        Assert.Equal(["Il y a 29 jours"], (await service.GetRecentPriceChangesAsync(minChange: 0.06m)).Select(c => c.Name));
+        Assert.Equal(
+            ["Il y a 29 jours", "Il y a 31 jours", "Pile 5 %"],                                          // +100 % à égalité : par nom
+            (await service.GetRecentPriceChangesAsync(days: 35)).Select(c => c.Name));
     }
 }

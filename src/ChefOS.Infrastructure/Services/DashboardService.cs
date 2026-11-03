@@ -52,6 +52,55 @@ public class DashboardService(RecipeService recipes, IDbContextFactory<ChefOsDbC
             watchList);
     }
 
+    /// <summary>
+    /// Variations de prix récentes des ingrédients non archivés du restaurant courant. Pour chaque ingrédient, on compare ses deux
+    /// dernières entrées d'historique (date décroissante, puis identifiant décroissant en cas d'égalité) : la dernière doit dater d'au plus
+    /// <paramref name="days"/> jours et la variation, en valeur absolue, atteindre <paramref name="minChange"/> (une fraction : 0,05 = 5 %).
+    /// Un ingrédient à moins de deux entrées, ou dont le prix précédent est nul, est ignoré. Hausses d'abord (la plus forte en tête),
+    /// puis baisses (la plus forte en dernier) ; à variation égale, par nom.
+    /// </summary>
+    public async Task<IReadOnlyList<PriceChange>> GetRecentPriceChangesAsync(int days = 30, decimal minChange = 0.05m)
+    {
+        var since = DateTime.UtcNow.AddDays(-days);
+
+        await using var db = await factory.CreateDbContextAsync();
+
+        // La dernière entrée est la plus récente : « une entrée à partir de `since` » équivaut à « dernière entrée récente ».
+        var candidates = await db.Ingredients
+            .AsNoTracking()
+            .Where(i => !i.IsArchived && db.IngredientPrices.Any(p => p.IngredientId == i.Id && p.Date >= since))
+            .Select(i => new
+            {
+                i.Id,
+                i.Name,
+                i.BaseUnit,
+                LatestTwo = db.IngredientPrices
+                    .Where(p => p.IngredientId == i.Id)
+                    .OrderByDescending(p => p.Date)
+                    .ThenByDescending(p => p.Id)
+                    .Take(2)
+                    .Select(p => new { p.Date, p.PricePerBaseUnit })
+                    .ToList()
+            })
+            .ToListAsync();
+
+        return candidates
+            .Where(c => c.LatestTwo.Count == 2 && c.LatestTwo[1].PricePerBaseUnit > 0m)
+            .Select(c =>
+            {
+                var current = c.LatestTwo[0];
+                var previous = c.LatestTwo[1].PricePerBaseUnit;
+
+                return new PriceChange(
+                    c.Id, c.Name, c.BaseUnit, previous, current.PricePerBaseUnit,
+                    (current.PricePerBaseUnit - previous) / previous, current.Date);
+            })
+            .Where(change => Math.Abs(change.ChangePercent) >= minChange)
+            .OrderByDescending(change => change.ChangePercent)
+            .ThenBy(change => change.Name, StringComparer.InvariantCultureIgnoreCase)
+            .ToList();
+    }
+
     private async Task<decimal> GetAlertThresholdAsync(int restaurantId)
     {
         await using var db = await factory.CreateDbContextAsync();
