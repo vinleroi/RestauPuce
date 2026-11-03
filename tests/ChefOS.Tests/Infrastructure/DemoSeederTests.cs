@@ -24,7 +24,7 @@ public class DemoSeederTests(PostgresFixture postgres)
     /// Hôte minimal : infrastructure branchée sur la base de test, Identity, restaurant courant fixe (aucun, comme le fait le seeder)
     /// et section <c>Demo</c> fournie par la configuration, comme dans une vraie application.
     /// </summary>
-    private static ServiceProvider BuildHost(
+    internal static ServiceProvider BuildHost(
         DbContextOptions<ChefOsDbContext> options, string password = DemoPassword, Action<IdentityBuilder>? configureIdentity = null)
     {
         string connectionString;
@@ -51,13 +51,13 @@ public class DemoSeederTests(PostgresFixture postgres)
         return services.BuildServiceProvider();
     }
 
-    private static async Task SeedAsync(ServiceProvider provider)
+    internal static async Task SeedAsync(ServiceProvider provider)
     {
         using var scope = provider.CreateScope();
         await scope.ServiceProvider.GetRequiredService<DemoSeeder>().SeedAsync();
     }
 
-    private static async Task<int> GetBistroIdAsync(DbContextOptions<ChefOsDbContext> options)
+    internal static async Task<int> GetBistroIdAsync(DbContextOptions<ChefOsDbContext> options)
     {
         await using var db = new ChefOsDbContext(options, new FixedTenantContext(null));
         return await db.Restaurants.Where(r => r.Slug == BistroSlug).Select(r => r.Id).SingleAsync();

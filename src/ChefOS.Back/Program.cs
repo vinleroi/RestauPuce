@@ -48,6 +48,8 @@ if (string.IsNullOrWhiteSpace(connectionString))
 
 builder.Services.AddChefOsInfrastructure(connectionString);
 builder.Services.AddChefOsDemoSeeder();
+// Lecteur de tickets : Claude (clé « Anthropic:ApiKey » ou ANTHROPIC_API_KEY) ou démonstration (« Receipts:Reader » = « Demo »).
+builder.Services.AddChefOsReceiptReader(builder.Configuration);
 builder.Services.AddHttpContextAccessor();
 // Restaurant courant lu dans le claim « chefos:restaurant » : il pilote l'isolation multi-restaurant du contexte.
 builder.Services.AddScoped<ITenantContext, ClaimsTenantContext>();

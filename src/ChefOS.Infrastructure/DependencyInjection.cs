@@ -1,7 +1,11 @@
+using Anthropic;
+using ChefOS.Core.Receipts;
 using ChefOS.Infrastructure.Data;
+using ChefOS.Infrastructure.Receipts;
 using ChefOS.Infrastructure.Seeding;
 using ChefOS.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ChefOS.Infrastructure;
@@ -35,6 +39,45 @@ public static class DependencyInjection
     {
         services.AddOptions<DemoOptions>().BindConfiguration("Demo");
         services.AddScoped<DemoSeeder>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Enregistre <see cref="ReceiptService"/> et le <see cref="IReceiptReader"/> choisi par la section <c>Receipts</c> (voir <see cref="ReceiptReaderOptions"/>) :
+    /// <see cref="DemoReceiptReader"/> avec <c>Reader = Demo</c> ; sinon <see cref="ClaudeReceiptReader"/>, avec la clé <c>Anthropic:ApiKey</c> ou, à défaut,
+    /// la variable d'environnement <c>ANTHROPIC_API_KEY</c>. Sans clé, le back démarre quand même : le lecteur enregistré fait échouer chaque lecture
+    /// avec un message explicite (le ticket passe en « échec » et le chef le saisit à la main).
+    /// Les lecteurs sont des singletons : ils ne gardent aucun état, et le client Anthropic (qui porte son <c>HttpClient</c>) est fait pour être partagé.
+    /// Choix lu à l'enregistrement : changer de lecteur ou de clé demande un redémarrage.
+    /// </summary>
+    public static IServiceCollection AddChefOsReceiptReader(this IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(ReceiptReaderOptions.SectionName);
+        services.Configure<ReceiptReaderOptions>(section);
+        services.AddScoped<ReceiptService>();
+
+        var options = section.Get<ReceiptReaderOptions>() ?? new ReceiptReaderOptions();
+        if (string.Equals(options.Reader?.Trim(), ReceiptReaderOptions.DemoReader, StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton<IReceiptReader, DemoReceiptReader>();
+            return services;
+        }
+
+        var apiKey = configuration["Anthropic:ApiKey"];
+        if (string.IsNullOrWhiteSpace(apiKey))
+            apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            services.AddSingleton<IReceiptReader, MissingKeyReceiptReader>();
+            return services;
+        }
+
+        var key = apiKey.Trim();
+        // Enregistré par fabrique : le conteneur possède le client et le libère à l'arrêt.
+        services.AddSingleton(_ => new AnthropicClient { ApiKey = key, Timeout = ClaudeReceiptReader.RequestTimeout });
+        services.AddSingleton<IReceiptReader, ClaudeReceiptReader>();
 
         return services;
     }

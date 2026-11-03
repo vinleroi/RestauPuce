@@ -52,6 +52,32 @@ dotnet run --project src/ChefOS.Vitrine
 
 La vitrine écoute sur <http://localhost:5108> et partage la base du back (même chaîne de connexion de développement).
 
+## Scan des tickets
+
+Le chef téléverse la photo (JPEG, PNG, WebP) ou le PDF d'un ticket ou d'une facture de fournisseur ; l'IA en lit les lignes, le chef corrige le brouillon, puis applique les nouveaux prix aux ingrédients. La lecture se fait avec [Claude](https://www.anthropic.com/claude) (modèle `claude-opus-5-5`, réponse JSON imposée par un schéma). Coût indicatif : **quelques centimes par ticket**.
+
+### Avec Claude
+
+Il faut une clé API Anthropic ([console Anthropic](https://console.anthropic.com/)). Rangez-la dans les secrets utilisateur du back, jamais dans un fichier `appsettings` ni dans git :
+
+```bash
+dotnet user-secrets set Anthropic:ApiKey <clé> --project src/ChefOS.Back
+```
+
+Autre possibilité : la variable d'environnement `ANTHROPIC_API_KEY` (ou `Anthropic__ApiKey`), qui sert aussi en production. La clé de `Anthropic:ApiKey` l'emporte sur la variable `ANTHROPIC_API_KEY`.
+
+Sans clé, le back démarre quand même : chaque ticket téléversé passe en « échec » avec le message « Clé API Anthropic non configurée », et le chef peut le saisir à la main.
+
+### Démonstration sans clé
+
+`appsettings.Development.json` choisit le lecteur avec `"Receipts": { "Reader": "Claude" }`. Pour une démonstration sans clé ni réseau, passez-le à `Demo` : quel que soit le fichier téléversé, le lecteur renvoie après une courte pause un ticket Metro daté du jour, dont les libellés correspondent aux ingrédients du Petit Bistro (dont un beurre à +10 %) et une ligne sans correspondance (« SACS POUBELLE 100L »).
+
+```bash
+Receipts__Reader=Demo dotnet run --project src/ChefOS.Back
+```
+
+Le choix du lecteur et la clé sont lus au démarrage : redémarrez le back après les avoir modifiés. Aucun test automatisé n'appelle l'API Anthropic.
+
 ## Tests
 
 ```bash
