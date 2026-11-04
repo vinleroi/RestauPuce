@@ -32,6 +32,14 @@ public class FoodCostBadgeTests
         Assert.Equal(FoodCostLevel.Warning, FoodCostBadge.Classify(Result(true, Threshold), Threshold));                 // seuil exact : pas d'alerte
     }
 
+    [Theory]
+    [InlineData(0.25, FoodCostLevel.Good)]
+    [InlineData(0.28, FoodCostLevel.Warning)]
+    [InlineData(0.35, FoodCostLevel.Warning)]
+    [InlineData(0.36, FoodCostLevel.Alert)]
+    public void Classify_FromAFraction_FollowsTheSameBoundaries(double foodCost, FoodCostLevel expected)
+        => Assert.Equal(expected, FoodCostBadge.Classify((decimal)foodCost, Threshold));
+
     private static CostResult Result(bool isComplete, decimal? foodCostPercent)
         => new(TotalCost: 4m, isComplete, Issues: [], Lines: [], PriceExclVat: 16m, foodCostPercent, Margin: 12m);
 }

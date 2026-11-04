@@ -12,9 +12,11 @@ namespace ChefOS.Infrastructure.Seeding;
 
 /// <summary>
 /// Remplit une base vide avec « Le Petit Bistro », un bistrot belge crédible (fournisseurs, ingrédients avec historique de prix,
-/// préparations, plats) et son compte de démonstration, pour que l'outil du chef paraisse vivant dès le premier lancement.
+/// préparations, plats, puis son activité : ventes, commandes, pertes, tickets et inventaires, voir <see cref="DemoActivity"/>)
+/// et son compte de démonstration, pour que l'outil du chef paraisse vivant dès le premier lancement.
 /// Les données sont écrites directement dans le contexte (pas via les services) mais respectent leurs règles :
-/// rendement de 1 à 100, plats avec prix et TVA, préparations avec quantité produite, une seule source par ligne, aucune boucle.
+/// rendement de 1 à 100, plats avec prix et TVA, préparations avec quantité produite, une seule source par ligne, aucune boucle,
+/// prix figés des ventes, commandes numérotées, tickets appliqués avec le prix de chaque ligne.
 /// </summary>
 public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<ChefOsDbContext> options, IOptions<DemoOptions> demo)
 {
@@ -102,6 +104,9 @@ public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<Che
         var preparations = AddPreparations(db, pantry);
         AddDishes(db, pantry, preparations);
         await db.SaveChangesAsync(ct);
+
+        // L'activité repose sur les plats et les prix qui viennent d'être écrits ; elle fait partie du même seed, donc de la même compensation en cas d'échec.
+        await DemoActivity.AddAsync(db, now, ct);
     }
 
     // ── Fournisseurs ─────────────────────────────────────────────────────────

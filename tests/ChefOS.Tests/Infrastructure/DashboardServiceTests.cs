@@ -1,6 +1,7 @@
 using ChefOS.Core.Costing;
 using ChefOS.Core.Ingredients;
 using ChefOS.Core.Recipes;
+using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Services;
@@ -13,6 +14,7 @@ public class DashboardServiceTests(PostgresFixture postgres)
 {
     private static DashboardService CreateService(DbContextOptions<ChefOsDbContext> options, int? restaurantId) =>
         new(new RecipeService(new TestContextFactory(options, restaurantId)),
+            new StatsService(new TestContextFactory(options, restaurantId)),
             new TestContextFactory(options, restaurantId),
             new FixedTenantContext(restaurantId));
 
@@ -128,6 +130,85 @@ public class DashboardServiceTests(PostgresFixture postgres)
             [FoodCostLevel.Incomplete, FoodCostLevel.Incomplete, FoodCostLevel.Alert, FoodCostLevel.Alert],
             summary.WatchList.Select(w => w.Level));
         Assert.Equal([null, null, 0.50m, 0.38m], summary.WatchList.Select(w => w.FoodCostPercent));
+    }
+
+    // ── Les 7 derniers jours ─────────────────────────────────────────────────
+
+    private static DateTime Today => DateTime.SpecifyKind(DateTime.UtcNow.Date, DateTimeKind.Utc);
+
+    private static Task SellAsync(DbContextOptions<ChefOsDbContext> options, int restaurantId, int recipeId, DateTime day, decimal quantity) =>
+        new SalesService(new TestContextFactory(options, restaurantId))
+            .SaveCellsAsync([new SalesCell(recipeId, day, ServicePeriod.Journee, false, quantity)]);
+
+    [Fact]
+    public async Task LastSevenDays_SumsEntriesAndOrdersFromSixDaysAgoThroughToday()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var baseIngredient = await AddIngredientAsync(options, restaurant, "Base");
+        // 11,20 € TTC à 12 % = 10,00 € HT ; coût de 200 g à 0,01 € = 2,00 € : 8,00 € de marge par portion.
+        var dish = await AddDishAsync(options, restaurant, "Stoemp", baseIngredient, 200m);
+
+        await SellAsync(options, restaurant, dish.Id, Today, 3m);                          // aujourd'hui : compte
+        await SellAsync(options, restaurant, dish.Id, Today.AddDays(-6), 2m);             // il y a 6 jours : première journée de la fenêtre
+        await SellAsync(options, restaurant, dish.Id, Today.AddDays(-7), 50m);            // il y a 7 jours : hors fenêtre
+        await new OrderService(new TestContextFactory(options, restaurant))
+            .CreateAsync(new OrderInput(OrderSource.Salle, "Table 1", null, [new OrderLineInput(dish.Id, 1, null)]));   // aujourd'hui, 1 portion
+
+        var week = await service.GetLastSevenDaysAsync();
+
+        Assert.Equal(Today.AddDays(-6), week.From);
+        Assert.Equal(Today, week.To);
+        Assert.Equal(60m, week.RevenueExclVat, 6);                                          // 6 portions × 10,00 €
+        Assert.Equal(48m, week.GrossMargin, 6);                                             // 60 − 6 × 2,00
+        Assert.False(week.CostIncomplete);
+    }
+
+    [Fact]
+    public async Task LastSevenDays_WithoutSales_IsZero()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+
+        var week = await CreateService(options, restaurant).GetLastSevenDaysAsync();
+
+        Assert.Equal(0m, week.RevenueExclVat);
+        Assert.Equal(0m, week.GrossMargin);
+        Assert.False(week.CostIncomplete);
+    }
+
+    [Fact]
+    public async Task LastSevenDays_ADishWithAnUnpricedIngredient_FlagsTheCostAsIncomplete()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var safran = await AddIngredientAsync(options, restaurant, "Safran", pricePerGram: null);
+        var paella = await AddDishAsync(options, restaurant, "Paella", safran, 300m);
+        await SellAsync(options, restaurant, paella.Id, Today.AddDays(-1), 4m);
+
+        var week = await CreateService(options, restaurant).GetLastSevenDaysAsync();
+
+        Assert.Equal(40m, week.RevenueExclVat, 6);
+        Assert.Equal(40m, week.GrossMargin, 6);                                             // coût inconnu : la marge est un maximum
+        Assert.True(week.CostIncomplete);
+    }
+
+    [Fact]
+    public async Task LastSevenDays_IgnoresTheSalesOfAnotherRestaurant()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var a = await TestData.CreateRestaurantAsync(options, "Restaurant A");
+        var b = await TestData.CreateRestaurantAsync(options, "Restaurant B");
+        var baseA = await AddIngredientAsync(options, a, "Base");
+        var baseB = await AddIngredientAsync(options, b, "Base");
+        var dishA = await AddDishAsync(options, a, "Stoemp", baseA, 200m);
+        var dishB = await AddDishAsync(options, b, "Stoemp", baseB, 200m);
+        await SellAsync(options, a, dishA.Id, Today.AddDays(-1), 1m);
+        await SellAsync(options, b, dishB.Id, Today.AddDays(-1), 100m);
+
+        Assert.Equal(10m, (await CreateService(options, a).GetLastSevenDaysAsync()).RevenueExclVat, 6);
+        Assert.Equal(1_000m, (await CreateService(options, b).GetLastSevenDaysAsync()).RevenueExclVat, 6);
     }
 
     [Fact]

@@ -24,6 +24,18 @@ else if (_summary is not null)
         <MudItem xs="12" sm="4">@Kpi("Food cost moyen", _summary.AverageFoodCost is { } average ? Ui.Percent(average) : "—")</MudItem>
     </MudGrid>
 
+    @if (_week is { } week)
+    {
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12" sm="6">
+                @Kpi("CA HT (7 jours)", Ui.Money(week.RevenueExclVat), caption: WeekCaption(week))
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                @Kpi("Marge brute (7 jours)", Ui.Money(week.GrossMargin), incomplete: week.CostIncomplete, caption: WeekCaption(week))
+            </MudItem>
+        </MudGrid>
+    }
+
     <MudPaper Elevation="1" Class="pa-4">
         <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Plats à surveiller</MudText>
 
@@ -80,6 +92,7 @@ else if (_summary is not null)
     private const int PriceChangeDays = 30;
 
     private DashboardSummary? _summary;
+    private SevenDayFigures? _week;
     private IReadOnlyList<PriceChange> _priceChanges = [];
     private decimal _threshold = Defaults.FoodCostAlertThreshold;
     private bool _loading = true;
@@ -90,6 +103,7 @@ else if (_summary is not null)
         {
             _summary = await DashboardService.GetSummaryAsync();
             _priceChanges = await DashboardService.GetRecentPriceChangesAsync(PriceChangeDays);
+            _week = await DashboardService.GetLastSevenDaysAsync();
 
             // Le seuil sert à l'infobulle de la pastille rouge (« Au-dessus du seuil d'alerte (35 %) »).
             var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;
@@ -101,9 +115,25 @@ else if (_summary is not null)
         }
     }
 
-    private RenderFragment Kpi(string label, string value) =>
+    private static string WeekCaption(SevenDayFigures week) =>
+        $"du {week.From.ToString("dd/MM", System.Globalization.CultureInfo.InvariantCulture)} au {week.To.ToString("dd/MM", System.Globalization.CultureInfo.InvariantCulture)} · ventes saisies et commandes";
+
+    // Un chiffre des 7 jours dit où lire le détail : le lien mène aux statistiques.
+    private RenderFragment Kpi(string label, string value, bool incomplete = false, string? caption = null) =>
         @<MudPaper Elevation="1" Class="pa-4">
             <MudText Typo="Typo.overline" Style="color: var(--mud-palette-text-secondary)">@label</MudText>
-            <MudText Typo="Typo.h3" HtmlTag="p">@value</MudText>
+            <MudText Typo="Typo.h3" HtmlTag="p">
+                @value
+                @if (incomplete)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span" title="Un prix manque : ce chiffre est partiel">(incomplet)</MudText>
+                }
+            </MudText>
+            @if (caption is not null)
+            {
+                <MudText Typo="Typo.caption" HtmlTag="p" Style="color: var(--mud-palette-text-secondary)">
+                    @caption · <MudLink Href="/stats">Voir les statistiques</MudLink>
+                </MudText>
+            }
         </MudPaper>;
 }

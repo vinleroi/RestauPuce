@@ -27,6 +27,15 @@ public static class Ui
     /// <summary>« 12,50 € ».</summary>
     public static string Money(decimal amount) => amount.ToString("N2", Fr) + " €";
 
+    /// <summary>Montant signé (« +12,50 € » pour une perte, « -3,00 € » pour un gain) ; zéro, ou trop petit pour s'afficher, reste « 0,00 € ».</summary>
+    public static string SignedMoney(decimal amount) =>
+        Math.Round(amount, 2, MidpointRounding.AwayFromZero) switch
+        {
+            > 0m => "+" + Money(amount),
+            0m => Money(0m),
+            _ => Money(amount)
+        };
+
     /// <summary>Pourcentage depuis une fraction (0,875 → « 87,5 % »), au plus deux décimales, sans zéro inutile.</summary>
     public static string Percent(decimal fraction) => (fraction * 100m).ToString("0.##", Fr) + " %";
 
@@ -133,6 +142,34 @@ public static class Ui
         return $"{quantity.ToString("0.####", Fr)} {label}";
     }
 
+    /// <summary>
+    /// Une quantité en unité de base, lisible : « 800 g » puis « 1,5 kg » à partir d'un kilo, « 350 ml » puis « 2 l », « 12 pièces ». Arrondie à l'affichage
+    /// (au gramme ou millilitre, à deux décimales pour kg et l, à une pour les pièces). Une quantité négative garde son signe.
+    /// </summary>
+    public static string BaseQuantityText(decimal quantity, BaseUnit baseUnit) => baseUnit switch
+    {
+        BaseUnit.Gram => ScaledQuantity(quantity, "g", "kg"),
+        BaseUnit.Milliliter => ScaledQuantity(quantity, "ml", "l"),
+        BaseUnit.Piece => PieceQuantity(quantity),
+        _ => throw new ArgumentOutOfRangeException(nameof(baseUnit), baseUnit, null)
+    };
+
+    private static string ScaledQuantity(decimal quantity, string smallUnit, string largeUnit)
+    {
+        var small = Math.Round(quantity, 0, MidpointRounding.AwayFromZero);
+        if (Math.Abs(small) >= 1000m)
+            return Math.Round(quantity / 1000m, 2, MidpointRounding.AwayFromZero).ToString("0.##", Fr) + " " + largeUnit;
+
+        // Un arrondi à zéro ne garde pas le signe de la quantité (« -0 »).
+        return (small == 0m ? 0m : small).ToString("0", Fr) + " " + smallUnit;
+    }
+
+    private static string PieceQuantity(decimal quantity)
+    {
+        var rounded = Math.Round(quantity, 1, MidpointRounding.AwayFromZero);
+        return (rounded == 0m ? 0m : rounded).ToString("0.#", Fr) + (Math.Abs(rounded) > 1m ? " pièces" : " pièce");
+    }
+
     /// <summary>Unité de la quantité produite par une préparation : kg, l ou pièces (au pluriel : on produit plusieurs pièces).</summary>
     public static string OutputUnitLabel(MeasureUnit unit) => unit == MeasureUnit.Piece ? "pièces" : MeasureUnitLabel(unit);
 
@@ -233,6 +270,34 @@ public static class Ui
         StockCountStatus.Brouillon => "Brouillon",
         StockCountStatus.Cloture => "Clôturé",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
+    };
+
+    public static string MenuClassLabel(MenuClass menuClass) => menuClass switch
+    {
+        MenuClass.Etoile => "Étoile",
+        MenuClass.VacheALait => "Vache à lait",
+        MenuClass.Enigme => "Énigme",
+        MenuClass.PoidsMort => "Poids mort",
+        _ => throw new ArgumentOutOfRangeException(nameof(menuClass), menuClass, null)
+    };
+
+    /// <summary>Le conseil d'une ligne pour un quadrant du menu engineering.</summary>
+    public static string MenuClassAdvice(MenuClass menuClass) => menuClass switch
+    {
+        MenuClass.Etoile => "À garder tel quel",
+        MenuClass.VacheALait => "Revoir le coût ou le prix",
+        MenuClass.Enigme => "À mettre en avant",
+        MenuClass.PoidsMort => "À remplacer",
+        _ => throw new ArgumentOutOfRangeException(nameof(menuClass), menuClass, null)
+    };
+
+    public static string MenuClassEmoji(MenuClass menuClass) => menuClass switch
+    {
+        MenuClass.Etoile => "⭐",
+        MenuClass.VacheALait => "🐄",
+        MenuClass.Enigme => "🧩",
+        MenuClass.PoidsMort => "⚓",
+        _ => throw new ArgumentOutOfRangeException(nameof(menuClass), menuClass, null)
     };
 
     public static string ServiceLabel(ServicePeriod service) => service switch

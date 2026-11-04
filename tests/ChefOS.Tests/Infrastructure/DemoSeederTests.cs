@@ -1,6 +1,9 @@
 using ChefOS.Core.Ingredients;
+using ChefOS.Core.Receipts;
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
+using ChefOS.Core.Sales;
+using ChefOS.Core.Units;
 using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Identity;
@@ -122,7 +125,9 @@ public class DemoSeederTests(PostgresFixture postgres)
         var book = await new RecipeService(new TestContextFactory(options, restaurantId)).LoadBookAsync();
         await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
 
-        Assert.Equal(3, await db.Suppliers.CountAsync());
+        // Les trois fournisseurs des ingrédients, et Metro, chez qui le bistro fait ses achats d'épicerie et de boissons (tickets appliqués).
+        Assert.Equal(4, await db.Suppliers.CountAsync());
+        Assert.Contains(await db.Suppliers.ToListAsync(), supplier => supplier.Name == "Metro");
         Assert.All(book.Ingredients, i =>
         {
             Assert.InRange(i.YieldPercent, 1m, 100m);
@@ -195,7 +200,10 @@ public class DemoSeederTests(PostgresFixture postgres)
         [
             await db.Restaurants.CountAsync(), await db.Memberships.CountAsync(), await db.Users.CountAsync(),
             await db.Suppliers.CountAsync(), await db.Ingredients.CountAsync(), await db.IngredientPrices.CountAsync(),
-            await db.Recipes.CountAsync(), await db.RecipeLines.CountAsync()
+            await db.Recipes.CountAsync(), await db.RecipeLines.CountAsync(),
+            await db.SalesEntries.CountAsync(), await db.Orders.CountAsync(), await db.OrderLines.CountAsync(),
+            await db.WasteEntries.CountAsync(), await db.StockCounts.CountAsync(), await db.StockCountLines.CountAsync(),
+            await db.Receipts.CountAsync(), await db.ReceiptLines.CountAsync()
         ];
     }
 
@@ -233,13 +241,267 @@ public class DemoSeederTests(PostgresFixture postgres)
 
         // Le tableau de bord du restaurant de démo : même assemblage que les hôtes, avec le restaurant courant du bistro.
         var factory = new TestContextFactory(options, restaurantId);
-        var summary = await new DashboardService(new RecipeService(factory), factory, new FixedTenantContext(restaurantId))
-            .GetSummaryAsync();
+        var dashboard = new DashboardService(new RecipeService(factory), new StatsService(factory), factory, new FixedTenantContext(restaurantId));
+        var summary = await dashboard.GetSummaryAsync();
 
         Assert.True(summary.DishCount >= 10);
         Assert.Equal(5, summary.PreparationCount);
         var watched = Assert.Single(summary.WatchList);
         Assert.Equal("Croquettes de crevettes", watched.Name);
+
+        // Les ventes des 7 derniers jours (saisies de J-7 à J-1 incluses dans la fenêtre J-6 à J, commandes) font vivre les chiffres de la semaine.
+        var week = await dashboard.GetLastSevenDaysAsync();
+        Assert.True(week.RevenueExclVat > 5_000m, $"{week.RevenueExclVat} € de CA HT sur 7 jours");
+        Assert.True(week.GrossMargin > 0.6m * week.RevenueExclVat);
+        Assert.False(week.CostIncomplete);
+    }
+
+    // ── Activité : ventes, commandes, pertes, tickets et inventaires ─────────
+
+    private static DateTime Today => DateTime.SpecifyKind(DateTime.UtcNow.Date, DateTimeKind.Utc);
+
+    /// <summary>Les statistiques des 4 dernières semaines (J-27 à J), la période par défaut de la page /stats.</summary>
+    private async Task<(DbContextOptions<ChefOsDbContext> Options, int RestaurantId, PeriodStats Stats)> SeedAndReadLastFourWeeksAsync()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        await using var provider = BuildHost(options);
+        await SeedAsync(provider);
+        var restaurantId = await GetBistroIdAsync(options);
+
+        var stats = await new StatsService(new TestContextFactory(options, restaurantId)).GetAsync(Today.AddDays(-27), Today);
+        return (options, restaurantId, stats);
+    }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_PopulatesTheFourMenuEngineeringQuadrantsOverTheLastFourWeeks()
+    {
+        var (_, _, stats) = await SeedAndReadLastFourWeeksAsync();
+
+        Assert.Equal(12, stats.Dishes.Count);
+        Assert.All(stats.Dishes, d => Assert.False(d.CostIncomplete, d.Name));
+        var byClass = stats.Dishes.GroupBy(d => d.Class).ToDictionary(g => g.Key!.Value, g => g.Select(d => d.Name).ToList());
+        Assert.Equal(Enum.GetValues<MenuClass>().Order(), byClass.Keys.Order());
+        Assert.All(byClass.Values, names => Assert.NotEmpty(names));
+
+        // Le plat à surveiller (food cost > 35 %) se vend bien mais rapporte peu : une vache à lait.
+        Assert.Contains("Croquettes de crevettes", byClass[MenuClass.VacheALait]);
+        Assert.Contains("Moules-frites", byClass[MenuClass.Etoile]);
+    }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_GivesTheLastFourWeeksCoherentFigures()
+    {
+        var (_, _, stats) = await SeedAndReadLastFourWeeksAsync();
+
+        Assert.Equal(28, stats.RevenueByDay.Count);
+        Assert.InRange(stats.RevenueExclVat, 20_000m, 60_000m);
+        Assert.True(stats.RevenueFromEntries > 0m);
+        Assert.True(stats.RevenueFromOrders > 0m);
+        Assert.Equal(0m, stats.WeeklyTotalsRevenue);                   // le bistro saisit au jour, pas à la semaine
+        Assert.False(stats.CostIncomplete);
+        Assert.InRange(stats.TheoreticalFoodCost!.Value, 0.22m, 0.32m);
+        Assert.True(stats.GrossMargin > 0.6m * stats.RevenueExclVat);
+
+        // Fermé le lundi : aucune vente saisie ce jour-là.
+        Assert.All(stats.RevenueByDay.Where(d => d.Day.DayOfWeek == DayOfWeek.Monday), d => Assert.Equal(0m, d.FromEntries));
+        Assert.True(stats.RevenueByDay.Count(d => d.FromEntries > 0m) >= 20);
+    }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_RecordsEightWeeksOfDailySalesAtTheFrozenDishPrice()
+    {
+        var (options, restaurantId, _) = await SeedAndReadLastFourWeeksAsync();
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        var entries = await db.SalesEntries.ToListAsync();
+        var prices = await db.Recipes.ToDictionaryAsync(r => r.Id);
+
+        var today = Today;
+        Assert.All(entries, e =>
+        {
+            Assert.Equal(DateTimeKind.Utc, e.Date.Kind);
+            Assert.InRange(e.Date, today.AddDays(-56), today.AddDays(-1));
+            Assert.NotEqual(DayOfWeek.Monday, e.Date.DayOfWeek);
+            Assert.False(e.IsWeeklyTotal);
+            Assert.Equal(ServicePeriod.Journee, e.Service);
+            Assert.True(e.Quantity > 0m);
+            Assert.Equal(prices[e.RecipeId].SellingPriceInclVat, e.UnitPriceInclVat);
+            Assert.Equal(prices[e.RecipeId].VatRate, e.VatRate);
+        });
+        Assert.Equal(48, entries.Select(e => e.Date).Distinct().Count());          // 8 semaines de 6 jours d'ouverture
+        Assert.Equal(entries.Count, entries.Select(e => (e.RecipeId, e.Date)).Distinct().Count());
+        Assert.Equal(12, entries.Select(e => e.RecipeId).Distinct().Count());
+    }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_TakesAboutFifteenOrdersOverTheLastWeek_OneOfThemCancelled_AndExcludesItFromRevenue()
+    {
+        var (options, restaurantId, stats) = await SeedAndReadLastFourWeeksAsync();
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        var orders = await db.Orders.Include(o => o.Lines).OrderBy(o => o.Number).ToListAsync();
+
+        Assert.InRange(orders.Count, 14, 18);
+        Assert.Equal(Enumerable.Range(1, orders.Count), orders.Select(o => o.Number));            // numéros séquentiels 1..n
+        Assert.Equal(orders.OrderBy(o => o.CreatedAt).Select(o => o.Number), orders.Select(o => o.Number));
+        var now = DateTime.UtcNow;
+        Assert.All(orders, o =>
+        {
+            Assert.InRange(o.CreatedAt, Today.AddDays(-6), now);
+            Assert.InRange(o.StatusChangedAt, o.CreatedAt, now);
+            Assert.NotEmpty(o.Lines);
+        });
+        Assert.True(orders.Select(o => o.Status).Distinct().Count() >= 4, "statuts variés");
+        Assert.True(orders.Select(o => o.Source).Distinct().Count() >= 3, "sources variées");
+
+        var cancelled = Assert.Single(orders, o => o.Status == OrderStatus.Annulee);
+        Assert.NotEmpty(cancelled.Lines);
+
+        // Le chiffre d'affaires des commandes ne compte que les lignes des commandes non annulées, aux prix figés.
+        static decimal Revenue(IEnumerable<Order> source) =>
+            source.SelectMany(o => o.Lines).Sum(l => l.Quantity * l.UnitPriceInclVat / (1m + l.VatRate));
+        var expected = Revenue(orders.Where(o => o.Status != OrderStatus.Annulee));
+        Assert.Equal(expected, stats.RevenueFromOrders, 6);
+        Assert.NotEqual(Revenue(orders), stats.RevenueFromOrders);
+    }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_DeclaresSixWastes_OnIngredientsADishAndAPreparation()
+    {
+        var (options, restaurantId, stats) = await SeedAndReadLastFourWeeksAsync();
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        var waste = await db.WasteEntries.ToListAsync();
+        var kinds = await db.Recipes.ToDictionaryAsync(r => r.Id, r => r.Kind);
+
+        Assert.Equal(6, waste.Count);
+        Assert.All(waste, w =>
+        {
+            Assert.True(w.IngredientId is null ^ w.RecipeId is null);
+            Assert.InRange(w.Date, Today.AddDays(-28), Today);
+            Assert.True(w.Quantity > 0m);
+        });
+        Assert.Contains(waste, w => w.IngredientId is not null);
+        Assert.Contains(waste, w => w.RecipeId is { } id && kinds[id] == RecipeKind.Dish);
+        Assert.Contains(waste, w => w.RecipeId is { } id && kinds[id] == RecipeKind.Preparation);
+        Assert.True(waste.Select(w => w.Reason).Distinct().Count() >= 4);
+
+        Assert.True(stats.WasteCost > 0m);
+        Assert.False(stats.WasteCostIncomplete);
+        Assert.Equal(waste.Select(w => w.Reason).Distinct().Count(), stats.Waste.Count);
+    }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_ShowsAPlausibleInventoryVarianceBetweenTwoClosedCounts()
+    {
+        var (_, _, stats) = await SeedAndReadLastFourWeeksAsync();
+
+        var variance = Assert.IsType<VarianceReport>(stats.Variance);
+        Assert.Equal(Today.AddDays(-28), variance.OpeningDate);
+        Assert.Equal(Today, variance.ClosingDate);
+        Assert.NotNull(stats.ActualFoodCost);
+        Assert.InRange(stats.ActualFoodCost!.Value, 0.22m, 0.36m);
+
+        var losses = variance.Rows.Where(r => r.VarianceValue > 0m).ToList();
+        Assert.True(losses.Count >= 2, $"{losses.Count} écarts positifs");
+        Assert.All(variance.Rows, r => Assert.NotNull(r.VarianceValue));
+
+        // Les trois produits à pertes inexpliquées dominent le tableau, avec des montants plausibles pour un bistrot (quelques dizaines d'euros).
+        var top3 = variance.Rows.OrderByDescending(r => r.VarianceValue).Take(3).ToList();
+        Assert.Equal(
+            new[] { "Beurre doux", "Crevettes grises décortiquées", "Crème fraîche liquide 35 %" }.Order(StringComparer.Ordinal),
+            top3.Select(r => r.Name).Order(StringComparer.Ordinal));
+        Assert.All(top3, r => Assert.InRange(r.VarianceValue!.Value, 5m, 200m));
+        Assert.All(top3, r => Assert.True(r.ActualUse > r.TheoreticalUse));
+
+        // Le total reste modeste devant le chiffre d'affaires : une perte inexpliquée de l'ordre d'un pour cent, pas un trou.
+        Assert.InRange(variance.TotalVarianceValue, 20m, 0.05m * stats.RevenueExclVat);
+        Assert.Empty(variance.Warnings);
+        // Les herbes ne sont pas comptées : elles sont nommées à part, avec tout ce qui a bougé sans être compté aux deux inventaires.
+        Assert.Equal(["Laurier séché", "Persil plat", "Thym frais"], variance.NotCountedIngredients.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_ClosesTwoCountsOfTheSameIngredients_BracketingAppliedMetroReceipts()
+    {
+        var (options, restaurantId, _) = await SeedAndReadLastFourWeeksAsync();
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        var counts = await db.StockCounts.Include(c => c.Lines).OrderBy(c => c.Date).ToListAsync();
+        var ingredients = await db.Ingredients.ToDictionaryAsync(i => i.Id);
+
+        Assert.Equal(2, counts.Count);
+        Assert.Equal([Today.AddDays(-28), Today], counts.Select(c => c.Date));
+        Assert.All(counts, c =>
+        {
+            Assert.Equal(StockCountStatus.Cloture, c.Status);
+            Assert.NotNull(c.ClosedAt);
+            Assert.True(c.ClosedAt <= DateTime.UtcNow);
+            Assert.True(c.Lines.Count >= 20);
+            Assert.All(c.Lines, l =>
+            {
+                var ingredient = ingredients[l.IngredientId];
+                Assert.True(l.Quantity >= 0m);
+                Assert.Equal(UnitConverter.ToBase(l.Quantity, l.Unit, ingredient.BaseUnit, ingredient.AveragePieceWeightGrams).Value, l.BaseQuantity);
+            });
+        });
+        // Les deux inventaires comptent les mêmes ingrédients : seuls ceux-là ont une ligne d'écart.
+        Assert.Equal(
+            counts[0].Lines.Select(l => l.IngredientId).Order(),
+            counts[1].Lines.Select(l => l.IngredientId).Order());
+
+        var metro = await db.Suppliers.SingleAsync(s => s.Name == "Metro");
+        var receipts = await db.Receipts.Include(r => r.Lines).ToListAsync();
+        var metroReceipts = receipts.Where(r => r.SupplierId == metro.Id).ToList();
+        Assert.NotEmpty(metroReceipts);
+        Assert.All(receipts, r =>
+        {
+            Assert.Equal(ReceiptStatus.Applied, r.Status);
+            Assert.NotNull(r.SupplierId);
+            Assert.NotNull(r.ReceiptDate);
+            Assert.True(r.ReceiptDate > counts[0].Date && r.ReceiptDate <= counts[1].Date);     // dans ]ouverture, clôture]
+            Assert.False(r.AmountsIncludeVat);
+            Assert.Equal(r.Lines.Sum(l => l.LineTotal), r.Total);
+            Assert.NotEmpty(r.Lines);
+            Assert.All(r.Lines, l =>
+            {
+                var ingredient = ingredients[l.IngredientId!.Value];
+                Assert.False(l.IsIgnored);
+                Assert.True(l.Quantity > 0m);
+                Assert.NotNull(l.Unit);
+                Assert.True(l.LineTotalExclVat > 0m);
+                // Quantité convertie par l'unité de la ligne, comme à l'application d'un ticket ; le prix de ligne est le total HT divisé par cette quantité.
+                var baseQuantity = UnitConverter.ToBase(l.Quantity!.Value, l.Unit!.Value, ingredient.BaseUnit, ingredient.AveragePieceWeightGrams);
+                Assert.True(baseQuantity.Success);
+                Assert.Equal(l.LineTotalExclVat!.Value / baseQuantity.Value, l.AppliedPricePerBaseUnit!.Value, 6);
+            });
+        });
+
+        // Le prix de chaque ligne est aussi dans l'historique, au jour du ticket, avec sa source.
+        var receiptPrices = await db.IngredientPrices.Where(p => p.Source == PriceSource.Receipt && p.SupplierId == metro.Id).ToListAsync();
+        Assert.NotEmpty(receiptPrices);
+        Assert.All(receiptPrices, p => Assert.Contains(metroReceipts, r => r.ReceiptDate == p.Date && r.Lines.Any(l => l.IngredientId == p.IngredientId)));
+    }
+
+    [Fact]
+    public async Task Seed_DeletingTheBistro_TakesTheWholeActivityWithIt_SoAFailedSeedLeavesNothingBehind()
+    {
+        // La compensation d'un seed qui échoue supprime le restaurant : tout ce que l'activité a déjà écrit doit partir avec lui.
+        var options = await postgres.CreateDatabaseAsync();
+        await using var provider = BuildHost(options);
+        await SeedAsync(provider);
+        var restaurantId = await GetBistroIdAsync(options);
+
+        await using var global = new ChefOsDbContext(options, new FixedTenantContext(null));
+        await global.Restaurants.Where(r => r.Id == restaurantId).ExecuteDeleteAsync();
+
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        Assert.Empty(await db.Suppliers.ToListAsync());
+        Assert.Empty(await db.SalesEntries.ToListAsync());
+        Assert.Empty(await db.Orders.ToListAsync());
+        Assert.Empty(await db.OrderLines.ToListAsync());
+        Assert.Empty(await db.WasteEntries.ToListAsync());
+        Assert.Empty(await db.StockCounts.ToListAsync());
+        Assert.Empty(await db.StockCountLines.ToListAsync());
+        Assert.Empty(await db.Receipts.ToListAsync());
+        Assert.Empty(await db.ReceiptLines.ToListAsync());
+        Assert.Empty(await db.IngredientPrices.ToListAsync());
     }
 
     [Fact]

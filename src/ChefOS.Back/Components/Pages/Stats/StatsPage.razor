@@ -1,0 +1,590 @@
+@page "/stats"
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Costing
+@using ChefOS.Core.Restaurants
+@using ChefOS.Core.Sales
+@using ChefOS.Infrastructure.Data
+@using ChefOS.Infrastructure.Services
+
+@inject StatsService StatsService
+@inject RestaurantService RestaurantService
+@inject ITenantContext Tenant
+
+<PageTitle>Statistiques — ChefOS</PageTitle>
+
+<MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Statistiques</MudText>
+
+<MudPaper Elevation="1" Class="pa-3 mb-4">
+    <div class="d-flex align-center flex-wrap gap-2">
+        @foreach (var preset in StatsPeriod.Presets)
+        {
+            var current = preset;
+            <MudButton Variant="@(_preset == current ? Variant.Filled : Variant.Outlined)" Color="Color.Primary" Size="Size.Small"
+                       OnClick="@(() => SelectPresetAsync(current))" Disabled="_loading && _stats is null">
+                @StatsPeriod.Label(current)
+            </MudButton>
+        }
+    </div>
+
+    @if (_preset == StatsPreset.Custom)
+    {
+        <MudGrid Spacing="2" Class="align-center mt-1">
+            <MudItem xs="6" md="3">
+                <MudDatePicker Date="_customFrom" DateChanged="SetCustomFromAsync" Label="Du" Culture="Ui.Fr" DateFormat="dd/MM/yyyy" Editable="true"
+                               Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudDatePicker Date="_customTo" DateChanged="SetCustomToAsync" Label="Au" Culture="Ui.Fr" DateFormat="dd/MM/yyyy" Editable="true"
+                               Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+        </MudGrid>
+    }
+
+    @if (_stats is not null)
+    {
+        <MudText Typo="Typo.body2" Class="mt-2" Style="@Muted">
+            Période : @_period.Text (@(_period.Days == 1 ? "1 jour" : $"{_period.Days} jours")) · jours UTC · chiffres hors TVA
+        </MudText>
+    }
+</MudPaper>
+
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4">@_error</MudAlert>
+}
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-4" />
+}
+
+@if (_stats is { } stats)
+{
+    @* ── Chiffres clés ── *@
+    <MudGrid Spacing="3" Class="mb-4">
+        <MudItem xs="12" sm="6" md="4">
+            @Kpi("CA HT", Ui.Money(stats.RevenueExclVat), caption: $"Saisies {Ui.Money(stats.RevenueFromEntries)} · Commandes {Ui.Money(stats.RevenueFromOrders)}")
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4">
+            @Kpi("Coût théorique", Ui.Money(stats.TheoreticalCost), incomplete: stats.CostIncomplete,
+                 caption: "Coût de revient des plats vendus, aux prix du dernier jour de la période")
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4">
+            @Kpi("Marge brute", Ui.Money(stats.GrossMargin), incomplete: stats.CostIncomplete, caption: "CA HT − coût théorique")
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4">
+            @Kpi("Food cost théorique", stats.TheoreticalFoodCost is { } theoretical ? Ui.Percent(theoretical) : "—", incomplete: stats.CostIncomplete,
+                 caption: "Coût théorique ÷ CA HT")
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4">
+            @Kpi("Pertes", Ui.Money(stats.WasteCost), incomplete: stats.WasteCostIncomplete, caption: WasteCaption(stats))
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4">
+            @ActualFoodCostKpi(stats)
+        </MudItem>
+    </MudGrid>
+
+    @* ── Chiffre d'affaires par jour ── *@
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Chiffre d'affaires HT par @(_weekly ? "semaine" : "jour")</MudText>
+
+        @if (StatsView.HasRevenue(stats.RevenueByDay))
+        {
+            <MudChart T="double" ChartType="ChartType.StackedBar" ChartSeries="_series" ChartLabels="_chartLabels" ChartOptions="_chartOptions"
+                      Width="100%" Height="320px" />
+            @if (_weekly)
+            {
+                <MudText Typo="Typo.caption" Style="@Muted">Période longue : les jours sont regroupés par semaine (la date est celle du premier jour).</MudText>
+            }
+        }
+        else
+        {
+            <MudText Style="@Muted">Aucune vente au jour sur cette période.</MudText>
+        }
+
+        @if (stats.WeeklyTotalsRevenue > 0m)
+        {
+            <MudText Typo="Typo.body2" Class="mt-2" Style="@Muted">+ @Ui.Money(stats.WeeklyTotalsRevenue) saisis à la semaine</MudText>
+        }
+    </MudPaper>
+
+    @* ── Plats ── *@
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Plats vendus</MudText>
+
+        <MudTable T="DishProfit" Items="stats.Dishes" Hover="true" Dense="true" Elevation="0">
+            <HeaderContent>
+                <MudTh><MudTableSortLabel T="DishProfit" SortBy="@(d => d.Name)">Plat</MudTableSortLabel></MudTh>
+                <MudTh Style="text-align: right"><MudTableSortLabel T="DishProfit" SortBy="@(d => (object)d.QuantitySold)">Quantité</MudTableSortLabel></MudTh>
+                <MudTh Style="text-align: right">
+                    <MudTableSortLabel T="DishProfit" SortBy="@(d => (object)d.RevenueExclVat)" InitialDirection="SortDirection.Descending">CA HT</MudTableSortLabel>
+                </MudTh>
+                <MudTh Style="text-align: right"><MudTableSortLabel T="DishProfit" SortBy="@(d => (object?)d.TotalCost ?? -1m)">Coût</MudTableSortLabel></MudTh>
+                <MudTh Style="text-align: right"><MudTableSortLabel T="DishProfit" SortBy="@(d => (object?)d.Margin ?? -1m)">Marge</MudTableSortLabel></MudTh>
+                <MudTh><MudTableSortLabel T="DishProfit" SortBy="@(d => (object?)d.FoodCostPercent ?? -1m)">Food cost</MudTableSortLabel></MudTh>
+                <MudTh><MudTableSortLabel T="DishProfit" SortBy="@(d => d.Class is { } menuClass ? (int)menuClass : -1)">Classe</MudTableSortLabel></MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Plat">
+                    @context.Name
+                    @if (context.CostIncomplete)
+                    {
+                        <span title="Coût incomplet : certaines lignes de la recette n'ont pas de prix" aria-label="Coût incomplet">⚠️</span>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Quantité" Style="text-align: right; white-space: nowrap">
+                    <div>@context.QuantitySold.ToString("0.##", Ui.Fr)</div>
+                    @if (context.QuantityFromOrders > 0m)
+                    {
+                        <MudText Typo="Typo.caption" HtmlTag="div" Style="@Muted" title="@($"{context.QuantityFromEntries.ToString("0.##", Ui.Fr)} saisies + {context.QuantityFromOrders.ToString("0.##", Ui.Fr)} en commandes")">
+                            dont @context.QuantityFromOrders.ToString("0.##", Ui.Fr) en commandes
+                        </MudText>
+                    }
+                </MudTd>
+                <MudTd DataLabel="CA HT" Style="text-align: right; white-space: nowrap">@Ui.Money(context.RevenueExclVat)</MudTd>
+                <MudTd DataLabel="Coût" Style="text-align: right; white-space: nowrap">@Amount(context.TotalCost, context.CostIncomplete)</MudTd>
+                <MudTd DataLabel="Marge" Style="text-align: right; white-space: nowrap">@Amount(context.Margin, context.CostIncomplete)</MudTd>
+                <MudTd DataLabel="Food cost">
+                    @if (context.CostIncomplete)
+                    {
+                        <FoodCostChip Level="FoodCostLevel.Incomplete" Threshold="_threshold" />
+                    }
+                    else if (context.FoodCostPercent is { } foodCost)
+                    {
+                        <FoodCostChip Level="FoodCostBadge.Classify(foodCost, _threshold)" FoodCostPercent="foodCost" Threshold="_threshold" />
+                    }
+                    else
+                    {
+                        <span>—</span>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Classe">
+                    @if (context.Class is { } menuClass)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="ClassColor(menuClass)" Variant="Variant.Outlined" title="@Ui.MenuClassAdvice(menuClass)">
+                            @Ui.MenuClassEmoji(menuClass) @Ui.MenuClassLabel(menuClass)
+                        </MudChip>
+                    }
+                    else
+                    {
+                        <span title="Non classé : le coût du plat est incomplet">—</span>
+                    }
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText Class="pa-4">Aucune vente sur cette période.</MudText>
+            </NoRecordsContent>
+        </MudTable>
+    </MudPaper>
+
+    @* ── Menu engineering ── *@
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Menu engineering</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3" Style="@Muted">
+            Chaque plat vendu est classé selon sa popularité (au moins @Ui.Percent(MenuEngineering.PopularityFactor) d'une part égale des portions vendues)
+            et sa marge par portion (au moins la marge moyenne, pondérée par les quantités).
+        </MudText>
+
+        @if (stats.Dishes.All(d => d.Class is null))
+        {
+            <MudText Style="@Muted">Aucun plat à classer sur cette période.</MudText>
+        }
+        else
+        {
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="6">@Quadrant(stats, MenuClass.Enigme, "Peu vendu · marge élevée")</MudItem>
+                <MudItem xs="12" md="6">@Quadrant(stats, MenuClass.Etoile, "Populaire · marge élevée")</MudItem>
+                <MudItem xs="12" md="6">@Quadrant(stats, MenuClass.PoidsMort, "Peu vendu · marge faible")</MudItem>
+                <MudItem xs="12" md="6">@Quadrant(stats, MenuClass.VacheALait, "Populaire · marge faible")</MudItem>
+            </MudGrid>
+        }
+
+        @if (stats.Dishes.Where(d => d.Class is null).ToList() is { Count: > 0 } unclassified)
+        {
+            <MudText Typo="Typo.caption" Class="mt-2" Style="@Muted" HtmlTag="p">
+                ⚠️ Non classé@(unclassified.Count > 1 ? "s" : "") (coût incomplet) : @string.Join(", ", unclassified.Select(d => d.Name))
+            </MudText>
+        }
+    </MudPaper>
+
+    @* ── Pertes ── *@
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Pertes par raison</MudText>
+
+        @if (stats.Waste.Count == 0)
+        {
+            <MudText Style="@Muted">Aucune perte déclarée sur cette période. <MudLink Href="/waste">Déclarer une perte</MudLink></MudText>
+        }
+        else
+        {
+            <MudSimpleTable Dense="true" Hover="true" Elevation="0">
+                <thead>
+                    <tr>
+                        <th>Raison</th>
+                        <th style="text-align: right">Pertes</th>
+                        <th style="text-align: right">Coût</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var reason in stats.Waste)
+                    {
+                        <tr>
+                            <td>@Ui.WasteReasonLabel(reason.Reason)</td>
+                            <td style="text-align: right">@reason.Count.ToString(Ui.Fr)</td>
+                            <td style="text-align: right; white-space: nowrap">@Amount(reason.Cost, reason.CostIncomplete)</td>
+                        </tr>
+                    }
+                </tbody>
+                <tfoot>
+                    <tr style="font-weight: 500">
+                        <td>Total</td>
+                        <td style="text-align: right">@stats.Waste.Sum(w => w.Count).ToString(Ui.Fr)</td>
+                        <td style="text-align: right; white-space: nowrap">@Amount(stats.WasteCost, stats.WasteCostIncomplete)</td>
+                    </tr>
+                </tfoot>
+            </MudSimpleTable>
+        }
+    </MudPaper>
+
+    @* ── Écart d'inventaire ── *@
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Écart d'inventaire</MudText>
+
+        @if (stats.Variance is not { } variance)
+        {
+            <MudText Style="@Muted">
+                Pas d'écart à calculer : il faut un inventaire clôturé au début de la période (ou avant) et un autre à sa fin (ou après).
+                <MudLink Href="/inventory">Faire un inventaire</MudLink>
+            </MudText>
+        }
+        else
+        {
+            var top = StatsView.TopVariance(variance.Rows);
+
+            <MudText Typo="Typo.body2" Class="mb-2" Style="@Muted">
+                Entre les inventaires du @Day(variance.OpeningDate) et du @Day(variance.ClosingDate) : consommation réelle (ouverture + achats − clôture) comparée
+                à la consommation théorique (ventes et pertes). Cet intervalle est celui des deux inventaires, pas la période choisie plus haut.
+            </MudText>
+
+            @if (variance.Warnings.Count > 0)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3">
+                    <ul class="my-0 pl-4">
+                        @foreach (var warning in variance.Warnings)
+                        {
+                            <li>@warning</li>
+                        }
+                    </ul>
+                </MudAlert>
+            }
+
+            @if (top.Count == 0)
+            {
+                <MudText Class="py-2">Aucun ingrédient n'a été compté aux deux inventaires.</MudText>
+            }
+            else
+            {
+                <MudSimpleTable Dense="true" Hover="true" Elevation="0" Style="overflow-x: auto">
+                    <thead>
+                        <tr>
+                            <th>Ingrédient</th>
+                            <th style="text-align: right">Ouverture</th>
+                            <th style="text-align: right">Achats</th>
+                            <th style="text-align: right">Clôture</th>
+                            <th style="text-align: right" title="Consommation réelle = ouverture + achats − clôture">Conso. réelle</th>
+                            <th style="text-align: right" title="Consommation théorique = ventes et pertes décomposées en ingrédients">Conso. théorique</th>
+                            <th style="text-align: right" title="Écart = consommation réelle − consommation théorique">Écart</th>
+                            <th style="text-align: right" title="Écart valorisé au prix du jour de la clôture">Valeur</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in top)
+                        {
+                            <tr @key="row.IngredientId">
+                                <td>@row.Name</td>
+                                <td style="text-align: right; white-space: nowrap">@Ui.BaseQuantityText(row.Opening, row.BaseUnit)</td>
+                                <td style="text-align: right; white-space: nowrap">@Ui.BaseQuantityText(row.Purchases, row.BaseUnit)</td>
+                                <td style="text-align: right; white-space: nowrap">@Ui.BaseQuantityText(row.Closing, row.BaseUnit)</td>
+                                <td style="text-align: right; white-space: nowrap">@Ui.BaseQuantityText(row.ActualUse, row.BaseUnit)</td>
+                                <td style="text-align: right; white-space: nowrap">@Ui.BaseQuantityText(row.TheoreticalUse, row.BaseUnit)</td>
+                                <td style="text-align: right; white-space: nowrap">@Ui.BaseQuantityText(row.VarianceQuantity, row.BaseUnit)</td>
+                                <td style="@("text-align: right; white-space: nowrap; font-weight: 500; " + VarianceStyle(row.VarianceValue))">
+                                    @(row.VarianceValue is { } value ? Ui.SignedMoney(value) : "—")
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                    <tfoot>
+                        <tr style="font-weight: 500">
+                            <td colspan="7">
+                                Total@(variance.Rows.Count > top.Count ? $" des {variance.Rows.Count} ingrédients comptés ({top.Count} premiers écarts affichés)" : "")
+                            </td>
+                            <td style="@("text-align: right; white-space: nowrap; " + VarianceStyle(variance.TotalVarianceValue))">
+                                @Ui.SignedMoney(variance.TotalVarianceValue)
+                            </td>
+                        </tr>
+                    </tfoot>
+                </MudSimpleTable>
+            }
+
+            <MudText Typo="Typo.caption" Class="mt-2" Style="@Muted" HtmlTag="p">
+                Écart positif : il a disparu plus de stock que les ventes et les pertes déclarées ne l'expliquent. Valorisé au prix du jour de la clôture.
+                Seuls les achats passés par un ticket validé sont comptés.
+            </MudText>
+
+            @if (variance.NotCountedIngredients.Count > 0)
+            {
+                <MudExpansionPanels Class="mt-3">
+                    <MudExpansionPanel Text="@($"Non comptés aux deux inventaires ({variance.NotCountedIngredients.Count})")">
+                        <MudText Typo="Typo.caption" Style="@Muted" HtmlTag="p">
+                            Ces ingrédients ont bougé sur l'intervalle, ou n'ont été comptés qu'à un des deux inventaires : leur écart est inconnu.
+                        </MudText>
+                        <div class="d-flex flex-wrap gap-1 mt-2">
+                            @foreach (var name in variance.NotCountedIngredients)
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@name</MudChip>
+                            }
+                        </div>
+                    </MudExpansionPanel>
+                </MudExpansionPanels>
+            }
+        }
+    </MudPaper>
+}
+
+@code {
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    private static readonly Restaurant Defaults = new();
+
+    private StatsPreset _preset = StatsPreset.Last4Weeks;
+    private StatsPeriod _period;
+    private DateTime? _customFrom;
+    private DateTime? _customTo;
+
+    private PeriodStats? _stats;
+    private string? _error;
+    private bool _loading = true;
+    private decimal _threshold = Defaults.FoodCostAlertThreshold;
+
+    // Un clic sur un raccourci pendant une lecture en cours : seule la dernière demande met la page à jour.
+    private int _requestId;
+
+    private bool _weekly;
+    private List<ChartSeries<double>> _series = [];
+    private string[] _chartLabels = [];
+
+    private readonly StackedBarChartOptions _chartOptions = new()
+    {
+        YAxisToStringFunc = value => value.ToString("N0", Ui.Fr) + " €",
+        ShowToolTips = true,
+        XAxisLabelRotation = 45
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Le seuil sert aux pastilles de food cost (même seuil que sur le reste de l'application).
+        var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;
+        _threshold = restaurant?.FoodCostAlertThreshold ?? Defaults.FoodCostAlertThreshold;
+
+        _period = StatsPeriod.Of(_preset, DateTime.UtcNow);
+        await LoadAsync(_period);
+    }
+
+    private async Task SelectPresetAsync(StatsPreset preset)
+    {
+        _preset = preset;
+
+        if (preset == StatsPreset.Custom)
+        {
+            // La période personnalisée part de celle qui est affichée.
+            _customFrom ??= _period.From;
+            _customTo ??= _period.To;
+            await LoadCustomAsync();
+            return;
+        }
+
+        await LoadAsync(StatsPeriod.Of(preset, DateTime.UtcNow));
+    }
+
+    private Task SetCustomFromAsync(DateTime? date)
+    {
+        _customFrom = date;
+        return LoadCustomAsync();
+    }
+
+    private Task SetCustomToAsync(DateTime? date)
+    {
+        _customTo = date;
+        return LoadCustomAsync();
+    }
+
+    private Task LoadCustomAsync() =>
+        _customFrom is { } from && _customTo is { } to
+            ? LoadAsync(new StatsPeriod(StatsPeriod.UtcDay(from), StatsPeriod.UtcDay(to)))
+            : Task.CompletedTask;
+
+    private async Task LoadAsync(StatsPeriod period)
+    {
+        var request = ++_requestId;
+        _loading = true;
+        _error = null;
+
+        try
+        {
+            var stats = await StatsService.GetAsync(period.From, period.To);
+            if (request != _requestId)
+                return;
+
+            _period = period;
+            _stats = stats;
+            BuildChart(stats);
+        }
+        catch (DomainValidationException ex)
+        {
+            // Dates inversées ou période trop longue : le message du service est lisible tel quel, et les chiffres précédents ne correspondraient plus aux dates.
+            if (request == _requestId)
+            {
+                _error = ex.Message;
+                _stats = null;
+            }
+        }
+        finally
+        {
+            if (request == _requestId)
+                _loading = false;
+        }
+    }
+
+    private void BuildChart(PeriodStats stats)
+    {
+        var buckets = StatsView.RevenueBuckets(stats.RevenueByDay);
+        _weekly = StatsView.IsWeekly(stats.RevenueByDay);
+        _chartLabels = buckets.Select(b => b.Label).ToArray();
+        _series =
+        [
+            new ChartSeries<double> { Name = "Saisies", Data = buckets.Select(b => (double)b.FromEntries).ToArray() },
+            new ChartSeries<double> { Name = "Commandes", Data = buckets.Select(b => (double)b.FromOrders).ToArray() }
+        ];
+
+        // MudChart impose un écart entier entre deux graduations (20 par défaut) : calculé sur la plus haute barre empilée.
+        var tallest = buckets.Count == 0 ? 0d : buckets.Max(b => (double)(b.FromEntries + b.FromOrders));
+        _chartOptions.YAxisTicks = Ui.AxisTickStep(0d, tallest);
+    }
+
+    // ── Affichage ────────────────────────────────────────────────────────────
+
+    private static string Day(DateTime day) => day.ToString("dd/MM", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string WasteCaption(PeriodStats stats) =>
+        stats.Waste.Sum(w => w.Count) switch
+        {
+            0 => "Aucune perte déclarée",
+            1 => "1 perte déclarée",
+            var count => $"{count.ToString(Ui.Fr)} pertes déclarées"
+        };
+
+    private static Color ClassColor(MenuClass menuClass) => menuClass switch
+    {
+        MenuClass.Etoile => Color.Success,
+        MenuClass.VacheALait => Color.Warning,
+        MenuClass.Enigme => Color.Info,
+        MenuClass.PoidsMort => Color.Error,
+        _ => Color.Default
+    };
+
+    private static string ClassPalette(MenuClass menuClass) => menuClass switch
+    {
+        MenuClass.Etoile => "success",
+        MenuClass.VacheALait => "warning",
+        MenuClass.Enigme => "info",
+        _ => "error"
+    };
+
+    // Un écart positif est une perte (rouge), un écart négatif un gain (vert) ; inconnu ou nul : couleur du texte.
+    private static string VarianceStyle(decimal? value) => value switch
+    {
+        > 0m => "color: var(--mud-palette-error)",
+        < 0m => "color: var(--mud-palette-success)",
+        _ => ""
+    };
+
+    private RenderFragment Amount(decimal? amount, bool incomplete) =>
+        @<span>
+            @(amount is { } value ? Ui.Money(value) : "—")
+            @if (incomplete)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span" title="Un prix manque : ce montant est partiel">(incomplet)</MudText>
+            }
+        </span>;
+
+    private RenderFragment Kpi(string label, string value, bool incomplete = false, string? caption = null) =>
+        @<MudPaper Elevation="1" Class="pa-4" Style="height: 100%">
+            <MudText Typo="Typo.overline" Style="@Muted">@label</MudText>
+            <MudText Typo="Typo.h4" HtmlTag="p">
+                @value
+                @if (incomplete)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span"
+                             title="Un prix manque : ce chiffre est partiel">(incomplet)</MudText>
+                }
+            </MudText>
+            @if (caption is not null)
+            {
+                <MudText Typo="Typo.caption" Style="@Muted" HtmlTag="p">@caption</MudText>
+            }
+        </MudPaper>;
+
+    private RenderFragment ActualFoodCostKpi(PeriodStats stats) =>
+        @<MudPaper Elevation="1" Class="pa-4" Style="height: 100%">
+            <MudText Typo="Typo.overline" Style="@Muted">Food cost réel</MudText>
+            <MudText Typo="Typo.h4" HtmlTag="p">@(stats.ActualFoodCost is { } actual ? Ui.Percent(actual) : "—")</MudText>
+            @if (stats.Variance is { } variance)
+            {
+                <MudText Typo="Typo.caption" Style="@Muted" HtmlTag="p">
+                    entre les inventaires du @Day(variance.OpeningDate) et du @Day(variance.ClosingDate)
+                </MudText>
+                @if (stats.ActualFoodCost is not null)
+                {
+                    <MudText Typo="Typo.caption" Style="@Muted" HtmlTag="p">sur les ingrédients comptés aux deux inventaires</MudText>
+                }
+                else
+                {
+                    <MudText Typo="Typo.caption" Style="@Muted" HtmlTag="p">Aucune vente ni aucun prix connu sur cet intervalle</MudText>
+                }
+            }
+            else
+            {
+                <MudText Typo="Typo.caption" Style="@Muted" HtmlTag="p">Faites deux inventaires (début et fin de période) pour obtenir le coût réel</MudText>
+            }
+        </MudPaper>;
+
+    private RenderFragment Quadrant(PeriodStats stats, MenuClass menuClass, string axes)
+    {
+        var dishes = stats.Dishes.Where(d => d.Class == menuClass).ToList();
+        var palette = ClassPalette(menuClass);
+
+        return @<MudPaper Outlined="true" Class="pa-3" Style="@($"height: 100%; border-left: 4px solid var(--mud-palette-{palette})")">
+            <div class="d-flex align-baseline flex-wrap gap-2">
+                <MudText Typo="Typo.subtitle1" HtmlTag="h3">@Ui.MenuClassEmoji(menuClass) @Ui.MenuClassLabel(menuClass)</MudText>
+                <MudText Typo="Typo.caption" Style="@Muted">@axes</MudText>
+            </div>
+            <MudText Typo="Typo.body2" Class="mb-2"><strong>@Ui.MenuClassAdvice(menuClass)</strong></MudText>
+            @if (dishes.Count == 0)
+            {
+                <MudText Typo="Typo.body2" Style="@Muted">Aucun plat</MudText>
+            }
+            else
+            {
+                <div class="d-flex flex-wrap gap-1">
+                    @foreach (var dish in dishes)
+                    {
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="ClassColor(menuClass)"
+                                 title="@($"{dish.QuantitySold.ToString("0.##", Ui.Fr)} portions · marge {Ui.Money(dish.Margin!.Value / dish.QuantitySold)} par portion")">@dish.Name</MudChip>
+                    }
+                </div>
+            }
+        </MudPaper>;
+    }
+}

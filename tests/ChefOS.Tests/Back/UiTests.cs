@@ -261,6 +261,63 @@ public class UiTests
     // ── Libellés des ventes, commandes, pertes et inventaires ────────────────
 
     [Theory]
+    [InlineData(MenuClass.Etoile, "Étoile")]
+    [InlineData(MenuClass.VacheALait, "Vache à lait")]
+    [InlineData(MenuClass.Enigme, "Énigme")]
+    [InlineData(MenuClass.PoidsMort, "Poids mort")]
+    public void MenuClassLabel_IsInFrench(MenuClass menuClass, string expected) =>
+        Assert.Equal(expected, Ui.MenuClassLabel(menuClass));
+
+    [Theory]
+    [InlineData(MenuClass.Etoile, "À garder tel quel")]
+    [InlineData(MenuClass.VacheALait, "Revoir le coût ou le prix")]
+    [InlineData(MenuClass.Enigme, "À mettre en avant")]
+    [InlineData(MenuClass.PoidsMort, "À remplacer")]
+    public void MenuClassAdvice_IsOneShortLinePerQuadrant(MenuClass menuClass, string expected) =>
+        Assert.Equal(expected, Ui.MenuClassAdvice(menuClass));
+
+    [Fact]
+    public void MenuClass_EveryValueHasALabelAnAdviceAndAnEmoji()
+    {
+        foreach (var menuClass in Enum.GetValues<MenuClass>())
+        {
+            Assert.False(string.IsNullOrWhiteSpace(Ui.MenuClassLabel(menuClass)));
+            Assert.False(string.IsNullOrWhiteSpace(Ui.MenuClassAdvice(menuClass)));
+            Assert.False(string.IsNullOrWhiteSpace(Ui.MenuClassEmoji(menuClass)));
+        }
+
+        Assert.Equal(4, Enum.GetValues<MenuClass>().Select(Ui.MenuClassEmoji).Distinct().Count());
+    }
+
+    [Theory]
+    [InlineData(1500, BaseUnit.Gram, "1,5 kg")]
+    [InlineData(800, BaseUnit.Gram, "800 g")]
+    [InlineData(999.6, BaseUnit.Gram, "1 kg")]
+    [InlineData(1234.5678, BaseUnit.Gram, "1,23 kg")]
+    [InlineData(0, BaseUnit.Gram, "0 g")]
+    [InlineData(-250, BaseUnit.Gram, "-250 g")]
+    [InlineData(-1250, BaseUnit.Gram, "-1,25 kg")]
+    [InlineData(2000, BaseUnit.Milliliter, "2 l")]
+    [InlineData(350, BaseUnit.Milliliter, "350 ml")]
+    [InlineData(12, BaseUnit.Piece, "12 pièces")]
+    [InlineData(1, BaseUnit.Piece, "1 pièce")]
+    [InlineData(2.5, BaseUnit.Piece, "2,5 pièces")]
+    [InlineData(0, BaseUnit.Piece, "0 pièce")]
+    [InlineData(-3, BaseUnit.Piece, "-3 pièces")]
+    public void BaseQuantityText_ShowsKilosAndLitresFromAThousand(double quantity, BaseUnit unit, string expected) =>
+        Assert.Equal(expected, Ui.BaseQuantityText((decimal)quantity, unit));
+
+    [Theory]
+    [InlineData(12.5, "+12,50 €")]
+    [InlineData(-3, "-3,00 €")]
+    [InlineData(0, "0,00 €")]
+    [InlineData(0.004, "0,00 €")]
+    [InlineData(-0.004, "0,00 €")]
+    [InlineData(0.005, "+0,01 €")]
+    public void SignedMoney_ShowsThePlusSignOfALoss(double amount, string expected) =>
+        Assert.Equal(expected, Ui.SignedMoney((decimal)amount));
+
+    [Theory]
     [InlineData(WasteReason.Perime, "Périmé")]
     [InlineData(WasteReason.Casse, "Casse")]
     [InlineData(WasteReason.Erreur, "Erreur")]

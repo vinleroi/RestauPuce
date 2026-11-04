@@ -8,9 +8,13 @@ namespace ChefOS.Infrastructure.Services;
 /// <summary>
 /// Chiffres clés du restaurant courant. Seuls les plats et préparations non archivés comptent : un élément archivé est
 /// retiré de la carte et ne doit ni peser sur la moyenne ni apparaître dans les plats à surveiller.
+/// Les chiffres de la semaine viennent de <see cref="StatsService"/> : ce sont les mêmes que ceux de la page des statistiques.
 /// </summary>
-public class DashboardService(RecipeService recipes, IDbContextFactory<ChefOsDbContext> factory, ITenantContext tenant)
+public class DashboardService(RecipeService recipes, StatsService stats, IDbContextFactory<ChefOsDbContext> factory, ITenantContext tenant)
 {
+    /// <summary>Nombre de jours des chiffres de la semaine, aujourd'hui compris.</summary>
+    private const int WeekDays = 7;
+
     /// <summary>
     /// La moyenne du food cost porte sur les plats au coût complet et au food cost non nul (un plat sans ligne ou sans prix de vente n'a pas de food cost significatif).
     /// La liste « à surveiller » réunit les plats en <see cref="FoodCostLevel.Alert"/> (au-dessus du seuil du restaurant)
@@ -50,6 +54,19 @@ public class DashboardService(RecipeService recipes, IDbContextFactory<ChefOsDbC
             active.Count(r => r.Kind == RecipeKind.Preparation),
             foodCosts.Count == 0 ? null : foodCosts.Average(),
             watchList);
+    }
+
+    /// <summary>
+    /// Chiffre d'affaires HT et marge brute des 7 derniers jours, aujourd'hui compris (de J-6 à J, jours UTC), ventes saisies et commandes additionnées
+    /// (voir <see cref="StatsService.GetAsync"/> pour les règles de calcul).
+    /// </summary>
+    public async Task<SevenDayFigures> GetLastSevenDaysAsync()
+    {
+        var to = UtcDays.Of(DateTime.UtcNow);
+        var from = to.AddDays(1 - WeekDays);
+
+        var period = await stats.GetAsync(from, to);
+        return new SevenDayFigures(from, to, period.RevenueExclVat, period.GrossMargin, period.CostIncomplete);
     }
 
     /// <summary>

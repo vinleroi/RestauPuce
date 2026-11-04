@@ -87,6 +87,13 @@ public record DashboardSummary(
     IReadOnlyList<WatchItem> WatchList);
 
 /// <summary>
+/// Les chiffres des 7 derniers jours, aujourd'hui compris (du jour <paramref name="From"/> au jour <paramref name="To"/>, UTC) : chiffre d'affaires HT des ventes saisies et des
+/// commandes, marge brute (chiffre d'affaires - coût théorique des plats vendus). <paramref name="CostIncomplete"/> : le coût d'un plat vendu ne porte que sur les lignes
+/// chiffrées, la marge est alors un maximum. Montants non arrondis.
+/// </summary>
+public record SevenDayFigures(DateTime From, DateTime To, decimal RevenueExclVat, decimal GrossMargin, bool CostIncomplete);
+
+/// <summary>
 /// Variation récente du prix d'un ingrédient : comparaison de ses deux dernières entrées d'historique.
 /// Les prix sont par unité de base (<paramref name="BaseUnit"/>) ; <paramref name="ChangePercent"/> est une fraction non arrondie
 /// ((courant − précédent) ÷ précédent, négative pour une baisse) ; <paramref name="Date"/> est celle de la dernière entrée (UTC).
