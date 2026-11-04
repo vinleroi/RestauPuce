@@ -2,6 +2,7 @@ using ChefOS.Back.Components.Shared;
 using ChefOS.Core.Costing;
 using ChefOS.Core.Ingredients;
 using ChefOS.Core.Receipts;
+using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
 
 namespace ChefOS.Tests.Back;
@@ -219,6 +220,93 @@ public class UiTests
     [InlineData(ReceiptLineIssue.InvalidTotal, "Montant invalide")]
     public void ReceiptIssueLabel_IsInFrench(ReceiptLineIssue issue, string expected) =>
         Assert.Equal(expected, Ui.ReceiptIssueLabel(issue));
+
+    // ── Unités de saisie ─────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(BaseUnit.Gram, MeasureUnit.Kg)]
+    [InlineData(BaseUnit.Milliliter, MeasureUnit.L)]
+    [InlineData(BaseUnit.Piece, MeasureUnit.Piece)]
+    public void DefaultMeasureUnit_IsTheUnitAChefWouldWeighOrPourWith(BaseUnit baseUnit, MeasureUnit expected) =>
+        Assert.Equal(expected, Ui.DefaultMeasureUnit(baseUnit));
+
+    [Theory]
+    [InlineData(BaseUnit.Gram, null, new[] { MeasureUnit.Kg, MeasureUnit.G })]
+    [InlineData(BaseUnit.Gram, 80.0, new[] { MeasureUnit.Kg, MeasureUnit.G, MeasureUnit.Piece })]
+    [InlineData(BaseUnit.Milliliter, null, new[] { MeasureUnit.L, MeasureUnit.Cl, MeasureUnit.Ml })]
+    [InlineData(BaseUnit.Milliliter, 80.0, new[] { MeasureUnit.L, MeasureUnit.Cl, MeasureUnit.Ml })]
+    [InlineData(BaseUnit.Piece, null, new[] { MeasureUnit.Piece })]
+    [InlineData(BaseUnit.Piece, 60.0, new[] { MeasureUnit.Piece, MeasureUnit.Kg, MeasureUnit.G })]
+    public void ConvertibleUnits_ListsOnlyUnitsThatConvertToTheBaseUnit_DefaultFirst(BaseUnit baseUnit, double? pieceWeight, MeasureUnit[] expected) =>
+        Assert.Equal(expected, Ui.ConvertibleUnits(baseUnit, pieceWeight is { } weight ? (decimal)weight : null));
+
+    [Theory]
+    [InlineData(2.5, MeasureUnit.Kg, "2,5 kg")]
+    [InlineData(200, MeasureUnit.G, "200 g")]
+    [InlineData(0.3333, MeasureUnit.L, "0,3333 l")]
+    [InlineData(1, MeasureUnit.Piece, "1 pièce")]
+    [InlineData(0.5, MeasureUnit.Piece, "0,5 pièce")]
+    [InlineData(3, MeasureUnit.Piece, "3 pièces")]
+    public void QuantityText_UsesTheFrenchDecimalCommaAndPluralisesPieces(double quantity, MeasureUnit unit, string expected) =>
+        Assert.Equal(expected, Ui.QuantityText((decimal)quantity, unit));
+
+    [Theory]
+    [InlineData(1, MeasureUnit.Piece, "1 portion")]
+    [InlineData(0.5, MeasureUnit.Piece, "0,5 portion")]
+    [InlineData(3, MeasureUnit.Piece, "3 portions")]
+    [InlineData(2, MeasureUnit.Kg, "2 kg")]
+    public void QuantityText_ForARecipe_CountsPortionsInsteadOfPieces(double quantity, MeasureUnit unit, string expected) =>
+        Assert.Equal(expected, Ui.QuantityText((decimal)quantity, unit, portions: true));
+
+    // ── Libellés des ventes, commandes, pertes et inventaires ────────────────
+
+    [Theory]
+    [InlineData(WasteReason.Perime, "Périmé")]
+    [InlineData(WasteReason.Casse, "Casse")]
+    [InlineData(WasteReason.Erreur, "Erreur")]
+    [InlineData(WasteReason.Surproduction, "Surproduction")]
+    [InlineData(WasteReason.Autre, "Autre")]
+    public void WasteReasonLabel_IsInFrench(WasteReason reason, string expected) =>
+        Assert.Equal(expected, Ui.WasteReasonLabel(reason));
+
+    [Theory]
+    [InlineData(OrderSource.Salle, "Salle")]
+    [InlineData(OrderSource.Emporter, "À emporter")]
+    [InlineData(OrderSource.Telephone, "Téléphone")]
+    [InlineData(OrderSource.Vitrine, "Vitrine")]
+    public void OrderSourceLabel_IsInFrench(OrderSource source, string expected) =>
+        Assert.Equal(expected, Ui.OrderSourceLabel(source));
+
+    [Theory]
+    [InlineData(OrderStatus.Nouvelle, "Nouvelle")]
+    [InlineData(OrderStatus.EnPreparation, "En préparation")]
+    [InlineData(OrderStatus.Prete, "Prête")]
+    [InlineData(OrderStatus.Servie, "Servie")]
+    [InlineData(OrderStatus.Annulee, "Annulée")]
+    public void OrderStatusLabel_IsInFrench(OrderStatus status, string expected) =>
+        Assert.Equal(expected, Ui.OrderStatusLabel(status));
+
+    [Theory]
+    [InlineData(OrderStatus.Nouvelle, "Préparer")]
+    [InlineData(OrderStatus.EnPreparation, "Marquer prête")]
+    [InlineData(OrderStatus.Prete, "Servir")]
+    [InlineData(OrderStatus.Servie, null)]
+    [InlineData(OrderStatus.Annulee, null)]
+    public void AdvanceLabel_NamesTheNextStep_AndIsAbsentOnceTheOrderIsFinished(OrderStatus status, string? expected) =>
+        Assert.Equal(expected, Ui.AdvanceLabel(status));
+
+    [Theory]
+    [InlineData(StockCountStatus.Brouillon, "Brouillon")]
+    [InlineData(StockCountStatus.Cloture, "Clôturé")]
+    public void StockCountStatusLabel_IsInFrench(StockCountStatus status, string expected) =>
+        Assert.Equal(expected, Ui.StockCountStatusLabel(status));
+
+    [Theory]
+    [InlineData(ServicePeriod.Journee, "Journée")]
+    [InlineData(ServicePeriod.Midi, "Midi")]
+    [InlineData(ServicePeriod.Soir, "Soir")]
+    public void ServiceLabel_IsInFrench(ServicePeriod service, string expected) =>
+        Assert.Equal(expected, Ui.ServiceLabel(service));
 
     private static decimal Invariant(string value) => decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
 }

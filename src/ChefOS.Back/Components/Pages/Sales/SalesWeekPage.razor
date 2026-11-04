@@ -1,0 +1,299 @@
+@page "/sales"
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Recipes
+@using ChefOS.Core.Sales
+@using ChefOS.Infrastructure.Services
+
+@inject SalesService SalesService
+@inject RecipeService RecipeService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<PageTitle>Ventes — ChefOS</PageTitle>
+
+@* Quitter la page avec des quantités non enregistrées : on demande confirmation (changement de page ou fermeture de l'onglet). *@
+<NavigationLock OnBeforeInternalNavigation="ConfirmLeaveAsync" ConfirmExternalNavigation="@_form.IsDirty" />
+
+<div class="d-flex align-center flex-wrap gap-2 mb-2">
+    <MudText Typo="Typo.h4" HtmlTag="h1" Class="flex-grow-1">Ventes</MudText>
+</div>
+
+<MudAlert Severity="Severity.Info" Dense="true" Class="mb-4">
+    Ventes faites hors ChefOS (votre caisse). Les commandes prises dans ChefOS sont comptées automatiquement.
+</MudAlert>
+
+<MudPaper Elevation="1" Class="pa-3 mb-4">
+    <div class="d-flex align-center flex-wrap gap-2">
+        <div class="d-flex align-center flex-nowrap">
+            <MudIconButton Icon="@Icons.Material.Filled.ChevronLeft" OnClick="PreviousWeekAsync" Disabled="_busy || _loading"
+                           title="Semaine précédente" aria-label="Semaine précédente" />
+            <MudText Typo="Typo.subtitle2" Style="text-align: center; white-space: nowrap">@WeekLabel</MudText>
+            <MudIconButton Icon="@Icons.Material.Filled.ChevronRight" OnClick="NextWeekAsync" Disabled="_busy || _loading"
+                           title="Semaine suivante" aria-label="Semaine suivante" />
+        </div>
+        <MudButton Variant="Variant.Text" OnClick="ThisWeekAsync" Disabled="_busy || _loading">Cette semaine</MudButton>
+        <MudDatePicker Date="_pickedDate" DateChanged="PickDateAsync" Label="Aller à la semaine du…" Culture="Ui.Fr" DateFormat="dd/MM/yyyy"
+                       Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width: 14rem" Disabled="_busy || _loading" />
+        <MudSpacer />
+        <MudSwitch T="bool" @bind-Value="_showDetail" Label="Détail midi/soir" Color="Color.Primary" />
+    </div>
+</MudPaper>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_form.Rows.Count == 0)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        Aucun plat à afficher. Créez vos plats dans <MudLink Href="/recipes">Recettes</MudLink> pour saisir vos ventes.
+    </MudAlert>
+}
+else
+{
+    @if (!_showDetail && _form.HasServiceDetail)
+    {
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-4">
+            Cette semaine contient des ventes détaillées par service. Activez « Détail midi/soir » pour les voir : elles sont comprises dans les totaux.
+        </MudAlert>
+    }
+
+    <MudPaper Elevation="1" Class="sales-grid mb-4">
+        <MudSimpleTable Dense="true" Elevation="0" Style="overflow-x: auto">
+            <thead>
+                <tr>
+                    <th class="sales-name">Plat</th>
+                    @for (var day = 0; day < SalesGridForm.DayCount; day++)
+                    {
+                        var date = _form.DateOf(day);
+                        <th class="sales-num" title="@(date.ToString("dddd dd/MM/yyyy", Ui.Fr))">
+                            @date.ToString("ddd", Ui.Fr)<br />
+                            <span class="sales-date">@date.ToString("dd/MM", Ui.Fr)</span>
+                        </th>
+                    }
+                    <th class="sales-num" title="Un total de la semaine saisi d'un bloc, pour qui n'a pas le détail jour par jour. Il s'ajoute aux jours saisis.">
+                        Total semaine
+                    </th>
+                    <th class="sales-num">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in _form.Rows)
+                {
+                    <tr @key="row.RecipeId" class="sales-dish">
+                        <td class="sales-name">
+                            <div>@row.Name</div>
+                            <div class="sales-caption">
+                                @(_showDetail ? "Journée entière" : row.UnitPriceInclVat is { } price ? Ui.Money(price) : "Sans prix")
+                            </div>
+                        </td>
+                        @for (var day = 0; day < SalesGridForm.DayCount; day++)
+                        {
+                            var cell = row.Cell(day, ServicePeriod.Journee);
+                            <td class="sales-qty @ModifiedClass(cell)">
+                                <MudNumericField T="decimal?" @bind-Value="cell.Quantity" Culture="Ui.Fr" Format="0.####" InputMode="DecimalInput" Immediate="true"
+                                                 DebounceInterval="300" Min="0" HideSpinButtons="true" Variant="Variant.Text" Margin="Margin.Dense"
+                                                 aria-label="@CellLabel(row, day, ServicePeriod.Journee)" />
+                            </td>
+                        }
+                        <td class="sales-qty @ModifiedClass(row.WeeklyTotal)">
+                            <MudNumericField T="decimal?" @bind-Value="row.WeeklyTotal.Quantity" Culture="Ui.Fr" Format="0.####" InputMode="DecimalInput" Immediate="true"
+                                             DebounceInterval="300" Min="0" HideSpinButtons="true" Variant="Variant.Text" Margin="Margin.Dense"
+                                             aria-label="@($"{row.Name}, total de la semaine")" />
+                        </td>
+                        <td class="sales-num sales-total">@Quantity(row.Total)</td>
+                    </tr>
+
+                    @if (_showDetail)
+                    {
+                        @foreach (var service in DetailServices)
+                        {
+                            <tr @key="@($"{row.RecipeId}-{service}")" class="sales-sub">
+                                <td class="sales-name sales-sub-name">@Ui.ServiceLabel(service)</td>
+                                @for (var day = 0; day < SalesGridForm.DayCount; day++)
+                                {
+                                    var cell = row.Cell(day, service);
+                                    <td class="sales-qty @ModifiedClass(cell)">
+                                        <MudNumericField T="decimal?" @bind-Value="cell.Quantity" Culture="Ui.Fr" Format="0.####" InputMode="DecimalInput" Immediate="true"
+                                                         DebounceInterval="300" Min="0" HideSpinButtons="true" Variant="Variant.Text" Margin="Margin.Dense"
+                                                         aria-label="@CellLabel(row, day, service)" />
+                                    </td>
+                                }
+                                <td></td>
+                                <td class="sales-num">@Quantity(row.ServiceTotal(service))</td>
+                            </tr>
+                        }
+                    }
+                }
+            </tbody>
+            <tfoot>
+                <tr class="sales-footer">
+                    <td class="sales-name">Total des portions</td>
+                    @for (var day = 0; day < SalesGridForm.DayCount; day++)
+                    {
+                        <td class="sales-num">@_form.DayTotal(day).ToString("0.####", Ui.Fr)</td>
+                    }
+                    <td class="sales-num">@_form.WeeklyTotalsSum.ToString("0.####", Ui.Fr)</td>
+                    <td class="sales-num sales-total">@_form.Total.ToString("0.####", Ui.Fr)</td>
+                </tr>
+            </tfoot>
+        </MudSimpleTable>
+    </MudPaper>
+
+    <MudPaper Elevation="1" Class="pa-4">
+        <div class="d-flex align-center flex-wrap gap-4">
+            <div>
+                <MudText Typo="Typo.caption" Style="@Muted">Portions de la semaine</MudText>
+                <MudText Typo="Typo.h6">@_form.Total.ToString("0.####", Ui.Fr)</MudText>
+            </div>
+            <div>
+                <MudText Typo="Typo.caption" Style="@Muted">CA HT (estimation)</MudText>
+                <MudText Typo="Typo.h6">@Ui.Money(_form.RevenueExclVat)</MudText>
+            </div>
+            <MudText Typo="Typo.caption" Style="@Muted" Class="flex-grow-1">
+                Calculé au prix de vente actuel de chaque plat, TVA retirée. Une vente déjà enregistrée garde le prix de sa saisie.
+            </MudText>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveAsync"
+                       Disabled="_busy || !_form.IsDirty">
+                @(_form.IsDirty ? $"Enregistrer ({_form.ModifiedCount})" : "Enregistrer")
+            </MudButton>
+        </div>
+    </MudPaper>
+}
+
+@code {
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    // Clavier à virgule sur mobile (la valeur par défaut de MudNumericField est « numeric », sans séparateur décimal sur iOS).
+    private const InputMode DecimalInput = InputMode.@decimal;
+
+    private static readonly ServicePeriod[] DetailServices = [ServicePeriod.Midi, ServicePeriod.Soir];
+
+    private bool _loading = true;
+    private bool _busy;
+    private bool _showDetail;
+    private DateTime? _pickedDate;
+    private SalesGridForm _form = SalesGridForm.From(new SalesWeek(DateTime.UtcNow.Date, []), new Dictionary<int, decimal>());
+
+    private string WeekLabel =>
+        $"Semaine du {_form.Monday:dd/MM/yyyy} au {_form.DateOf(SalesGridForm.DayCount - 1):dd/MM/yyyy}";
+
+    protected override Task OnInitializedAsync() => LoadAsync(DateTime.UtcNow);
+
+    private async Task LoadAsync(DateTime anyDay, bool showLoading = true)
+    {
+        if (showLoading)
+            _loading = true;
+
+        try
+        {
+            var week = await SalesService.GetWeekAsync(anyDay);
+
+            // La grille porte les prix ; la TVA des plats vient du livre de recettes.
+            var book = await RecipeService.LoadBookAsync();
+            var vatRates = book.Recipes
+                .Where(r => r.Kind == RecipeKind.Dish && r.VatRate is not null)
+                .ToDictionary(r => r.Id, r => r.VatRate!.Value);
+
+            _form = SalesGridForm.From(week, vatRates);
+            _pickedDate = _form.Monday;
+
+            // Le détail s'ouvre seul quand la semaine en contient ; il ne se referme jamais sans que le chef le décide.
+            _showDetail |= _form.HasServiceDetail;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string ModifiedClass(SalesGridCell cell) => cell.IsModified ? "sales-modified" : "";
+
+    private string CellLabel(SalesGridRow row, int day, ServicePeriod service) =>
+        $"{row.Name}, {_form.DateOf(day).ToString("dddd dd/MM", Ui.Fr)}, {Ui.ServiceLabel(service)}";
+
+    // Un zéro dans une colonne de totaux n'apporte rien : la case reste vide.
+    private static string Quantity(decimal value) => value == 0m ? "" : value.ToString("0.####", Ui.Fr);
+
+    private Task PreviousWeekAsync() => GoToWeekAsync(_form.Monday.AddDays(-7));
+
+    private Task NextWeekAsync() => GoToWeekAsync(_form.Monday.AddDays(7));
+
+    private Task ThisWeekAsync() => GoToWeekAsync(DateTime.UtcNow);
+
+    private async Task PickDateAsync(DateTime? date)
+    {
+        // Un jour de la semaine déjà affichée ne change rien (et ne doit pas faire perdre la saisie en cours).
+        if (date is not { } day || (day.Date - _form.Monday.Date).Days is >= 0 and < SalesGridForm.DayCount)
+        {
+            _pickedDate = _form.Monday;
+            return;
+        }
+
+        await GoToWeekAsync(day);
+    }
+
+    // Changer de semaine abandonne les quantités saisies mais pas encore enregistrées : on demande d'abord.
+    private async Task GoToWeekAsync(DateTime anyDay)
+    {
+        if (_busy)
+            return;
+
+        if (_form.IsDirty && !await ConfirmDiscardAsync())
+        {
+            _pickedDate = _form.Monday;
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            await LoadAsync(anyDay);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // N'envoie que les cases modifiées. Tout ou rien : si le service refuse une case, rien n'est enregistré et la saisie reste à l'écran.
+    private async Task SaveAsync()
+    {
+        if (_busy)
+            return;
+
+        var cells = _form.ModifiedCells();
+        if (cells.Count == 0)
+            return;
+
+        _busy = true;
+        try
+        {
+            await SalesService.SaveCellsAsync(cells);
+            Snackbar.Add("Ventes enregistrées", Severity.Success);
+            await LoadAsync(_form.Monday, showLoading: false);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task<bool> ConfirmDiscardAsync() =>
+        await DialogService.ShowMessageBoxAsync(
+            "Modifications non enregistrées",
+            "Des quantités saisies ne sont pas encore enregistrées. Les abandonner ?",
+            yesText: "Abandonner",
+            cancelText: "Rester") == true;
+
+    private async Task ConfirmLeaveAsync(LocationChangingContext context)
+    {
+        if (_form.IsDirty && !await ConfirmDiscardAsync())
+            context.PreventNavigation();
+    }
+}

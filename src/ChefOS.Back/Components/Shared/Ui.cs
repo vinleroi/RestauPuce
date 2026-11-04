@@ -2,6 +2,7 @@ using System.Globalization;
 using ChefOS.Core.Costing;
 using ChefOS.Core.Ingredients;
 using ChefOS.Core.Receipts;
+using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
 
 namespace ChefOS.Back.Components.Shared;
@@ -88,6 +89,50 @@ public static class Ui
         _ => throw new ArgumentOutOfRangeException(nameof(unit), unit, null)
     };
 
+    /// <summary>
+    /// Unité proposée d'office pour compter ou jeter un produit : celle qu'on pèse ou qu'on verse (kg pour un ingrédient en grammes,
+    /// l pour un liquide en millilitres, pièce pour un produit à la pièce).
+    /// </summary>
+    public static MeasureUnit DefaultMeasureUnit(BaseUnit baseUnit) => baseUnit switch
+    {
+        BaseUnit.Gram => MeasureUnit.Kg,
+        BaseUnit.Milliliter => MeasureUnit.L,
+        BaseUnit.Piece => MeasureUnit.Piece,
+        _ => throw new ArgumentOutOfRangeException(nameof(baseUnit), baseUnit, null)
+    };
+
+    // Du plus gros au plus petit : l'ordre des listes d'unités proposées.
+    private static readonly MeasureUnit[] UnitDisplayOrder =
+        [MeasureUnit.Kg, MeasureUnit.G, MeasureUnit.L, MeasureUnit.Cl, MeasureUnit.Ml, MeasureUnit.Piece];
+
+    /// <summary>
+    /// Les unités de saisie qui se convertissent dans <paramref name="baseUnit"/> (le poids moyen d'une pièce ouvre le passage entre pièces et grammes),
+    /// l'unité d'office en premier puis les autres du plus gros au plus petit : la liste d'un sélecteur d'unité qui ne propose que des unités acceptées.
+    /// </summary>
+    public static IReadOnlyList<MeasureUnit> ConvertibleUnits(BaseUnit baseUnit, decimal? averagePieceWeightGrams)
+    {
+        var preferred = DefaultMeasureUnit(baseUnit);
+        return
+        [
+            preferred,
+            .. UnitDisplayOrder.Where(unit => unit != preferred && UnitConverter.ToBase(1m, unit, baseUnit, averagePieceWeightGrams).Success)
+        ];
+    }
+
+    /// <summary>
+    /// « 2,5 kg », « 200 g », « 1 pièce », « 3 pièces » : la quantité (jusqu'à 4 décimales, sans zéro inutile) puis son unité.
+    /// <paramref name="portions"/> : une recette se compte en portions (« 3 portions ») là où un ingrédient se compte en pièces.
+    /// </summary>
+    public static string QuantityText(decimal quantity, MeasureUnit unit, bool portions = false)
+    {
+        var plural = quantity > 1m;
+        var label = unit == MeasureUnit.Piece
+            ? (portions ? "portion" : "pièce") + (plural ? "s" : "")
+            : MeasureUnitLabel(unit);
+
+        return $"{quantity.ToString("0.####", Fr)} {label}";
+    }
+
     /// <summary>Unité de la quantité produite par une préparation : kg, l ou pièces (au pluriel : on produit plusieurs pièces).</summary>
     public static string OutputUnitLabel(MeasureUnit unit) => unit == MeasureUnit.Piece ? "pièces" : MeasureUnitLabel(unit);
 
@@ -142,6 +187,60 @@ public static class Ui
         ReceiptLineIssue.IncompatibleUnit => "Unité incompatible avec l'ingrédient",
         ReceiptLineIssue.InvalidTotal => "Montant invalide",
         _ => throw new ArgumentOutOfRangeException(nameof(issue), issue, null)
+    };
+
+    public static string WasteReasonLabel(WasteReason reason) => reason switch
+    {
+        WasteReason.Perime => "Périmé",
+        WasteReason.Casse => "Casse",
+        WasteReason.Erreur => "Erreur",
+        WasteReason.Surproduction => "Surproduction",
+        WasteReason.Autre => "Autre",
+        _ => throw new ArgumentOutOfRangeException(nameof(reason), reason, null)
+    };
+
+    public static string OrderSourceLabel(OrderSource source) => source switch
+    {
+        OrderSource.Salle => "Salle",
+        OrderSource.Emporter => "À emporter",
+        OrderSource.Telephone => "Téléphone",
+        OrderSource.Vitrine => "Vitrine",
+        _ => throw new ArgumentOutOfRangeException(nameof(source), source, null)
+    };
+
+    public static string OrderStatusLabel(OrderStatus status) => status switch
+    {
+        OrderStatus.Nouvelle => "Nouvelle",
+        OrderStatus.EnPreparation => "En préparation",
+        OrderStatus.Prete => "Prête",
+        OrderStatus.Servie => "Servie",
+        OrderStatus.Annulee => "Annulée",
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
+    };
+
+    /// <summary>Libellé du bouton qui fait passer une commande à l'étape suivante ; null quand il n'y en a plus (servie ou annulée).</summary>
+    public static string? AdvanceLabel(OrderStatus status) => status switch
+    {
+        OrderStatus.Nouvelle => "Préparer",
+        OrderStatus.EnPreparation => "Marquer prête",
+        OrderStatus.Prete => "Servir",
+        OrderStatus.Servie or OrderStatus.Annulee => null,
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
+    };
+
+    public static string StockCountStatusLabel(StockCountStatus status) => status switch
+    {
+        StockCountStatus.Brouillon => "Brouillon",
+        StockCountStatus.Cloture => "Clôturé",
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
+    };
+
+    public static string ServiceLabel(ServicePeriod service) => service switch
+    {
+        ServicePeriod.Journee => "Journée",
+        ServicePeriod.Midi => "Midi",
+        ServicePeriod.Soir => "Soir",
+        _ => throw new ArgumentOutOfRangeException(nameof(service), service, null)
     };
 
     /// <summary>Les 14 allergènes réglementaires de l'UE, un par valeur de l'énumération (hors <c>None</c>).</summary>

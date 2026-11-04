@@ -1,0 +1,24 @@
+/* Feuille de comptage : une ligne par ingrédient, cellules serrées pour tenir sur un téléphone. */
+.inventory-group ::deep td {
+    padding: 2px 8px;
+}
+
+.inventory-qty {
+    width: 9rem;
+}
+
+.inventory-unit {
+    width: 6rem;
+    white-space: nowrap;
+}
+
+.inventory-value {
+    text-align: right;
+    white-space: nowrap;
+}
+
+/* Ligne modifiée depuis le dernier enregistrement : filet coloré (le bouton Enregistrer reste le seul moyen de la conserver). */
+.inventory-modified {
+    background-color: var(--mud-palette-warning-hover);
+    box-shadow: inset 3px 0 0 var(--mud-palette-warning);
+}

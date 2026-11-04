@@ -1,0 +1,309 @@
+@page "/inventory/{Id:int}"
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Sales
+@using ChefOS.Core.Units
+@using ChefOS.Infrastructure.Services
+
+@inject InventoryService InventoryService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+<PageTitle>@(_notFound ? "Élément introuvable" : "Inventaire") — ChefOS</PageTitle>
+
+@* Quitter la feuille avec des quantités non enregistrées : on demande confirmation (changement de page ou fermeture de l'onglet). *@
+<NavigationLock OnBeforeInternalNavigation="ConfirmLeaveAsync" ConfirmExternalNavigation="@(_form?.IsDirty == true)" />
+
+<MudButton Href="/inventory" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" Class="mb-2">Inventaires</MudButton>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_notFound || _form is null)
+{
+    <MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Élément introuvable</MudText>
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        Cet inventaire n'existe pas, ou il n'appartient pas au restaurant actif.
+    </MudAlert>
+    <MudButton Href="/inventory" Variant="Variant.Filled" Color="Color.Primary">Retour aux inventaires</MudButton>
+}
+else
+{
+    var closed = _form.IsClosed;
+    var groups = _form.Groups(_search, countedOnly: closed);
+
+    <div class="d-flex align-center flex-wrap gap-2 mb-2">
+        <MudText Typo="Typo.h4" HtmlTag="h1">Inventaire du @_form.Date.ToString("dd/MM/yyyy", Ui.Fr)</MudText>
+        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@(closed ? Color.Success : Color.Warning)">
+            @Ui.StockCountStatusLabel(closed ? StockCountStatus.Cloture : StockCountStatus.Brouillon)
+        </MudChip>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_form.Note))
+    {
+        <MudText Class="mb-2" Style="@Muted">@_form.Note</MudText>
+    }
+
+    @if (closed)
+    {
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-4">
+            Inventaire clôturé : il est en lecture seule et sert de référence pour les écarts de la page Statistiques.
+        </MudAlert>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-4">
+            @_form.CountedCount sur @_form.TotalCount ingrédients comptés. Laissez vide un ingrédient que vous ne comptez pas ; saisissez 0 pour « plus rien en stock ».
+        </MudAlert>
+    }
+
+    <MudPaper Elevation="1" Class="pa-3 mb-4">
+        <MudTextField T="string" @bind-Value="_search" Label="Rechercher un ingrédient ou une catégorie" Immediate="true" DebounceInterval="200"
+                      Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true"
+                      Variant="Variant.Outlined" Margin="Margin.Dense" />
+    </MudPaper>
+
+    @if (groups.Count == 0)
+    {
+        <MudText Class="mb-4" Style="@Muted">
+            @(_form.TotalCount == 0 ? "Aucun ingrédient à compter : créez d'abord vos ingrédients." : closed && string.IsNullOrWhiteSpace(_search) ? "Aucune quantité comptée." : "Aucun ingrédient ne correspond à la recherche.")
+        </MudText>
+    }
+
+    @foreach (var group in groups)
+    {
+        <MudPaper Elevation="1" Class="inventory-group mb-4" @key="group.Category">
+            <MudText Typo="Typo.subtitle1" HtmlTag="h2" Class="pa-3 pb-1"><strong>@group.Category</strong></MudText>
+            <MudSimpleTable Dense="true" Elevation="0">
+                <tbody>
+                    @foreach (var line in group.Lines)
+                    {
+                        <tr @key="line.IngredientId" class="@(line.IsModified ? "inventory-modified" : "")">
+                            <td>@line.Name</td>
+                            @if (closed)
+                            {
+                                <td class="inventory-value">@Ui.QuantityText(line.Quantity!.Value, line.Unit)</td>
+                            }
+                            else
+                            {
+                                <td class="inventory-qty">
+                                    <MudNumericField T="decimal?" @bind-Value="line.Quantity" Culture="Ui.Fr" Format="0.####" InputMode="DecimalInput" Immediate="true"
+                                                     DebounceInterval="300" Min="0" HideSpinButtons="true" Variant="Variant.Text" Margin="Margin.Dense"
+                                                     aria-label="@($"Quantité de {line.Name}")" />
+                                </td>
+                                <td class="inventory-unit">
+                                    @if (line.UnitChoices.Count == 1)
+                                    {
+                                        <span>@Ui.MeasureUnitLabel(line.Unit)</span>
+                                    }
+                                    else
+                                    {
+                                        <MudSelect T="MeasureUnit" @bind-Value="line.Unit" ToStringFunc="Ui.MeasureUnitLabel" Variant="Variant.Text" Margin="Margin.Dense" Dense="true"
+                                                   aria-label="@($"Unité de {line.Name}")">
+                                            @foreach (var unit in line.UnitChoices)
+                                            {
+                                                <MudSelectItem T="MeasureUnit" Value="unit">@Ui.MeasureUnitLabel(unit)</MudSelectItem>
+                                            }
+                                        </MudSelect>
+                                    }
+                                </td>
+                            }
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        </MudPaper>
+    }
+
+    @if (!closed)
+    {
+        <MudPaper Elevation="1" Class="pa-4">
+            <div class="d-flex flex-wrap gap-2">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveAsync" Disabled="_busy">Enregistrer</MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Success" StartIcon="@Icons.Material.Filled.Lock" OnClick="CloseAsync" Disabled="_busy">Clôturer</MudButton>
+                <MudSpacer />
+                <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" OnClick="DeleteAsync" Disabled="_busy">
+                    Supprimer le brouillon
+                </MudButton>
+            </div>
+        </MudPaper>
+    }
+}
+
+@code {
+    [Parameter]
+    public int Id { get; set; }
+
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    // Clavier à virgule sur mobile (la valeur par défaut de MudNumericField est « numeric », sans séparateur décimal sur iOS).
+    private const InputMode DecimalInput = InputMode.@decimal;
+
+    private bool _loading = true;
+    private bool _notFound;
+    private bool _busy;
+    private bool _hasLoaded;
+    private int _loadedId;
+
+    private InventorySheetForm? _form;
+    private string? _search;
+    private bool _skipLeaveCheck;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Un autre inventaire (même composant, autre identifiant) se charge à neuf.
+        if (_hasLoaded && _loadedId == Id)
+            return;
+
+        _hasLoaded = true;
+        _loadedId = Id;
+        _search = null;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync(bool showLoading = true)
+    {
+        if (showLoading)
+            _loading = true;
+
+        try
+        {
+            _form = InventorySheetForm.From(await InventoryService.GetSheetAsync(Id));
+            _notFound = false;
+        }
+        catch (DomainValidationException)
+        {
+            // Le service ne distingue pas « inconnu » d'un autre refus ici : GetSheetAsync ne refuse que les inventaires inconnus.
+            _form = null;
+            _notFound = true;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // La feuille envoie l'ensemble complet de ce qui est compté : le service retire de l'inventaire tout ingrédient qui n'y figure pas.
+    private async Task SaveAsync()
+    {
+        if (_busy || _form is null)
+            return;
+
+        _busy = true;
+        try
+        {
+            await InventoryService.SaveLinesAsync(Id, _form.ToInputs());
+            Snackbar.Add("Inventaire enregistré", Severity.Success);
+            await LoadAsync(showLoading: false);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // Enregistre le comptage affiché puis clôture : le chef clôture ce qu'il voit.
+    private async Task CloseAsync()
+    {
+        if (_busy || _form is null)
+            return;
+
+        if (_form.CountedCount == 0)
+        {
+            Snackbar.Add("Saisissez au moins une quantité avant de clôturer", Severity.Warning);
+            return;
+        }
+
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Clôturer l'inventaire",
+            $"Clôturer l'inventaire du {_form.Date.ToString("dd/MM/yyyy", Ui.Fr)} avec {_form.CountedCount} ingrédients comptés ? Il ne sera plus modifiable.",
+            yesText: "Clôturer",
+            cancelText: "Annuler");
+
+        if (confirmed != true || _busy)
+            return;
+
+        _busy = true;
+        var saved = false;
+        try
+        {
+            await InventoryService.SaveLinesAsync(Id, _form.ToInputs());
+            saved = true;
+
+            await InventoryService.CloseAsync(Id);
+            Snackbar.Add("Inventaire clôturé", Severity.Success);
+
+            // La feuille clôturée n'affiche que ce qui est compté : une recherche en cours n'aurait plus de sens.
+            _search = null;
+            await LoadAsync(showLoading: false);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+
+            // Le comptage est enregistré : on repart de ce qui est en base (le refus peut venir d'un inventaire clôturé ou supprimé entre-temps).
+            // Si l'enregistrement a échoué, la saisie reste à l'écran pour être corrigée.
+            if (saved)
+                await LoadAsync(showLoading: false);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_busy || _form is null)
+            return;
+
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Supprimer le brouillon",
+            "Supprimer ce brouillon d'inventaire et toutes ses quantités ?",
+            yesText: "Supprimer",
+            cancelText: "Annuler");
+
+        if (confirmed != true || _busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await InventoryService.DeleteAsync(Id);
+
+            // Le brouillon n'existe plus : plus rien à protéger en quittant la page.
+            _skipLeaveCheck = true;
+            Snackbar.Add("Brouillon supprimé", Severity.Success);
+            Navigation.NavigateTo("/inventory");
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ConfirmLeaveAsync(LocationChangingContext context)
+    {
+        if (_skipLeaveCheck || _form is not { IsDirty: true })
+            return;
+
+        var leave = await DialogService.ShowMessageBoxAsync(
+            "Modifications non enregistrées",
+            "Des quantités saisies ne sont pas encore enregistrées. Les abandonner ?",
+            yesText: "Abandonner",
+            cancelText: "Rester");
+
+        if (leave != true)
+            context.PreventNavigation();
+    }
+}

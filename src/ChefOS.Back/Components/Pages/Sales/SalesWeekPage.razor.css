@@ -1,0 +1,53 @@
+/* Grille des ventes : cellules serrées, colonne du plat figée quand le tableau défile (mobile, petit écran). */
+.sales-grid ::deep th,
+.sales-grid ::deep td {
+    padding: 2px 6px;
+}
+
+.sales-grid ::deep th {
+    white-space: nowrap;
+}
+
+.sales-name {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    min-width: 9rem;
+    background-color: var(--mud-palette-surface);
+}
+
+.sales-qty {
+    min-width: 5.5rem;
+}
+
+.sales-num {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.sales-date,
+.sales-caption {
+    font-size: 0.75rem;
+    font-weight: normal;
+    color: var(--mud-palette-text-secondary);
+}
+
+.sales-total {
+    font-weight: 600;
+}
+
+.sales-sub-name {
+    padding-left: 1.5rem;
+    color: var(--mud-palette-text-secondary);
+}
+
+/* Saisie pas encore enregistrée : fond et filet colorés (la mention « Enregistrer (n) » en donne le compte). */
+.sales-modified {
+    background-color: var(--mud-palette-warning-hover);
+    box-shadow: inset 3px 0 0 var(--mud-palette-warning);
+}
+
+.sales-footer td {
+    font-weight: 600;
+    border-top: 2px solid var(--mud-palette-lines-default);
+}

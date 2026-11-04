@@ -1,0 +1,147 @@
+@page "/inventory"
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Sales
+@using ChefOS.Infrastructure.Services
+
+@inject InventoryService InventoryService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+<PageTitle>Inventaires — ChefOS</PageTitle>
+
+<MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Inventaires</MudText>
+
+<MudPaper Elevation="1" Class="pa-3 mb-4">
+    <MudGrid Spacing="2" Class="align-center">
+        <MudItem xs="12" sm="4" md="3">
+            <MudDatePicker @bind-Date="_newDate" Label="Date du comptage" Culture="Ui.Fr" DateFormat="dd/MM/yyyy" MaxDate="@Latest" Editable="true"
+                           Variant="Variant.Outlined" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" sm="8" md="5">
+            <MudTextField T="string" @bind-Value="_newNote" Label="Note (facultatif)" Variant="Variant.Outlined" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" md="4">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="CreateAsync" Disabled="_busy">
+                Nouvel inventaire
+            </MudButton>
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+<MudTable T="StockCountSummary" Items="_counts" Hover="true" Dense="true" Loading="_loading" Elevation="1">
+    <HeaderContent>
+        <MudTh>Date</MudTh>
+        <MudTh>Statut</MudTh>
+        <MudTh Style="text-align: right">Lignes comptées</MudTh>
+        <MudTh Style="text-align: right">Valeur</MudTh>
+        <MudTh Style="width: 1%"></MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        @* Le jour d'un inventaire est un jour de calendrier (minuit UTC) : il ne se convertit pas en heure locale. *@
+        <MudTd DataLabel="Date" Style="white-space: nowrap">
+            <MudLink Href="@($"/inventory/{context.Id}")">@context.Date.ToString("dd/MM/yyyy", Ui.Fr)</MudLink>
+        </MudTd>
+        <MudTd DataLabel="Statut">
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@(context.Status == StockCountStatus.Cloture ? Color.Success : Color.Warning)">
+                @Ui.StockCountStatusLabel(context.Status)
+            </MudChip>
+        </MudTd>
+        <MudTd DataLabel="Lignes comptées" Style="text-align: right">@context.LineCount</MudTd>
+        <MudTd DataLabel="Valeur" Style="white-space: nowrap; text-align: right">@(context.Value is { } value ? Ui.Money(value) : "—")</MudTd>
+        <MudTd Style="white-space: nowrap; text-align: right">
+            @if (context.Status == StockCountStatus.Brouillon)
+            {
+                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" title="Supprimer le brouillon" Disabled="_busy"
+                               aria-label="@($"Supprimer l'inventaire du {context.Date.ToString("dd/MM/yyyy", Ui.Fr)}")" OnClick="() => DeleteAsync(context)" />
+            }
+        </MudTd>
+    </RowTemplate>
+    <NoRecordsContent>
+        <MudText Class="pa-4">Aucun inventaire pour le moment. Comptez votre stock pour suivre l'écart entre les ventes et la consommation réelle.</MudText>
+    </NoRecordsContent>
+</MudTable>
+
+<MudText Typo="Typo.caption" Style="color: var(--mud-palette-text-secondary)" Class="d-block mt-2">
+    La valeur est le stock compté au prix en vigueur à la date de l'inventaire ; les ingrédients sans prix n'y comptent pas.
+</MudText>
+
+@code {
+    // Les inventaires peuvent être datés de demain (UTC) : selon le fuseau du chef, demain peut déjà y être.
+    private static DateTime Latest => DateTime.UtcNow.Date.AddDays(1);
+
+    private IReadOnlyList<StockCountSummary> _counts = [];
+    private DateTime? _newDate = DateTime.UtcNow.Date;
+    private string? _newNote;
+    private bool _loading = true;
+    private bool _busy;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _counts = await InventoryService.ListAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            var id = await InventoryService.CreateAsync((_newDate ?? DateTime.UtcNow).Date, _newNote);
+            Navigation.NavigateTo($"/inventory/{id}");
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(StockCountSummary count)
+    {
+        if (_busy)
+            return;
+
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Supprimer le brouillon",
+            $"Supprimer le brouillon d'inventaire du {count.Date.ToString("dd/MM/yyyy", Ui.Fr)} et ses {count.LineCount} lignes ?",
+            yesText: "Supprimer",
+            cancelText: "Annuler");
+
+        if (confirmed != true)
+            return;
+
+        _busy = true;
+        try
+        {
+            await InventoryService.DeleteAsync(count.Id);
+            Snackbar.Add("Brouillon supprimé", Severity.Success);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+
+        await LoadAsync();
+    }
+}

@@ -369,7 +369,7 @@ else
 
         var confirmed = await DialogService.ShowMessageBoxAsync(
             "Supprimer l'ingrédient",
-            $"Supprimer définitivement « {_ingredient.Name} » et son historique de prix ?",
+            $"Supprimer définitivement « {_ingredient.Name} » ? Son historique de prix, ses pertes déclarées et ses lignes dans les inventaires en brouillon seront supprimés avec lui.",
             yesText: "Supprimer",
             cancelText: "Annuler");
 

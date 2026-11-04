@@ -167,7 +167,8 @@ public record OrderLineInput(int RecipeId, int Quantity, string? Note);
 
 public record OrderInput(OrderSource Source, string? TableOrCustomer, string? Note, IReadOnlyList<OrderLineInput> Lines);
 
-public record OrderLineSummary(string DishName, int Quantity, string? Note);
+/// <summary><paramref name="RecipeId"/> permet de modifier les lignes d'une commande sans passer par le nom du plat, que deux plats peuvent partager.</summary>
+public record OrderLineSummary(int RecipeId, string DishName, int Quantity, string? Note);
 
 /// <summary><paramref name="TotalInclVat"/> : somme des quantités × prix figés des lignes (non arrondie).</summary>
 public record OrderSummary(

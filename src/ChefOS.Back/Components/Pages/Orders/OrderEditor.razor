@@ -1,0 +1,290 @@
+@page "/orders/new"
+@page "/orders/{Id:int}"
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Recipes
+@using ChefOS.Core.Sales
+@using ChefOS.Infrastructure.Services
+
+@inject OrderService OrderService
+@inject RecipeService RecipeService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+<PageTitle>@(_notFound ? "Élément introuvable" : Id is null ? "Nouvelle commande" : "Modifier la commande") — ChefOS</PageTitle>
+
+<MudButton Href="/orders" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" Class="mb-2">Commandes</MudButton>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_notFound)
+{
+    <MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Élément introuvable</MudText>
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        Cette commande n'existe pas, n'est pas du jour, ou elle n'appartient pas au restaurant actif.
+    </MudAlert>
+    <MudButton Href="/orders" Variant="Variant.Filled" Color="Color.Primary">Retour aux commandes</MudButton>
+}
+else
+{
+    var editable = _existing is null || OrderDraft.IsOpen(_existing.Status);
+
+    <div class="d-flex align-center flex-wrap gap-2 mb-4">
+        <MudText Typo="Typo.h4" HtmlTag="h1">@(_existing is null ? "Nouvelle commande" : $"Commande n° {_existing.Number}")</MudText>
+        @if (_existing is not null)
+        {
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@Ui.OrderStatusLabel(_existing.Status)</MudChip>
+        }
+    </div>
+
+    @if (!editable)
+    {
+        <MudAlert Severity="Severity.Info" Class="mb-4">
+            Une commande @(_existing!.Status == OrderStatus.Servie ? "servie" : "annulée") ne peut plus être modifiée.
+        </MudAlert>
+    }
+
+    <MudGrid Spacing="3">
+        <MudItem xs="12" lg="8">
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" sm="6">
+                        <MudSelect T="OrderSource" @bind-Value="_draft.Source" Label="Source" ToStringFunc="Ui.OrderSourceLabel" ReadOnly="@(_existing is not null)"
+                                   Variant="Variant.Outlined" Margin="Margin.Dense">
+                            @foreach (var source in Enum.GetValues<OrderSource>())
+                            {
+                                <MudSelectItem T="OrderSource" Value="source">@Ui.OrderSourceLabel(source)</MudSelectItem>
+                            }
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <MudTextField T="string" @bind-Value="_draft.TableOrCustomer" Label="Table ou nom du client" ReadOnly="@(_existing is not null)"
+                                      Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    @if (_existing is null)
+                    {
+                        <MudItem xs="12">
+                            <MudTextField T="string" @bind-Value="_draft.Note" Label="Note" Lines="2" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                          HelperText="Allergie, heure de passage, remarque pour la cuisine…" />
+                        </MudItem>
+                    }
+                </MudGrid>
+                @if (_existing is not null)
+                {
+                    <MudText Typo="Typo.caption" Style="@Muted" Class="mt-2">
+                        La source, la table et la note d'une commande enregistrée ne se modifient pas : seules ses lignes peuvent changer.
+                    </MudText>
+                }
+            </MudPaper>
+
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Plats</MudText>
+
+                @if (editable)
+                {
+                    <MudAutocomplete T="OrderDish" @ref="_dishField" Value="_pickedDish" ValueChanged="AddDishAsync" Label="Ajouter un plat" Placeholder="Rechercher un plat…"
+                                     SearchFunc="SearchDishesAsync" ToStringFunc="DishLabel" OpenOnFocus="true" ResetValueOnEmptyText="true" MaxItems="30"
+                                     Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-3">
+                        <NoItemsTemplate>
+                            <MudText Class="pa-3" Style="@Muted">Aucun plat avec un prix de vente trouvé</MudText>
+                        </NoItemsTemplate>
+                    </MudAutocomplete>
+                }
+
+                @if (_draft.Lines.Count == 0)
+                {
+                    <MudText Style="@Muted">Aucun plat pour le moment : ajoutez-en au moins un.</MudText>
+                }
+                else
+                {
+                    <MudSimpleTable Dense="true" Elevation="0">
+                        <thead>
+                            <tr>
+                                <th>Plat</th>
+                                <th>Quantité</th>
+                                <th>Remarque</th>
+                                @if (editable)
+                                {
+                                    <th></th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var line in _draft.Lines)
+                            {
+                                <tr @key="line">
+                                    <td>@line.DishName</td>
+                                    <td style="min-width: 110px">
+                                        <MudNumericField T="int?" @bind-Value="line.Quantity" Culture="Ui.Fr" Min="1" Immediate="true" ReadOnly="@(!editable)"
+                                                         Variant="Variant.Text" Margin="Margin.Dense"
+                                                         aria-label="@($"Quantité de {line.DishName}")" />
+                                    </td>
+                                    <td style="min-width: 180px">
+                                        <MudTextField T="string" @bind-Value="line.Note" Placeholder="sans oignon, saignant…" ReadOnly="@(!editable)"
+                                                      Variant="Variant.Text" Margin="Margin.Dense"
+                                                      aria-label="@($"Remarque pour {line.DishName}")" />
+                                    </td>
+                                    @if (editable)
+                                    {
+                                        <td>
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => _draft.Remove(line))"
+                                                           title="Retirer le plat" aria-label="@($"Retirer {line.DishName}")" />
+                                        </td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                }
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" lg="4">
+            <MudPaper Elevation="1" Class="pa-4">
+                @if (_existing is not null)
+                {
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText>Total enregistré</MudText>
+                        <MudText><strong>@Ui.Money(_existing.TotalInclVat) TTC</strong></MudText>
+                    </div>
+                    <MudText Typo="Typo.caption" Style="@Muted" Class="d-block mb-3">
+                        Un plat déjà dans la commande garde son prix d'origine ; un plat ajouté prend son prix actuel. Le total est recalculé à l'enregistrement.
+                    </MudText>
+                }
+                else if (_draft.EstimatedTotal is { } total)
+                {
+                    <div class="d-flex align-center justify-space-between mb-3">
+                        <MudText>Total</MudText>
+                        <MudText><strong>@Ui.Money(total) TTC</strong></MudText>
+                    </div>
+                }
+
+                <div class="d-flex flex-wrap gap-2">
+                    @if (editable)
+                    {
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveAsync" Disabled="_busy">
+                            @(_existing is null ? "Enregistrer la commande" : "Enregistrer")
+                        </MudButton>
+                    }
+                    <MudButton Href="/orders" Variant="Variant.Text" Disabled="_busy">@(editable ? "Annuler" : "Retour")</MudButton>
+                </div>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+}
+
+@code {
+    [Parameter]
+    public int? Id { get; set; }
+
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    private bool _loading = true;
+    private bool _notFound;
+    private bool _busy;
+    private bool _hasLoaded;
+    private int? _loadedId;
+
+    private OrderSummary? _existing;
+    private OrderDraft _draft = OrderDraft.New();
+    private IReadOnlyList<OrderDish> _dishes = [];
+    private OrderDish? _pickedDish;
+    private MudAutocomplete<OrderDish>? _dishField;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // /orders/new puis /orders/{id} réutilisent le même composant : on recharge quand l'identifiant change.
+        if (_hasLoaded && _loadedId == Id)
+            return;
+
+        _hasLoaded = true;
+        _loadedId = Id;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _notFound = false;
+            _existing = null;
+
+            if (Id is { } id)
+            {
+                // Le tableau ne montre que les commandes du jour, et c'est là qu'on en modifie une.
+                _existing = (await OrderService.ListForDayAsync(DateTime.UtcNow.Date)).FirstOrDefault(o => o.Id == id);
+                _notFound = _existing is null;
+                if (_notFound)
+                    return;
+            }
+
+            _draft = _existing is null ? OrderDraft.New() : OrderDraft.From(_existing);
+
+            // Seuls les plats actifs avec un prix de vente se commandent (le service refuse les autres).
+            var book = await RecipeService.LoadBookAsync();
+            _dishes = book.Recipes
+                .Where(r => r.Kind == RecipeKind.Dish && !r.IsArchived && r.SellingPriceInclVat is not null && r.VatRate is not null)
+                .OrderBy(r => r.Name, StringComparer.InvariantCultureIgnoreCase)
+                .ThenBy(r => r.Id)
+                .Select(r => new OrderDish(r.Id, r.Name, r.SellingPriceInclVat!.Value))
+                .ToList();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string? DishLabel(OrderDish? dish) => dish is null ? null : $"{dish.Name} — {Ui.Money(dish.PriceInclVat)}";
+
+    private Task<IEnumerable<OrderDish>> SearchDishesAsync(string? text, CancellationToken cancellationToken) =>
+        Task.FromResult(_dishes.Where(dish => Ui.ContainsText(dish.Name, text)));
+
+    // Le plat choisi rejoint la commande ; le champ se vide pour le plat suivant.
+    private async Task AddDishAsync(OrderDish? dish)
+    {
+        if (dish is null)
+            return;
+
+        _draft.AddDish(dish.Id, dish.Name, dish.PriceInclVat);
+        _pickedDish = null;
+        if (_dishField is not null)
+            await _dishField.ClearAsync();
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            if (_existing is null)
+            {
+                await OrderService.CreateAsync(_draft.ToInput());
+                Snackbar.Add("Commande enregistrée", Severity.Success);
+            }
+            else
+            {
+                await OrderService.UpdateLinesAsync(_existing.Id, _draft.ToLineInputs());
+                Snackbar.Add($"Commande n° {_existing.Number} modifiée", Severity.Success);
+            }
+
+            Navigation.NavigateTo("/orders");
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private sealed record OrderDish(int Id, string Name, decimal PriceInclVat);
+}

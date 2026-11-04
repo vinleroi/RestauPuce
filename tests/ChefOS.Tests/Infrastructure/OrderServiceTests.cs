@@ -599,6 +599,7 @@ public class OrderServiceTests(PostgresFixture postgres)
             (summary.Id, summary.Number, summary.Source, summary.Status, summary.TableOrCustomer));
         Assert.Equal(2 * 22.40m + 3 * 18m, summary.TotalInclVat);
         Assert.Equal([("Tartare", 2, "saignant"), ("Burger", 3, null)], summary.Lines.Select(l => (l.DishName, l.Quantity, l.Note)));
+        Assert.Equal([tartare, burger], summary.Lines.Select(l => l.RecipeId));   // l'écran de modification en a besoin : deux plats peuvent porter le même nom
         Assert.Empty(await service.ListForDayAsync(createdAt.AddDays(1)));
         Assert.Empty(await service.ListForDayAsync(createdAt.AddDays(-1)));
     }

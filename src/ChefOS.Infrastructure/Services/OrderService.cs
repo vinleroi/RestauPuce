@@ -181,7 +181,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
                 o.Status,
                 o.TableOrCustomer,
                 o.Lines.Sum(l => l.Quantity * l.UnitPriceInclVat),
-                o.Lines.Select(l => new OrderLineSummary(names[l.RecipeId], l.Quantity, l.Note)).ToList()))
+                o.Lines.Select(l => new OrderLineSummary(l.RecipeId, names[l.RecipeId], l.Quantity, l.Note)).ToList()))
             .ToList();
     }
 

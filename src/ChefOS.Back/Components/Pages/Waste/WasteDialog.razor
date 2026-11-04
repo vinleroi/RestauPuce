@@ -1,0 +1,139 @@
+@using ChefOS.Core.Common
+@using ChefOS.Core.Sales
+@using ChefOS.Core.Units
+@using ChefOS.Infrastructure.Services
+
+@inject WasteService WasteService
+@inject RecipeService RecipeService
+@inject ISnackbar Snackbar
+
+@* Déclaration d'une perte ; se ferme avec DialogResult.Ok(jour de la perte) une fois enregistrée, reste ouverte si le service la refuse. *@
+<MudDialog>
+    <DialogContent>
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+        }
+        else
+        {
+            <MudAutocomplete T="WasteTarget" Value="_target" ValueChanged="SetTarget" Label="Ingrédient, préparation ou plat" Placeholder="Rechercher…"
+                             SearchFunc="SearchTargetsAsync" ToStringFunc="TargetLabel" OpenOnFocus="true" ResetValueOnEmptyText="true" MaxItems="40"
+                             Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-2">
+                <NoItemsTemplate>
+                    <MudText Class="pa-3" Style="@Muted">Aucun résultat</MudText>
+                </NoItemsTemplate>
+            </MudAutocomplete>
+
+            <div class="d-flex gap-2 mb-2">
+                <MudNumericField T="decimal?" @bind-Value="_quantity" Culture="Ui.Fr" Format="0.####" InputMode="DecimalInput" Immediate="true" Min="0"
+                                 Label="Quantité" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                <MudSelect T="MeasureUnit" @bind-Value="_unit" Label="Unité" ToStringFunc="UnitLabel" Disabled="@(_target is null)"
+                           Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width: 9rem">
+                    @foreach (var unit in _target?.UnitChoices ?? [])
+                    {
+                        <MudSelectItem T="MeasureUnit" Value="unit">@UnitLabel(unit)</MudSelectItem>
+                    }
+                </MudSelect>
+            </div>
+
+            <MudSelect T="WasteReason" @bind-Value="_reason" Label="Motif" ToStringFunc="Ui.WasteReasonLabel" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-2">
+                @foreach (var reason in Enum.GetValues<WasteReason>())
+                {
+                    <MudSelectItem T="WasteReason" Value="reason">@Ui.WasteReasonLabel(reason)</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudDatePicker @bind-Date="_date" Label="Date" Culture="Ui.Fr" DateFormat="dd/MM/yyyy" MaxDate="@LatestDate" Editable="true"
+                           Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-2" />
+
+            <MudTextField T="string" @bind-Value="_note" Label="Note" Lines="2" Variant="Variant.Outlined" Margin="Margin.Dense" />
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Annuler</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" Disabled="_loading || _saving">Enregistrer</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    // Clavier à virgule sur mobile (la valeur par défaut de MudNumericField est « numeric », sans séparateur décimal sur iOS).
+    private const InputMode DecimalInput = InputMode.@decimal;
+
+    // Même plafond que WasteService : demain (UTC) est permis, selon le fuseau du chef il peut déjà y être ; une date plus lointaine serait refusée.
+    private static DateTime LatestDate => DateTime.UtcNow.Date.AddDays(1);
+
+    private IReadOnlyList<WasteTarget> _targets = [];
+    private WasteTarget? _target;
+    private decimal? _quantity;
+    private MeasureUnit _unit = MeasureUnit.Kg;
+    private WasteReason _reason = WasteReason.Perime;
+    private DateTime? _date = DateTime.UtcNow.Date;
+    private string? _note;
+    private bool _loading = true;
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _targets = WasteTarget.Candidates(await RecipeService.LoadBookAsync());
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string? TargetLabel(WasteTarget? target) => target?.Label;
+
+    private string UnitLabel(MeasureUnit unit) => _target?.UnitLabel(unit) ?? Ui.MeasureUnitLabel(unit);
+
+    private Task<IEnumerable<WasteTarget>> SearchTargetsAsync(string? text, CancellationToken cancellationToken) =>
+        Task.FromResult(_targets.Where(target => target.Matches(text)));
+
+    // Un autre élément se compte dans une autre unité : on repart de son unité d'office (kg, l, pièce, ou portions pour un plat).
+    private void SetTarget(WasteTarget? target)
+    {
+        _target = target;
+        if (target is not null)
+            _unit = target.DefaultUnit;
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task SaveAsync()
+    {
+        if (_saving)
+            return;
+
+        _saving = true;
+        try
+        {
+            var input = new WasteInput(
+                (_date ?? DateTime.UtcNow).Date,
+                _target?.Kind == WasteTargetKind.Ingredient ? _target.Id : null,
+                _target is { Kind: not WasteTargetKind.Ingredient } ? _target.Id : null,
+                _quantity ?? 0m,
+                _unit,
+                _reason,
+                _note);
+
+            await WasteService.AddAsync(input);
+            MudDialog.Close(DialogResult.Ok(input.Date));
+        }
+        catch (DomainValidationException e)
+        {
+            // La boîte reste ouverte pour corriger la saisie.
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

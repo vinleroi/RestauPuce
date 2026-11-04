@@ -1,0 +1,310 @@
+@page "/orders"
+
+@implements IAsyncDisposable
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Sales
+@using ChefOS.Infrastructure.Services
+
+@inject OrderService OrderService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<PageTitle>Commandes — ChefOS</PageTitle>
+
+<div class="d-flex align-center flex-wrap gap-2 mb-1">
+    <MudText Typo="Typo.h4" HtmlTag="h1" Class="flex-grow-1">Commandes du jour</MudText>
+    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="RefreshAsync" Disabled="_busy || _loading">Actualiser</MudButton>
+    <MudButton Href="/orders/new" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add">Nouvelle commande</MudButton>
+</div>
+<MudText Typo="Typo.caption" Style="@Muted" Class="d-block mb-4">
+    @_day.ToString("dddd d MMMM yyyy", Ui.Fr)
+    @if (_refreshedAt is { } refreshedAt)
+    {
+        <text> · actualisé à @refreshedAt.ToLocalTime().ToString("HH:mm:ss", Ui.Fr) (automatiquement toutes les 30 secondes)</text>
+    }
+</MudText>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else
+{
+    <MudGrid Spacing="3">
+        @foreach (var status in Columns)
+        {
+            var orders = OrdersOf(status);
+            <MudItem xs="12" md="6" lg="3">
+                <div class="d-flex align-center gap-2 mb-2">
+                    <MudText Typo="Typo.h6" HtmlTag="h2">@Ui.OrderStatusLabel(status)</MudText>
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@orders.Count</MudChip>
+                </div>
+
+                @if (orders.Count == 0)
+                {
+                    <MudText Style="@Muted">Aucune commande</MudText>
+                }
+
+                @foreach (var order in orders)
+                {
+                    <div @key="order.Id">
+                        @OrderCard(order)
+                    </div>
+                }
+            </MudItem>
+        }
+    </MudGrid>
+
+    var cancelled = OrdersOf(OrderStatus.Annulee);
+    <MudExpansionPanels Class="mt-4" Elevation="1">
+        <MudExpansionPanel Text="@($"Annulées ({cancelled.Count})")">
+            @if (cancelled.Count == 0)
+            {
+                <MudText Style="@Muted">Aucune commande annulée aujourd'hui.</MudText>
+            }
+            else
+            {
+                <MudGrid Spacing="3">
+                    @foreach (var order in cancelled)
+                    {
+                        <MudItem xs="12" md="6" lg="3" @key="order.Id">
+                            @OrderCard(order)
+                        </MudItem>
+                    }
+                </MudGrid>
+            }
+        </MudExpansionPanel>
+    </MudExpansionPanels>
+}
+
+@code {
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    private static readonly OrderStatus[] Columns = [OrderStatus.Nouvelle, OrderStatus.EnPreparation, OrderStatus.Prete, OrderStatus.Servie];
+
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(30);
+
+    private readonly CancellationTokenSource _cancellation = new();
+
+    private Task? _refreshLoop;
+    private IReadOnlyList<OrderSummary> _orders = [];
+    private DateTime _day = DateTime.UtcNow.Date;
+    private DateTime? _refreshedAt;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _dialogOpen;
+
+    private RenderFragment OrderCard(OrderSummary order) => @<MudPaper Elevation="1" Class="pa-3 mb-3">
+        <div class="d-flex align-center gap-2 mb-1">
+            <MudText Typo="Typo.subtitle1"><strong>n° @order.Number</strong></MudText>
+            <MudText Typo="Typo.body2" Style="@Muted">@order.CreatedAt.ToLocalTime().ToString("HH:mm", Ui.Fr)</MudText>
+            <MudSpacer />
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@Ui.OrderSourceLabel(order.Source)</MudChip>
+            @if (OrderDraft.IsOpen(order.Status))
+            {
+                <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight"
+                         aria-label="@($"Actions de la commande {order.Number}")" Disabled="_busy">
+                    <MudMenuItem Href="@($"/orders/{order.Id}")" Icon="@Icons.Material.Filled.Edit">Modifier</MudMenuItem>
+                    <MudMenuItem OnClick="@(() => CancelAsync(order))" Icon="@Icons.Material.Filled.Cancel">Annuler la commande</MudMenuItem>
+                </MudMenu>
+            }
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(order.TableOrCustomer))
+        {
+            <MudText Typo="Typo.body2" Class="mb-1"><strong>@order.TableOrCustomer</strong></MudText>
+        }
+
+        <ul class="my-1 pl-4">
+            @foreach (var line in order.Lines)
+            {
+                <li>
+                    @line.Quantity × @line.DishName
+                    @if (!string.IsNullOrWhiteSpace(line.Note))
+                    {
+                        <span style="@Muted"> — @line.Note</span>
+                    }
+                </li>
+            }
+        </ul>
+
+        <MudText Typo="Typo.subtitle2" Class="mt-2">@Ui.Money(order.TotalInclVat) TTC</MudText>
+        @if (Ui.AdvanceLabel(order.Status) is { } advanceLabel)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" FullWidth="true" Class="mt-2"
+                       OnClick="@(() => AdvanceAsync(order))" Disabled="_busy">
+                @advanceLabel
+            </MudButton>
+        }
+    </MudPaper>;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    // Seulement une fois le circuit interactif : le prérendu n'a pas à lancer de minuterie.
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+            _refreshLoop = RefreshLoopAsync(_cancellation.Token);
+    }
+
+    private IReadOnlyList<OrderSummary> OrdersOf(OrderStatus status) => _orders.Where(o => o.Status == status).ToList();
+
+    private async Task LoadAsync(bool showLoading = true)
+    {
+        if (showLoading)
+            _loading = true;
+
+        try
+        {
+            _day = DateTime.UtcNow.Date;
+            _orders = await OrderService.ListForDayAsync(_day);
+            _refreshedAt = DateTime.UtcNow;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await LoadAsync(showLoading: false);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // Actualisation automatique, tant que la page est ouverte. Elle passe son tour pendant une action ou une confirmation en cours :
+    // elle ne doit pas changer le tableau sous les doigts du chef.
+    private async Task RefreshLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(RefreshInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+                await InvokeAsync(() => RefreshSilentlyAsync(cancellationToken));
+        }
+        catch (OperationCanceledException)
+        {
+            // Page quittée.
+        }
+        catch (ObjectDisposedException)
+        {
+            // Circuit fermé.
+        }
+    }
+
+    private async Task RefreshSilentlyAsync(CancellationToken cancellationToken)
+    {
+        if (_busy || _loading || _dialogOpen || cancellationToken.IsCancellationRequested)
+            return;
+
+        _busy = true;
+        try
+        {
+            await LoadAsync(showLoading: false);
+        }
+        catch (Exception)
+        {
+            // Un accès à la base qui échoue ne doit pas arrêter la page : le tableau garde ses dernières données (l'heure d'actualisation le montre)
+            // et le prochain passage réessaie.
+        }
+        finally
+        {
+            _busy = false;
+        }
+
+        if (!cancellationToken.IsCancellationRequested)
+            StateHasChanged();
+    }
+
+    // Un refus du service (« La commande a déjà changé de statut ») s'affiche tel quel, puis le tableau est relu : la carte retrouve sa vraie colonne.
+    private async Task AdvanceAsync(OrderSummary order)
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await OrderService.AdvanceAsync(order.Id);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAfterActionAsync();
+        }
+    }
+
+    private async Task CancelAsync(OrderSummary order)
+    {
+        if (_busy)
+            return;
+
+        _dialogOpen = true;
+        bool? confirmed;
+        try
+        {
+            confirmed = await DialogService.ShowMessageBoxAsync(
+                "Annuler la commande",
+                $"Annuler la commande n° {order.Number}{(string.IsNullOrWhiteSpace(order.TableOrCustomer) ? "" : $" ({order.TableOrCustomer})")} ? Elle ne pourra plus être modifiée ni rouverte.",
+                yesText: "Annuler la commande",
+                cancelText: "Garder");
+        }
+        finally
+        {
+            _dialogOpen = false;
+        }
+
+        if (confirmed != true || _busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await OrderService.CancelAsync(order.Id);
+            Snackbar.Add($"Commande n° {order.Number} annulée", Severity.Success);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAfterActionAsync();
+        }
+    }
+
+    private async Task ReloadAfterActionAsync()
+    {
+        try
+        {
+            await LoadAsync(showLoading: false);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _cancellation.CancelAsync();
+        if (_refreshLoop is not null)
+            await _refreshLoop;
+
+        _cancellation.Dispose();
+    }
+}
