@@ -3,6 +3,7 @@ using ChefOS.Core.Ingredients;
 using ChefOS.Core.Receipts;
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
+using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
 
 namespace ChefOS.Infrastructure.Services;
@@ -146,3 +147,35 @@ public record AppliedPrice(
     bool ReplacedCurrent);
 
 public record ApplyResult(IReadOnlyList<AppliedPrice> Prices);
+
+// ── Ventes saisies et commandes ──────────────────────────────────────────────
+
+/// <summary>
+/// Une case de la grille hebdomadaire des ventes. <paramref name="Date"/> est un jour UTC (seul le jour compte) ;
+/// pour un total de semaine (<paramref name="IsWeeklyTotal"/>), c'est le lundi. <paramref name="Quantity"/> est un nombre de portions
+/// (une demi-portion est permise) ; 0 efface la saisie.
+/// </summary>
+public record SalesCell(int RecipeId, DateTime Date, ServicePeriod Service, bool IsWeeklyTotal, decimal Quantity);
+
+/// <summary>Un plat de la grille et les saisies qui existent pour lui cette semaine-là ; <paramref name="UnitPriceInclVat"/> est son prix de vente actuel.</summary>
+public record SalesWeekDish(int RecipeId, string Name, decimal? UnitPriceInclVat, IReadOnlyList<SalesCell> Cells);
+
+/// <summary>Une semaine de ventes : <paramref name="Monday"/> est le lundi à 00:00 UTC.</summary>
+public record SalesWeek(DateTime Monday, IReadOnlyList<SalesWeekDish> Dishes);
+
+public record OrderLineInput(int RecipeId, int Quantity, string? Note);
+
+public record OrderInput(OrderSource Source, string? TableOrCustomer, string? Note, IReadOnlyList<OrderLineInput> Lines);
+
+public record OrderLineSummary(string DishName, int Quantity, string? Note);
+
+/// <summary><paramref name="TotalInclVat"/> : somme des quantités × prix figés des lignes (non arrondie).</summary>
+public record OrderSummary(
+    int Id,
+    int Number,
+    DateTime CreatedAt,
+    OrderSource Source,
+    OrderStatus Status,
+    string? TableOrCustomer,
+    decimal TotalInclVat,
+    IReadOnlyList<OrderLineSummary> Lines);
