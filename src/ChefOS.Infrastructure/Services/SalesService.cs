@@ -19,6 +19,10 @@ public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
     private const string UnknownDishMessage = "Plat introuvable";
     private const string NegativeQuantityMessage = "La quantité ne peut pas être négative";
     private const string WeeklyTotalMondayMessage = "Un total de semaine doit être daté du lundi";
+    private const string QuantityTooHighMessage = "Quantité trop élevée";
+
+    /// <summary>Plafond d'une saisie, en portions : au-delà, c'est une faute de frappe.</summary>
+    private const decimal MaxQuantity = 1_000_000m;
 
     // Échelle de la colonne numeric : arrondir avant de valider évite qu'une quantité positive soit stockée comme 0.
     private const int QuantityScale = 4;
@@ -69,13 +73,16 @@ public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
 
     /// <summary>
     /// Enregistre des cases de la grille, tout ou rien : toutes sont validées avant la moindre écriture, puis appliquées d'un seul
-    /// <c>SaveChanges</c>. Par clé (plat, jour, service, hebdomadaire ou non), une quantité de 0 supprime la saisie, une quantité positive la crée
-    /// ou la met à jour en figeant le prix de vente TTC et la TVA actuels du plat. Si une clé revient plusieurs fois, la dernière gagne.
-    /// Les dates sont ramenées au jour UTC ; la quantité est arrondie à 4 décimales (échelle de la colonne).
+    /// <c>SaveChanges</c>. Par clé (plat, jour, service, hebdomadaire ou non), une quantité de 0 supprime la saisie ; une quantité positive crée
+    /// la saisie en figeant le prix de vente TTC et la TVA actuels du plat, ou, si elle existe déjà, ne change que sa quantité : une saisie garde
+    /// le prix figé à sa création (corriger les ventes d'une ancienne semaine ne réécrit pas son chiffre d'affaires), et une quantité inchangée
+    /// ne touche à rien. Si une clé revient plusieurs fois, la dernière gagne.
+    /// Les dates sont ramenées au jour UTC ; la quantité est arrondie à 4 décimales (échelle de la colonne). Un total de semaine n'a pas de service :
+    /// il est enregistré en <see cref="ServicePeriod.Journee"/>, quel que soit celui de la case.
     /// </summary>
     /// <exception cref="DomainValidationException">
-    /// Quantité négative, total de semaine qui n'est pas daté d'un lundi, plat inconnu (ou qui n'est pas un plat du restaurant courant),
-    /// ou plat sans prix de vente alors qu'une quantité positive est saisie.
+    /// Quantité négative ou supérieure à 1 000 000, total de semaine qui n'est pas daté d'un lundi, plat inconnu (ou qui n'est pas un plat du
+    /// restaurant courant), ou plat sans prix de vente alors qu'une quantité positive est saisie.
     /// </exception>
     public async Task SaveCellsAsync(IReadOnlyList<SalesCell> cells)
     {
@@ -122,23 +129,27 @@ public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
                 continue;
             }
 
-            var dish = dishes[cell.RecipeId];
             if (entry is null)
             {
-                entry = new SalesEntry
+                // Seule une nouvelle saisie fige le prix du plat ; une saisie existante garde celui de sa création.
+                var dish = dishes[cell.RecipeId];
+                db.SalesEntries.Add(new SalesEntry
                 {
                     RecipeId = key.RecipeId,
                     Date = key.Date,
                     Service = key.Service,
-                    IsWeeklyTotal = key.IsWeeklyTotal
-                };
-                db.SalesEntries.Add(entry);
+                    IsWeeklyTotal = key.IsWeeklyTotal,
+                    Quantity = cell.Quantity,
+                    UnitPriceInclVat = dish.SellingPriceInclVat!.Value,
+                    VatRate = dish.VatRate!.Value,
+                    UpdatedAt = now
+                });
             }
-
-            entry.Quantity = cell.Quantity;
-            entry.UnitPriceInclVat = dish.SellingPriceInclVat!.Value;
-            entry.VatRate = dish.VatRate!.Value;
-            entry.UpdatedAt = now;
+            else if (entry.Quantity != cell.Quantity)
+            {
+                entry.Quantity = cell.Quantity;
+                entry.UpdatedAt = now;
+            }
         }
 
         await db.SaveChangesAsync();
@@ -146,18 +157,23 @@ public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
 
     private readonly record struct CellKey(int RecipeId, DateTime Date, ServicePeriod Service, bool IsWeeklyTotal);
 
-    /// <summary>La case avec sa date ramenée au jour UTC et sa quantité arrondie ; refuse une quantité négative et un total de semaine hors lundi.</summary>
+    /// <summary>La case avec sa date ramenée au jour UTC et sa quantité arrondie ; refuse une quantité négative ou trop élevée et un total de semaine hors lundi.</summary>
     private static SalesCell Normalize(SalesCell cell)
     {
         var quantity = Math.Round(cell.Quantity, QuantityScale, MidpointRounding.AwayFromZero);
         if (quantity < 0)
             throw new DomainValidationException(NegativeQuantityMessage);
 
+        if (quantity > MaxQuantity)
+            throw new DomainValidationException(QuantityTooHighMessage);
+
         var date = UtcDay(cell.Date);
         if (cell.IsWeeklyTotal && date.DayOfWeek != DayOfWeek.Monday)
             throw new DomainValidationException(WeeklyTotalMondayMessage);
 
-        return cell with { Date = date, Quantity = quantity };
+        // Un total de semaine couvre tous les services : une seule clé, en « Journée ».
+        var service = cell.IsWeeklyTotal ? ServicePeriod.Journee : cell.Service;
+        return cell with { Date = date, Service = service, Quantity = quantity };
     }
 
     /// <summary>Minuit UTC du jour de <paramref name="value"/> ; une date sans fuseau est lue comme étant en UTC.</summary>

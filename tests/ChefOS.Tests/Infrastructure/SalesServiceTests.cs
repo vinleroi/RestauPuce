@@ -13,6 +13,7 @@ public class SalesServiceTests(PostgresFixture postgres)
     private const string UnknownDishMessage = "Plat introuvable";
     private const string WeeklyTotalMondayMessage = "Un total de semaine doit être daté du lundi";
     private const string NegativeQuantityMessage = "La quantité ne peut pas être négative";
+    private const string QuantityTooHighMessage = "Quantité trop élevée";
 
     // Semaine du lundi 2 au dimanche 8 novembre 2026 (dates fixes, indépendantes de l'heure d'exécution).
     private static readonly DateTime Monday = new(2026, 11, 2, 0, 0, 0, DateTimeKind.Utc);
@@ -310,6 +311,119 @@ public class SalesServiceTests(PostgresFixture postgres)
         // La grille affiche le prix actuel du plat, pas celui de la saisie.
         var week = await service.GetWeekAsync(Monday);
         Assert.Equal(25m, week.Dishes.Single().UnitPriceInclVat);
+    }
+
+    [Fact]
+    public async Task SaveCells_UpdateKeepsOriginalFrozenPrice()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var tartare = await AddRecipeAsync(options, restaurant, "Tartare", price: 18m, vat: 0.06m);
+        var service = CreateService(options, restaurant);
+
+        await service.SaveCellsAsync([Day(tartare, Monday, 4m, ServicePeriod.Midi)]);
+
+        // Le prix du plat change, puis la quantité est corrigée : la saisie garde le prix de sa création.
+        await using (var db = OpenContext(options, restaurant))
+        {
+            var dish = await db.Recipes.SingleAsync(r => r.Id == tartare);
+            dish.SellingPriceInclVat = 20m;
+            dish.VatRate = 0.12m;
+            await db.SaveChangesAsync();
+        }
+
+        await service.SaveCellsAsync([Day(tartare, Monday, 6m, ServicePeriod.Midi)]);
+
+        var updated = Assert.Single(await LoadEntriesAsync(options, restaurant));
+        Assert.Equal(6m, updated.Quantity);
+        Assert.Equal(18m, updated.UnitPriceInclVat);
+        Assert.Equal(0.06m, updated.VatRate);
+
+        // Une nouvelle saisie, elle, fige le prix du jour.
+        await service.SaveCellsAsync([Day(tartare, Monday, 2m, ServicePeriod.Soir)]);
+        var evening = (await LoadEntriesAsync(options, restaurant)).Single(e => e.Service == ServicePeriod.Soir);
+        Assert.Equal(20m, evening.UnitPriceInclVat);
+        Assert.Equal(0.12m, evening.VatRate);
+    }
+
+    [Fact]
+    public async Task SaveCells_UnchangedQuantity_IsNoOp()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var tartare = await AddRecipeAsync(options, restaurant, "Tartare", price: 25m, vat: 0.06m);
+        // Saisie ancienne : UpdatedAt = Monday (date fixe), prix figé 22,40 / 12 % différents de ceux du plat.
+        await AddEntryAsync(options, restaurant, tartare, Monday, 4m, ServicePeriod.Midi);
+        var service = CreateService(options, restaurant);
+
+        await service.SaveCellsAsync([Day(tartare, Monday, 4m, ServicePeriod.Midi)]);
+
+        var untouched = Assert.Single(await LoadEntriesAsync(options, restaurant));
+        Assert.Equal(4m, untouched.Quantity);
+        Assert.Equal(Monday, untouched.UpdatedAt);
+        Assert.Equal(22.40m, untouched.UnitPriceInclVat);
+        Assert.Equal(0.12m, untouched.VatRate);
+
+        // Une quantité différente met la saisie à jour (UpdatedAt change), toujours au prix d'origine.
+        await service.SaveCellsAsync([Day(tartare, Monday, 5m, ServicePeriod.Midi)]);
+
+        var changed = Assert.Single(await LoadEntriesAsync(options, restaurant));
+        Assert.Equal(5m, changed.Quantity);
+        Assert.NotEqual(Monday, changed.UpdatedAt);
+        Assert.Equal(22.40m, changed.UnitPriceInclVat);
+        Assert.Equal(0.12m, changed.VatRate);
+    }
+
+    [Fact]
+    public async Task SaveCells_QuantityCeiling()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var tartare = await AddRecipeAsync(options, restaurant, "Tartare");
+        var service = CreateService(options, restaurant);
+
+        foreach (var tooHigh in new[] { 1_000_000.0001m, 2_000_000m, 999_999_999_999m })
+        {
+            var error = await Assert.ThrowsAsync<DomainValidationException>(() =>
+                service.SaveCellsAsync([Day(tartare, Monday, tooHigh)]));
+            Assert.Equal(QuantityTooHighMessage, error.Message);
+        }
+
+        Assert.Empty(await LoadEntriesAsync(options, restaurant));
+
+        // Le plafond lui-même est permis.
+        await service.SaveCellsAsync([Day(tartare, Monday, 1_000_000m)]);
+        Assert.Equal(1_000_000m, Assert.Single(await LoadEntriesAsync(options, restaurant)).Quantity);
+    }
+
+    [Fact]
+    public async Task SaveCells_WeeklyTotalIgnoresServiceAndIsStoredAsJournee()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var burger = await AddRecipeAsync(options, restaurant, "Burger");
+        var service = CreateService(options, restaurant);
+
+        await service.SaveCellsAsync([Week(burger, Monday, 10m, ServicePeriod.Midi)]);
+
+        var created = Assert.Single(await LoadEntriesAsync(options, restaurant));
+        Assert.Equal(ServicePeriod.Journee, created.Service);
+        Assert.True(created.IsWeeklyTotal);
+
+        // Le même total, envoyé avec un autre service, met à jour la même saisie ; dans un même appel, la dernière gagne.
+        await service.SaveCellsAsync([Week(burger, Monday, 12m, ServicePeriod.Soir)]);
+        await service.SaveCellsAsync([Week(burger, Monday, 20m, ServicePeriod.Midi), Week(burger, Monday, 25m, ServicePeriod.Soir)]);
+
+        var entry = Assert.Single(await LoadEntriesAsync(options, restaurant));
+        Assert.Equal((ServicePeriod.Journee, 25m), (entry.Service, entry.Quantity));
+
+        // La grille le restitue en « Journée ».
+        var week = await service.GetWeekAsync(Monday);
+        Assert.Equal([Week(burger, Monday, 25m)], week.Dishes.Single().Cells);
+
+        // Effacer le total avec un autre service que « Journée » l'efface bien.
+        await service.SaveCellsAsync([Week(burger, Monday, 0m, ServicePeriod.Midi)]);
+        Assert.Empty(await LoadEntriesAsync(options, restaurant));
     }
 
     [Fact]

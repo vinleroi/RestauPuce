@@ -18,6 +18,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
 {
     private const string NoLineMessage = "Ajoutez au moins un plat";
     private const string QuantityMessage = "La quantité doit être d'au moins 1";
+    private const string QuantityTooHighMessage = "Quantité trop élevée";
     private const string UnknownDishMessage = "Plat introuvable";
     private const string UnknownOrderMessage = "Commande introuvable";
     private const string StatusChangedMessage = "La commande a déjà changé de statut";
@@ -30,6 +31,9 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
 
     private const string OrderNumberIndex = "IX_Orders_Number";
 
+    /// <summary>Plafond de portions par ligne de commande : au-delà, c'est une faute de frappe.</summary>
+    private const int MaxLineQuantity = 1000;
+
     /// <summary>Nouveaux essais de numérotation après une collision sur <c>IX_Orders_Number</c> (deux commandes créées au même instant).</summary>
     private const int NumberRetries = 5;
 
@@ -40,7 +44,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
     /// </summary>
     /// <returns>L'identifiant de la commande créée.</returns>
     /// <exception cref="DomainValidationException">
-    /// Aucune ligne, quantité inférieure à 1, plat inconnu (ou archivé, ou qui n'est pas un plat du restaurant courant), plat sans prix de vente,
+    /// Aucune ligne, quantité inférieure à 1 ou supérieure à 1 000, plat inconnu (ou archivé, ou qui n'est pas un plat du restaurant courant), plat sans prix de vente,
     /// ou numéro impossible à attribuer.
     /// </exception>
     public async Task<int> CreateAsync(OrderInput input)
@@ -213,6 +217,8 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
             throw new DomainValidationException(NoLineMessage);
         if (lines.Any(l => l.Quantity < 1))
             throw new DomainValidationException(QuantityMessage);
+        if (lines.Any(l => l.Quantity > MaxLineQuantity))
+            throw new DomainValidationException(QuantityTooHighMessage);
     }
 
     /// <summary>

@@ -14,6 +14,7 @@ public class OrderServiceTests(PostgresFixture postgres)
 {
     private const string NoLineMessage = "Ajoutez au moins un plat";
     private const string QuantityMessage = "La quantité doit être d'au moins 1";
+    private const string QuantityTooHighMessage = "Quantité trop élevée";
     private const string UnknownDishMessage = "Plat introuvable";
     private const string UnknownOrderMessage = "Commande introuvable";
     private const string StatusChangedMessage = "La commande a déjà changé de statut";
@@ -162,6 +163,28 @@ public class OrderServiceTests(PostgresFixture postgres)
         // Aucune commande n'a été créée par les refus (et le numéro suivant n'est pas consommé).
         var next = await service.CreateAsync(Order(Line(burger)));
         Assert.Equal(2, (await LoadOrderAsync(options, restaurant, next)).Number);
+    }
+
+    [Fact]
+    public async Task LineQuantityCeiling_AppliesToCreateAndUpdate()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var dish = await AddDishAsync(options, restaurant, "Tartare");
+        var service = CreateService(options, restaurant);
+
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.CreateAsync(Order(Line(dish, 1001))));
+        Assert.Equal(QuantityTooHighMessage, error.Message);
+        error = await Assert.ThrowsAsync<DomainValidationException>(() => service.CreateAsync(Order(Line(dish), Line(dish, int.MaxValue))));
+        Assert.Equal(QuantityTooHighMessage, error.Message);
+
+        // Le plafond lui-même est permis.
+        var id = await service.CreateAsync(Order(Line(dish, 1000)));
+        Assert.Equal(1000, Assert.Single((await LoadOrderAsync(options, restaurant, id)).Lines).Quantity);
+
+        error = await Assert.ThrowsAsync<DomainValidationException>(() => service.UpdateLinesAsync(id, [Line(dish, 1001)]));
+        Assert.Equal(QuantityTooHighMessage, error.Message);
+        Assert.Equal(1000, Assert.Single((await LoadOrderAsync(options, restaurant, id)).Lines).Quantity);
     }
 
     [Fact]
