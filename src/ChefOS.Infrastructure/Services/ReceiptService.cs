@@ -133,7 +133,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         var readDay = extraction.Date is { } day
             ? DateTime.SpecifyKind(day.ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc)
             : (DateTime?)null;
-        receipt.ReceiptDate = readDay is { } readable && !IsInTheFuture(readable) ? readable : null;
+        receipt.ReceiptDate = readDay is { } readable && !UtcDays.IsInTheFuture(readable) ? readable : null;
         receipt.InvoiceNumber = NullIfBlank(extraction.InvoiceNumber);
         receipt.AmountsIncludeVat = extraction.AmountsIncludeVat;
         receipt.Total = extraction.Total;
@@ -215,7 +215,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     /// à jour (elle garde son identifiant et ce que le lecteur y avait lu) ; sans identifiant, c'est une ligne ajoutée à la main ; les lignes
     /// du ticket absentes du brouillon sont supprimées. Un ingrédient différent de celui enregistré est un choix manuel (origine effacée) ;
     /// la mention « TVA à vérifier » ne reste que si ni le taux ni le total de la ligne n'ont été modifiés. Un ticket en échec ou pas encore lu, complété
-    /// avec au moins une ligne, passe à <see cref="ReceiptStatus.Extracted"/>. Une date postérieure à demain (UTC) est refusée (voir <see cref="IsInTheFuture"/>).
+    /// avec au moins une ligne, passe à <see cref="ReceiptStatus.Extracted"/>. Une date postérieure à demain (UTC) est refusée (voir <see cref="UtcDays.IsInTheFuture"/>).
     /// Tout est enregistré d'un coup ou pas du tout.
     /// </summary>
     public async Task SaveDraftAsync(ReceiptDraftInput input)
@@ -227,7 +227,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
             throw new DomainValidationException(AlreadyAppliedMessage);
 
         var receiptDate = ToUtc(input.ReceiptDate);
-        if (receiptDate is { } day && IsInTheFuture(day))
+        if (receiptDate is { } day && UtcDays.IsInTheFuture(day))
             throw new DomainValidationException(FutureDateMessage);
 
         var lines = NormalizeLines(input.Lines);
@@ -294,7 +294,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     /// Tout ou rien : une fois les lignes validées, une seule transaction réserve le ticket (passage atomique de « lu » à « appliqué », une seule
     /// exécution l'emporte), écrit les prix, les prix de ligne et les alias, puis valide. Tout échec annule tout, statut compris : le ticket reste
     /// « lu » et peut être appliqué à nouveau sans doublon d'historique. Deux applications simultanées : l'une réussit, l'autre est refusée
-    /// (« déjà appliqué »). Sont aussi refusés, avant toute écriture, un ticket daté d'après-demain ou plus tard (voir <see cref="IsInTheFuture"/> :
+    /// (« déjà appliqué »). Sont aussi refusés, avant toute écriture, un ticket daté d'après-demain ou plus tard (voir <see cref="UtcDays.IsInTheFuture"/> :
     /// il rendrait « en retard » tous les tickets suivants) et un ticket sans aucune ligne à appliquer (vide, ou toutes les lignes ignorées).
     /// </summary>
     public async Task<ApplyResult> ApplyAsync(int receiptId)
@@ -303,7 +303,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
 
         var receipt = await RequireReceiptAsync(db, receiptId, includeLines: true);
         RequireApplicable(receipt.Status);
-        if (receipt.ReceiptDate is { } receiptDay && IsInTheFuture(receiptDay))
+        if (receipt.ReceiptDate is { } receiptDay && UtcDays.IsInTheFuture(receiptDay))
             throw new DomainValidationException(FutureDateMessage);
 
         // Lectures et validations d'abord : aucune écriture tant que toutes les lignes ne sont pas bonnes.
@@ -535,13 +535,6 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         ReceiptLineIssue.InvalidTotal => "montant invalide",
         _ => throw new ArgumentOutOfRangeException(nameof(issue), issue, null)
     };
-
-    /// <summary>
-    /// Vrai pour un jour postérieur à demain (UTC). Demain reste permis : selon le fuseau du chef, il peut déjà y être. Une date plus lointaine est une
-    /// erreur de saisie ou de lecture (année mal lue) : prise comme référence, elle rendrait « en retard » tous les tickets réels suivants,
-    /// dont les prix n'iraient plus qu'à l'historique.
-    /// </summary>
-    private static bool IsInTheFuture(DateTime day) => day.Date > DateTime.UtcNow.Date.AddDays(1);
 
     // Le ticket porte un jour, pas une heure : on garde le jour du calendrier saisi (aucun décalage de fuseau) à minuit UTC.
     private static DateTime? ToUtc(DateTime? date) =>

@@ -167,7 +167,7 @@ public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
         if (quantity > MaxQuantity)
             throw new DomainValidationException(QuantityTooHighMessage);
 
-        var date = UtcDay(cell.Date);
+        var date = UtcDays.Of(cell.Date);
         if (cell.IsWeeklyTotal && date.DayOfWeek != DayOfWeek.Monday)
             throw new DomainValidationException(WeeklyTotalMondayMessage);
 
@@ -176,17 +176,10 @@ public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
         return cell with { Date = date, Service = service, Quantity = quantity };
     }
 
-    /// <summary>Minuit UTC du jour de <paramref name="value"/> ; une date sans fuseau est lue comme étant en UTC.</summary>
-    private static DateTime UtcDay(DateTime value)
-    {
-        var utc = value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : value;
-        return DateTime.SpecifyKind(utc.Date, DateTimeKind.Utc);
-    }
-
     /// <summary>Le lundi (00:00 UTC) de la semaine qui contient <paramref name="value"/> ; la semaine commence le lundi.</summary>
     private static DateTime MondayOf(DateTime value)
     {
-        var day = UtcDay(value);
+        var day = UtcDays.Of(value);
         var sinceMonday = ((int)day.DayOfWeek + 6) % 7;
         return day.AddDays(-sinceMonday);
     }

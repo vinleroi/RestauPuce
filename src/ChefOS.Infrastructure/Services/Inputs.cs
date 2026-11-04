@@ -179,3 +179,57 @@ public record OrderSummary(
     string? TableOrCustomer,
     decimal TotalInclVat,
     IReadOnlyList<OrderLineSummary> Lines);
+
+// ── Pertes et inventaires ────────────────────────────────────────────────────
+
+/// <summary>
+/// Une perte à déclarer : exactement un des deux identifiants est renseigné (ingrédient ou recette). <paramref name="Date"/> est un jour
+/// (seul le jour UTC compte). Pour un ingrédient, <paramref name="Unit"/> doit se convertir dans son unité de base ; pour un plat,
+/// <paramref name="Quantity"/> est un nombre de portions et l'unité est <c>Piece</c> ; pour une préparation, l'unité doit se convertir dans son unité de production.
+/// </summary>
+public record WasteInput(
+    DateTime Date,
+    int? IngredientId,
+    int? RecipeId,
+    decimal Quantity,
+    MeasureUnit Unit,
+    WasteReason Reason,
+    string? Note);
+
+/// <summary>
+/// Une perte avec son coût, valorisé aux prix en vigueur à sa date (non arrondi). <paramref name="Cost"/> est null quand il est inconnu
+/// (ingrédient sans prix, préparation sans quantité produite valide) ; <paramref name="CostIncomplete"/> signale une recette dont le coût
+/// ne porte que sur les lignes chiffrées : <paramref name="Cost"/> est alors un coût partiel.
+/// </summary>
+public record WasteItem(
+    int Id,
+    DateTime Date,
+    string ItemName,
+    bool IsRecipe,
+    decimal Quantity,
+    MeasureUnit Unit,
+    WasteReason Reason,
+    string? Note,
+    decimal? Cost,
+    bool CostIncomplete);
+
+/// <summary>
+/// <paramref name="Value"/> : somme des quantités de base × prix en vigueur à la date de l'inventaire ; les ingrédients sans prix n'y comptent pas.
+/// Null quand aucune ligne n'a de prix (inventaire vide, ou ingrédients tous sans prix).
+/// </summary>
+public record StockCountSummary(int Id, DateTime Date, StockCountStatus Status, int LineCount, decimal? Value);
+
+/// <summary>Une quantité comptée, dans l'unité saisie.</summary>
+public record StockCountLineInput(int IngredientId, decimal Quantity, MeasureUnit Unit);
+
+/// <summary>La feuille de comptage : tous les ingrédients à compter, avec les valeurs déjà saisies.</summary>
+public record StockCountSheet(int Id, DateTime Date, StockCountStatus Status, string? Note, IReadOnlyList<StockCountSheetLine> Lines);
+
+/// <summary><paramref name="Quantity"/> et <paramref name="Unit"/> : la valeur saisie, telle que saisie ; null tant que l'ingrédient n'est pas compté.</summary>
+public record StockCountSheetLine(
+    int IngredientId,
+    string Name,
+    string Category,
+    BaseUnit BaseUnit,
+    decimal? Quantity,
+    MeasureUnit? Unit);

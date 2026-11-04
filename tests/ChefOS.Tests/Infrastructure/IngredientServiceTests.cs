@@ -1,6 +1,7 @@
 using ChefOS.Core.Common;
 using ChefOS.Core.Ingredients;
 using ChefOS.Core.Recipes;
+using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Services;
@@ -14,6 +15,7 @@ public class IngredientServiceTests(PostgresFixture postgres)
     private const string UnknownIngredientMessage = "Ingrédient introuvable";
     private const string UnknownSupplierMessage = "Fournisseur introuvable";
     private const string YieldMessage = "Le rendement doit être compris entre 1 et 100 %";
+    private const string ClosedCountMessage = "Cet ingrédient figure dans un inventaire clôturé : archivez-le";
 
     private static IngredientService CreateService(DbContextOptions<ChefOsDbContext> options, int restaurantId) =>
         new(new TestContextFactory(options, restaurantId));
@@ -51,6 +53,23 @@ public class IngredientServiceTests(PostgresFixture postgres)
         recipe.Lines.Add(new RecipeLine { IngredientId = ingredientId, Quantity = 100m, Unit = MeasureUnit.G });
         db.Recipes.Add(recipe);
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>Inventaire inséré directement, avec une ligne comptant l'ingrédient donné.</summary>
+    private static async Task<int> AddCountCountingAsync(
+        DbContextOptions<ChefOsDbContext> options, int restaurantId, int ingredientId, StockCountStatus status)
+    {
+        await using var db = OpenContext(options, restaurantId);
+        var count = new StockCount
+        {
+            Date = new DateTime(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc),
+            Status = status,
+            ClosedAt = status == StockCountStatus.Cloture ? new DateTime(2026, 11, 3, 20, 0, 0, DateTimeKind.Utc) : null,
+            Lines = { new StockCountLine { IngredientId = ingredientId, Quantity = 500m, Unit = MeasureUnit.G, BaseQuantity = 500m } }
+        };
+        db.StockCounts.Add(count);
+        await db.SaveChangesAsync();
+        return count.Id;
     }
 
     // ── Prix et historique ───────────────────────────────────────────────────
@@ -741,6 +760,65 @@ public class IngredientServiceTests(PostgresFixture postgres)
         Assert.NotNull(await service.GetAsync(carotte.Id));
         await using var db = OpenContext(options, restaurant);
         Assert.Empty(await db.IngredientPrices.ToListAsync()); // l'historique part avec l'ingrédient (cascade)
+    }
+
+    [Fact]
+    public async Task DeleteIngredientInClosedCount_Refused()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var farine = await service.SaveAsync(Input(name: "Farine", price: 0.001m));
+        var closedId = await AddCountCountingAsync(options, restaurant, farine.Id, StockCountStatus.Cloture);
+
+        var ex = await Assert.ThrowsAsync<DomainValidationException>(() => service.DeleteAsync(farine.Id));
+
+        Assert.Equal(ClosedCountMessage, ex.Message);
+        // Rien n'a bougé : l'ingrédient, son historique et la ligne de l'inventaire clôturé sont intacts.
+        Assert.NotNull(await service.GetAsync(farine.Id));
+        Assert.Single(await service.GetPriceHistoryAsync(farine.Id));
+        await using (var db = OpenContext(options, restaurant))
+        {
+            var line = Assert.Single(await db.StockCountLines.Where(l => l.StockCountId == closedId).ToListAsync());
+            Assert.Equal(farine.Id, line.IngredientId);
+        }
+
+        // L'archivage, lui, reste possible.
+        await service.SetArchivedAsync(farine.Id, true);
+        Assert.True((await service.GetAsync(farine.Id))!.IsArchived);
+    }
+
+    [Fact]
+    public async Task Delete_IngredientInDraftCountOrWaste_CascadesThemButKeepsTheCount()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var farine = await service.SaveAsync(Input(name: "Farine", price: 0.001m));
+        var sucre = await service.SaveAsync(Input(name: "Sucre", price: 0.002m));
+        var draftId = await AddCountCountingAsync(options, restaurant, farine.Id, StockCountStatus.Brouillon);
+        await using (var db = OpenContext(options, restaurant))
+        {
+            db.StockCountLines.Add(new StockCountLine { StockCountId = draftId, IngredientId = sucre.Id, Quantity = 1m, Unit = MeasureUnit.G, BaseQuantity = 1m });
+            db.WasteEntries.Add(new WasteEntry
+            {
+                Date = new DateTime(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc),
+                IngredientId = farine.Id,
+                Quantity = 100m,
+                Unit = MeasureUnit.G,
+                Reason = WasteReason.Perime,
+                CreatedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var result = await service.DeleteAsync(farine.Id);
+
+        Assert.True(result.Deleted);
+        await using var check = OpenContext(options, restaurant);
+        Assert.Empty(await check.WasteEntries.ToListAsync());
+        Assert.Equal([sucre.Id], await check.StockCountLines.Where(l => l.StockCountId == draftId).Select(l => l.IngredientId).ToListAsync());
+        Assert.Single(await check.StockCounts.Where(c => c.Id == draftId).ToListAsync());
     }
 
     [Fact]

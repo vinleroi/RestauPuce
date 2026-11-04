@@ -156,7 +156,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
     /// </summary>
     public async Task<IReadOnlyList<OrderSummary>> ListForDayAsync(DateTime dayUtc)
     {
-        var start = UtcDay(dayUtc);
+        var start = UtcDays.Of(dayUtc);
         var end = start.AddDays(1);
 
         await using var db = await factory.CreateDbContextAsync();
@@ -286,13 +286,6 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
 
     private static bool IsOrderNumberConflict(DbUpdateException ex) =>
         ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: OrderNumberIndex };
-
-    /// <summary>Minuit UTC du jour de <paramref name="value"/> ; une date sans fuseau est lue comme étant en UTC.</summary>
-    private static DateTime UtcDay(DateTime value)
-    {
-        var utc = value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : value;
-        return DateTime.SpecifyKind(utc.Date, DateTimeKind.Utc);
-    }
 
     private static string? NullIfBlank(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();

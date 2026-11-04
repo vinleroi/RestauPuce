@@ -28,6 +28,8 @@ public class InfrastructureRegistrationTests
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<RestaurantService>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<DashboardService>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<WasteService>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<InventoryService>());
         Assert.Null(scope.ServiceProvider.GetService<DemoSeeder>());
     }
 

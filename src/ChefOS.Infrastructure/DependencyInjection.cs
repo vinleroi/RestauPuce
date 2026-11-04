@@ -28,6 +28,8 @@ public static class DependencyInjection
         services.AddScoped<DashboardService>();
         services.AddScoped<SalesService>();
         services.AddScoped<OrderService>();
+        services.AddScoped<WasteService>();
+        services.AddScoped<InventoryService>();
 
         return services;
     }

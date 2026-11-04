@@ -1,12 +1,13 @@
 using ChefOS.Core.Common;
 using ChefOS.Core.Ingredients;
+using ChefOS.Core.Sales;
 using ChefOS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
 namespace ChefOS.Infrastructure.Services;
 
 /// <summary>
-/// Ingrédients du restaurant courant : prix avec historique, rendement, archivage et suppression gardée.
+/// Ingrédients du restaurant courant : prix avec historique, rendement, archivage et suppression gardée (recettes, inventaires clôturés).
 /// Les clés étrangères de la base sont à colonne unique : la vérification qu'un fournisseur ou un ingrédient appartient
 /// bien au restaurant courant se fait ici, via le contexte filtré par restaurant.
 /// </summary>
@@ -15,6 +16,7 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
     private const string DefaultCategory = "Divers";
     private const string UnknownIngredientMessage = "Ingrédient introuvable";
     private const string UnknownSupplierMessage = "Fournisseur introuvable";
+    private const string InClosedCountMessage = "Cet ingrédient figure dans un inventaire clôturé : archivez-le";
 
     // Échelle de la colonne numeric(18,6) : arrondir avant de comparer évite un faux « nouveau prix » à chaque enregistrement.
     private const int PriceScale = 6;
@@ -188,8 +190,11 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
     }
 
     /// <summary>
-    /// Supprime l'ingrédient et son historique de prix, sauf s'il est utilisé : le résultat liste alors les recettes concernées.
+    /// Supprime l'ingrédient, sauf s'il est utilisé : dans des recettes, le résultat (<c>Deleted</c> faux) liste alors les recettes concernées ;
+    /// dans un inventaire clôturé, qui fait foi pour les écarts, la suppression est refusée par une exception (l'archivage reste possible).
+    /// Son historique de prix, ses pertes et ses lignes dans des inventaires en brouillon partent avec lui, par cascade en base.
     /// </summary>
+    /// <exception cref="DomainValidationException">Ingrédient inconnu, ou présent dans un inventaire clôturé.</exception>
     public async Task<DeleteResult> DeleteAsync(int id)
     {
         await using var db = await factory.CreateDbContextAsync();
@@ -200,7 +205,10 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
         if (usedInRecipes.Count > 0)
             return new DeleteResult(false, usedInRecipes);
 
-        // L'historique de prix suit par cascade en base.
+        if (await db.StockCounts.AnyAsync(c => c.Status == StockCountStatus.Cloture && c.Lines.Any(l => l.IngredientId == id)))
+            throw new DomainValidationException(InClosedCountMessage);
+
+        // L'historique de prix, les pertes et les lignes des inventaires en brouillon suivent par cascade en base.
         db.Ingredients.Remove(ingredient);
         await db.SaveChangesAsync();
 
