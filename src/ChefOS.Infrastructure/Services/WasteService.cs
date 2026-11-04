@@ -161,7 +161,7 @@ public class WasteService(IDbContextFactory<ChefOsDbContext> factory)
         var items = new List<WasteItem>(entries.Count);
         foreach (var entry in entries)
         {
-            // Sinon, la cible a été supprimée entre les lectures (la perte part avec elle par cascade) : rien à afficher.
+            // Pas de valorisation : la cible a été supprimée entre les lectures (la perte part avec elle par cascade), rien à afficher.
             if (costing.Value(entry) is { } valuation)
                 items.Add(ToItem(entry, DateTime.SpecifyKind(entry.Date, DateTimeKind.Utc), valuation));
         }

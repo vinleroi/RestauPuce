@@ -262,8 +262,12 @@ public record DishProfit(
 /// <summary>Chiffre d'affaires HT d'un jour UTC, par origine. Les totaux de semaine n'y figurent pas.</summary>
 public record DayRevenue(DateTime Day, decimal FromEntries, decimal FromOrders);
 
-/// <summary>Coût (non arrondi) des pertes d'un motif ; une perte au coût inconnu compte dans <paramref name="Count"/> mais pas dans <paramref name="Cost"/>.</summary>
-public record WasteByReason(WasteReason Reason, decimal Cost, int Count);
+/// <summary>
+/// Coût (non arrondi) des pertes d'un motif ; une perte au coût inconnu compte dans <paramref name="Count"/> mais pas dans <paramref name="Cost"/>.
+/// <paramref name="CostIncomplete"/> est vrai quand au moins une perte du motif a un coût inconnu ou partiel (recette dont une ligne n'est pas chiffrée) :
+/// <paramref name="Cost"/> est alors un minimum.
+/// </summary>
+public record WasteByReason(WasteReason Reason, decimal Cost, int Count, bool CostIncomplete);
 
 /// <summary>
 /// Écart d'un ingrédient entre deux inventaires clôturés, en unité de base (<paramref name="BaseUnit"/>) : <paramref name="ActualUse"/> = ouverture + achats − clôture,
@@ -281,14 +285,28 @@ public record VarianceRow(
     decimal VarianceQuantity,
     decimal? VarianceValue);
 
-/// <summary>L'écart entre l'inventaire d'ouverture et celui de clôture ; <paramref name="TotalVarianceValue"/> = Σ des valeurs connues.</summary>
-public record VarianceReport(DateTime OpeningDate, DateTime ClosingDate, IReadOnlyList<VarianceRow> Rows, decimal TotalVarianceValue);
+/// <summary>
+/// L'écart entre l'inventaire d'ouverture et celui de clôture. <paramref name="Rows"/> ne contient que les ingrédients comptés aux deux inventaires : un
+/// ingrédient absent de l'un des deux serait compté à 0 et ferait inventer des pertes. <paramref name="TotalVarianceValue"/> (Σ des valeurs connues) et le
+/// coût réel (<see cref="PeriodStats.ActualFoodCost"/>) ne portent donc que sur ces lignes.
+/// <paramref name="NotCountedIngredients"/> : les noms (triés) des ingrédients qui ont bougé dans l'intervalle (achats ou consommation théorique) ou qui n'ont été
+/// comptés qu'à un des deux inventaires, mais pas aux deux : leur écart est inconnu. <paramref name="Warnings"/> : les approximations de la consommation
+/// théorique, sans doublon (recette dont la décomposition est incomplète, perte d'ingrédient dont l'unité ne se convertit plus).
+/// </summary>
+public record VarianceReport(
+    DateTime OpeningDate,
+    DateTime ClosingDate,
+    IReadOnlyList<VarianceRow> Rows,
+    decimal TotalVarianceValue,
+    IReadOnlyList<string> NotCountedIngredients,
+    IReadOnlyList<string> Warnings);
 
 /// <summary>
 /// Les chiffres d'une période (voir <see cref="StatsService.GetAsync"/>). <paramref name="RevenueFromEntries"/> comprend
 /// <paramref name="WeeklyTotalsRevenue"/> (les totaux de semaine saisis d'un bloc) ; <paramref name="RevenueByDay"/> ne les comprend pas.
 /// <paramref name="ActualFoodCost"/> et <paramref name="Variance"/> portent sur l'intervalle entre les deux inventaires (<see cref="VarianceReport.OpeningDate"/> à
 /// <see cref="VarianceReport.ClosingDate"/>), pas sur la période demandée.
+/// <paramref name="WasteCostIncomplete"/> : au moins une perte de la période a un coût inconnu ou partiel, <paramref name="WasteCost"/> est alors un minimum.
 /// </summary>
 public record PeriodStats(
     DateTime From,
@@ -302,6 +320,7 @@ public record PeriodStats(
     decimal GrossMargin,
     decimal? TheoreticalFoodCost,
     decimal WasteCost,
+    bool WasteCostIncomplete,
     decimal? ActualFoodCost,
     IReadOnlyList<DayRevenue> RevenueByDay,
     IReadOnlyList<DishProfit> Dishes,
