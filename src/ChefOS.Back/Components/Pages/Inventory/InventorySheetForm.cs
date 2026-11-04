@@ -23,6 +23,7 @@ public sealed class InventoryLine
         Name = line.Name;
         Category = line.Category;
         BaseUnit = line.BaseUnit;
+        AveragePieceWeightGrams = line.AveragePieceWeightGrams;
 
         _storedQuantity = line.Quantity is { } quantity ? Round(quantity) : null;
         _storedUnit = line.Unit ?? Ui.DefaultMeasureUnit(line.BaseUnit);
@@ -38,6 +39,9 @@ public sealed class InventoryLine
 
     public BaseUnit BaseUnit { get; }
 
+    /// <summary>Poids moyen d'une pièce de l'ingrédient : renseigné, il permet de le compter en pièces (ou en grammes s'il est à la pièce).</summary>
+    public decimal? AveragePieceWeightGrams { get; }
+
     public decimal? Quantity { get; set; }
 
     public MeasureUnit Unit { get; set; }
@@ -45,14 +49,15 @@ public sealed class InventoryLine
     public bool IsCounted => Quantity is not null;
 
     /// <summary>
-    /// Les unités proposées : celles qui se convertissent dans l'unité de base, l'unité d'office en premier. Une unité déjà choisie ou enregistrée
-    /// hors de cette liste (des pièces pour un ingrédient en grammes dont le poids moyen est renseigné) y reste, pour que la feuille puisse l'afficher.
+    /// Les unités proposées : celles qui se convertissent dans l'unité de base (les pièces pour un ingrédient en grammes dont le poids moyen est renseigné),
+    /// l'unité d'office en premier. Une unité déjà choisie ou enregistrée hors de cette liste (le poids moyen a pu être retiré depuis) y reste,
+    /// pour que la feuille puisse l'afficher.
     /// </summary>
     public IReadOnlyList<MeasureUnit> UnitChoices
     {
         get
         {
-            var choices = Ui.ConvertibleUnits(BaseUnit, averagePieceWeightGrams: null);
+            var choices = Ui.ConvertibleUnits(BaseUnit, AveragePieceWeightGrams);
             return choices.Contains(Unit) ? choices : [.. choices, Unit];
         }
     }

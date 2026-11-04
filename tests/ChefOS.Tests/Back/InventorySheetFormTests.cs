@@ -14,8 +14,9 @@ public class InventorySheetFormTests
 
     private static readonly DateTime Day = new(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc);
 
-    private static StockCountSheetLine Line(int id, string name, string category, BaseUnit baseUnit, decimal? quantity = null, MeasureUnit? unit = null) =>
-        new(id, name, category, baseUnit, quantity, unit);
+    private static StockCountSheetLine Line(
+        int id, string name, string category, BaseUnit baseUnit, decimal? quantity = null, MeasureUnit? unit = null, decimal? pieceWeight = null) =>
+        new(id, name, category, baseUnit, quantity, unit, pieceWeight);
 
     private static StockCountSheet Sheet(StockCountStatus status, params StockCountSheetLine[] lines) =>
         new(7, Day, status, "Fin de mois", lines);
@@ -150,6 +151,28 @@ public class InventorySheetFormTests
     }
 
     [Fact]
+    public void ToInputs_StillIncludesTheCountedLinesHiddenByTheSearchFilter()
+    {
+        var form = InventorySheetForm.From(DraftSheet());
+
+        // Seules les échalotes (non comptées) sont visibles : les œufs et les carottes comptés n'en partent pas moins.
+        var visible = form.Groups("echalote").SelectMany(g => g.Lines).Select(l => l.IngredientId);
+        Assert.Equal([Shallots], visible);
+        LineOf(form, Shallots).Quantity = 4m;
+
+        var inputs = form.ToInputs();
+
+        Assert.Equivalent(
+            new StockCountLineInput[]
+            {
+                new(Eggs, 30m, MeasureUnit.Piece),
+                new(Carrots, 2.5m, MeasureUnit.Kg),
+                new(Shallots, 4m, MeasureUnit.Kg)
+            },
+            inputs);
+    }
+
+    [Fact]
     public void ToInputs_LeavesOutTheLinesWithoutAQuantity()
     {
         var inputs = InventorySheetForm.From(DraftSheet()).ToInputs();
@@ -254,6 +277,26 @@ public class InventorySheetFormTests
         var form = InventorySheetForm.From(Sheet(StockCountStatus.Brouillon, Line(9, "Produit", "Divers", baseUnit)));
 
         Assert.Equal(expected, form.Lines[0].UnitChoices);
+    }
+
+    [Theory]
+    [InlineData(BaseUnit.Gram, new[] { MeasureUnit.Kg, MeasureUnit.G, MeasureUnit.Piece })]
+    [InlineData(BaseUnit.Piece, new[] { MeasureUnit.Piece, MeasureUnit.Kg, MeasureUnit.G })]
+    public void UnitChoices_OfAnIngredientWithAnAveragePieceWeight_AlsoOfferPiecesOrWeights(BaseUnit baseUnit, MeasureUnit[] expected)
+    {
+        var form = InventorySheetForm.From(Sheet(
+            StockCountStatus.Brouillon, Line(9, "Citron", "Fruits", baseUnit, pieceWeight: 90m)));
+
+        Assert.Equal(expected, form.Lines[0].UnitChoices);
+    }
+
+    [Fact]
+    public void UnitChoices_WithoutAnAveragePieceWeight_DoNotOfferPiecesForAWeighedIngredient()
+    {
+        var form = InventorySheetForm.From(Sheet(
+            StockCountStatus.Brouillon, Line(9, "Citron", "Fruits", BaseUnit.Gram)));
+
+        Assert.DoesNotContain(MeasureUnit.Piece, form.Lines[0].UnitChoices);
     }
 
     [Fact]

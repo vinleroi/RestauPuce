@@ -226,14 +226,18 @@ public record StockCountLineInput(int IngredientId, decimal Quantity, MeasureUni
 /// <summary>La feuille de comptage : tous les ingrédients à compter, avec les valeurs déjà saisies.</summary>
 public record StockCountSheet(int Id, DateTime Date, StockCountStatus Status, string? Note, IReadOnlyList<StockCountSheetLine> Lines);
 
-/// <summary><paramref name="Quantity"/> et <paramref name="Unit"/> : la valeur saisie, telle que saisie ; null tant que l'ingrédient n'est pas compté.</summary>
+/// <summary>
+/// <paramref name="Quantity"/> et <paramref name="Unit"/> : la valeur saisie, telle que saisie ; null tant que l'ingrédient n'est pas compté.
+/// <paramref name="AveragePieceWeightGrams"/> : le poids moyen d'une pièce de l'ingrédient ; renseigné, il permet de le compter en pièces (ou en grammes s'il est à la pièce).
+/// </summary>
 public record StockCountSheetLine(
     int IngredientId,
     string Name,
     string Category,
     BaseUnit BaseUnit,
     decimal? Quantity,
-    MeasureUnit? Unit);
+    MeasureUnit? Unit,
+    decimal? AveragePieceWeightGrams = null);
 
 // ── Statistiques ─────────────────────────────────────────────────────────────
 

@@ -128,6 +128,23 @@ public class InventoryServiceTests(PostgresFixture postgres)
     // ── GetSheetAsync ────────────────────────────────────────────────────────
 
     [Fact]
+    public async Task Inventory_GetSheet_CarriesTheAveragePieceWeight_SoTheSheetCanOfferPieces()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var citron = await AddIngredientAsync(options, restaurant, "Citron", "Fruits", pieceWeight: 90m);
+        var farine = await AddIngredientAsync(options, restaurant, "Farine", "Épicerie");
+        var id = await service.CreateAsync(Nov3, null);
+
+        var sheet = await service.GetSheetAsync(id);
+
+        Assert.Equal(90m, sheet.Lines.Single(l => l.IngredientId == citron).AveragePieceWeightGrams);
+        Assert.Null(sheet.Lines.Single(l => l.IngredientId == farine).AveragePieceWeightGrams);
+    }
+
+
+    [Fact]
     public async Task Inventory_GetSheet_ListsActiveAndCountedArchivedIngredients_ByCategoryThenName()
     {
         var options = await postgres.CreateDatabaseAsync();

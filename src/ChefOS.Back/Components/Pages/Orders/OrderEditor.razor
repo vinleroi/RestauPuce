@@ -8,10 +8,14 @@
 
 @inject OrderService OrderService
 @inject RecipeService RecipeService
+@inject IDialogService DialogService
 @inject ISnackbar Snackbar
 @inject NavigationManager Navigation
 
 <PageTitle>@(_notFound ? "Élément introuvable" : Id is null ? "Nouvelle commande" : "Modifier la commande") — ChefOS</PageTitle>
+
+@* Quitter la page avec une commande non enregistrée : on demande confirmation (changement de page ou fermeture de l'onglet). *@
+<NavigationLock OnBeforeInternalNavigation="ConfirmLeaveAsync" ConfirmExternalNavigation="@(!_skipLeaveCheck && _draft.IsDirty)" />
 
 <MudButton Href="/orders" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" Class="mb-2">Commandes</MudButton>
 
@@ -184,6 +188,7 @@ else
     private bool _loading = true;
     private bool _notFound;
     private bool _busy;
+    private bool _skipLeaveCheck;
     private bool _hasLoaded;
     private int? _loadedId;
 
@@ -274,6 +279,8 @@ else
                 Snackbar.Add($"Commande n° {_existing.Number} modifiée", Severity.Success);
             }
 
+            // La commande est enregistrée : plus rien à protéger en quittant la page.
+            _skipLeaveCheck = true;
             Navigation.NavigateTo("/orders");
         }
         catch (DomainValidationException e)
@@ -284,6 +291,21 @@ else
         {
             _busy = false;
         }
+    }
+
+    private async Task ConfirmLeaveAsync(LocationChangingContext context)
+    {
+        if (_skipLeaveCheck || !_draft.IsDirty)
+            return;
+
+        var leave = await DialogService.ShowMessageBoxAsync(
+            "Modifications non enregistrées",
+            _existing is null ? "Cette commande n'est pas enregistrée. L'abandonner ?" : "Des modifications de cette commande ne sont pas enregistrées. Les abandonner ?",
+            yesText: "Abandonner",
+            cancelText: "Rester");
+
+        if (leave != true)
+            context.PreventNavigation();
     }
 
     private sealed record OrderDish(int Id, string Name, decimal PriceInclVat);

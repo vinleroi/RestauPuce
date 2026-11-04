@@ -320,9 +320,11 @@ public class OrderServiceTests(PostgresFixture postgres)
         var created = await LoadOrderAsync(options, restaurant, id);
 
         var previousChange = created.StatusChangedAt;
+        var from = OrderStatus.Nouvelle;
         foreach (var expected in new[] { OrderStatus.EnPreparation, OrderStatus.Prete, OrderStatus.Servie })
         {
-            await service.AdvanceAsync(id);
+            await service.AdvanceAsync(id, from);
+            from = expected;
 
             var order = await LoadOrderAsync(options, restaurant, id);
             Assert.Equal(expected, order.Status);
@@ -332,7 +334,7 @@ public class OrderServiceTests(PostgresFixture postgres)
         }
         Assert.True(previousChange > created.StatusChangedAt);
 
-        var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.AdvanceAsync(id));
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.AdvanceAsync(id, OrderStatus.Servie));
         Assert.Equal("Cette commande est déjà servie", error.Message);
         Assert.Equal(OrderStatus.Servie, (await LoadOrderAsync(options, restaurant, id)).Status);
     }
@@ -345,9 +347,9 @@ public class OrderServiceTests(PostgresFixture postgres)
         var dish = await AddDishAsync(options, restaurant, "Tartare");
         var service = CreateService(options, restaurant);
         var id = await service.CreateAsync(Order(Line(dish)));
-        await service.CancelAsync(id);
+        await service.CancelAsync(id, OrderStatus.Nouvelle);
 
-        var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.AdvanceAsync(id));
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.AdvanceAsync(id, OrderStatus.Annulee));
 
         Assert.Equal("Une commande annulée ne peut plus avancer", error.Message);
         Assert.Equal(OrderStatus.Annulee, (await LoadOrderAsync(options, restaurant, id)).Status);
@@ -363,8 +365,8 @@ public class OrderServiceTests(PostgresFixture postgres)
         var dish = await AddDishAsync(options, restaurant, "Tartare");
         var id = await CreateService(options, restaurant).CreateAsync(Order(Line(dish)));
 
-        // Quatre « Avancer » simultanés sur des services indépendants : chaque succès fait faire exactement un pas,
-        // quel que soit l'entrelacement (sans mise à jour conditionnelle, deux appels pourraient écrire le même pas).
+        // Quatre « Avancer » simultanés depuis « Nouvelle » (le statut que montrent quatre écrans identiques) sur des services indépendants :
+        // un seul passe, quel que soit l'entrelacement, et les autres sont refusés (sans mise à jour conditionnelle, deux appels pourraient écrire le même pas).
         using var gate = new ManualResetEventSlim(false);
         var tasks = Enumerable.Range(0, 4)
             .Select(_ => Task.Run(async () =>
@@ -373,7 +375,7 @@ public class OrderServiceTests(PostgresFixture postgres)
                 gate.Wait();
                 try
                 {
-                    await service.AdvanceAsync(id);
+                    await service.AdvanceAsync(id, OrderStatus.Nouvelle);
                     return new AdvanceOutcome(null, true);
                 }
                 catch (DomainValidationException ex)
@@ -385,10 +387,65 @@ public class OrderServiceTests(PostgresFixture postgres)
         gate.Set();
         var results = await Task.WhenAll(tasks);
 
-        var final = (await LoadOrderAsync(options, restaurant, id)).Status;
-        Assert.Equal((int)final, results.Count(r => r.Ok));
-        Assert.All(results.Where(r => !r.Ok), r =>
-            Assert.Contains(r.Message, new[] { StatusChangedMessage, "Cette commande est déjà servie" }));
+        Assert.Equal(OrderStatus.EnPreparation, (await LoadOrderAsync(options, restaurant, id)).Status);
+        Assert.Equal(1, results.Count(r => r.Ok));
+        Assert.All(results.Where(r => !r.Ok), r => Assert.Equal(StatusChangedMessage, r.Message));
+    }
+
+    [Fact]
+    public async Task Advance_FromStaleStatus_Refused()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var dish = await AddDishAsync(options, restaurant, "Tartare");
+        var service = CreateService(options, restaurant);
+        var id = await service.CreateAsync(Order(Line(dish)));
+        await service.AdvanceAsync(id, OrderStatus.Nouvelle);
+        await service.AdvanceAsync(id, OrderStatus.EnPreparation);
+        var before = await LoadOrderAsync(options, restaurant, id);
+
+        // Un écran périmé montre encore la commande « En préparation » : son bouton « Marquer prête » ne doit pas la servir.
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.AdvanceAsync(id, OrderStatus.EnPreparation));
+
+        Assert.Equal(StatusChangedMessage, error.Message);
+        var after = await LoadOrderAsync(options, restaurant, id);
+        Assert.Equal(OrderStatus.Prete, after.Status);
+        Assert.Equal(before.StatusChangedAt, after.StatusChangedAt);
+    }
+
+    [Fact]
+    public async Task Advance_FromStaleStatus_Refused_EvenWhenTheOrderWasServedMeanwhile()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var dish = await AddDishAsync(options, restaurant, "Tartare");
+        var service = CreateService(options, restaurant);
+        var id = await service.CreateAsync(Order(Line(dish)));
+        await service.AdvanceAsync(id, OrderStatus.Nouvelle);
+        await service.AdvanceAsync(id, OrderStatus.EnPreparation);
+        await service.AdvanceAsync(id, OrderStatus.Prete);   // servie
+
+        // L'écran montre « Prête » mais la commande est servie : c'est un changement de statut, pas « déjà servie ».
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.AdvanceAsync(id, OrderStatus.Prete));
+
+        Assert.Equal(StatusChangedMessage, error.Message);
+        Assert.Equal(OrderStatus.Servie, (await LoadOrderAsync(options, restaurant, id)).Status);
+    }
+
+    [Fact]
+    public async Task Cancel_FromStaleStatus_Refused()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var dish = await AddDishAsync(options, restaurant, "Tartare");
+        var service = CreateService(options, restaurant);
+        var id = await service.CreateAsync(Order(Line(dish)));
+        await service.AdvanceAsync(id, OrderStatus.Nouvelle);
+
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.CancelAsync(id, OrderStatus.Nouvelle));
+
+        Assert.Equal(StatusChangedMessage, error.Message);
+        Assert.Equal(OrderStatus.EnPreparation, (await LoadOrderAsync(options, restaurant, id)).Status);
     }
 
     [Fact]
@@ -400,18 +457,18 @@ public class OrderServiceTests(PostgresFixture postgres)
         var service = CreateService(options, restaurant);
 
         var fresh = await service.CreateAsync(Order(Line(dish)));
-        await service.CancelAsync(fresh);
+        await service.CancelAsync(fresh, OrderStatus.Nouvelle);
         Assert.Equal(OrderStatus.Annulee, (await LoadOrderAsync(options, restaurant, fresh)).Status);
 
         var ready = await service.CreateAsync(Order(Line(dish)));
-        await service.AdvanceAsync(ready);
-        await service.AdvanceAsync(ready);
-        await service.CancelAsync(ready);
+        await service.AdvanceAsync(ready, OrderStatus.Nouvelle);
+        await service.AdvanceAsync(ready, OrderStatus.EnPreparation);
+        await service.CancelAsync(ready, OrderStatus.Prete);
         Assert.Equal(OrderStatus.Annulee, (await LoadOrderAsync(options, restaurant, ready)).Status);
 
         // Annuler une commande déjà annulée ne change rien.
         var cancelledAt = (await LoadOrderAsync(options, restaurant, ready)).StatusChangedAt;
-        await service.CancelAsync(ready);
+        await service.CancelAsync(ready, OrderStatus.Annulee);
         var again = await LoadOrderAsync(options, restaurant, ready);
         Assert.Equal(OrderStatus.Annulee, again.Status);
         Assert.Equal(cancelledAt, again.StatusChangedAt);
@@ -425,10 +482,11 @@ public class OrderServiceTests(PostgresFixture postgres)
         var dish = await AddDishAsync(options, restaurant, "Tartare");
         var service = CreateService(options, restaurant);
         var id = await service.CreateAsync(Order(Line(dish)));
-        for (var i = 0; i < 3; i++)
-            await service.AdvanceAsync(id);
+        await service.AdvanceAsync(id, OrderStatus.Nouvelle);
+        await service.AdvanceAsync(id, OrderStatus.EnPreparation);
+        await service.AdvanceAsync(id, OrderStatus.Prete);
 
-        var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.CancelAsync(id));
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.CancelAsync(id, OrderStatus.Servie));
 
         Assert.Equal("Une commande servie ne peut pas être annulée", error.Message);
         Assert.Equal(OrderStatus.Servie, (await LoadOrderAsync(options, restaurant, id)).Status);
@@ -508,7 +566,7 @@ public class OrderServiceTests(PostgresFixture postgres)
         var dish = await AddDishAsync(options, restaurant, "Tartare");
         var service = CreateService(options, restaurant);
         var id = await service.CreateAsync(Order(Line(dish)));
-        await service.CancelAsync(id);
+        await service.CancelAsync(id, OrderStatus.Nouvelle);
 
         var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.UpdateLinesAsync(id, [Line(dish, 4)]));
 
@@ -524,13 +582,13 @@ public class OrderServiceTests(PostgresFixture postgres)
         var dish = await AddDishAsync(options, restaurant, "Tartare");
         var service = CreateService(options, restaurant);
         var id = await service.CreateAsync(Order(Line(dish)));
-        await service.AdvanceAsync(id);
-        await service.AdvanceAsync(id);
+        await service.AdvanceAsync(id, OrderStatus.Nouvelle);
+        await service.AdvanceAsync(id, OrderStatus.EnPreparation);
 
         await service.UpdateLinesAsync(id, [Line(dish, 5)]);
         Assert.Equal(5, Assert.Single((await LoadOrderAsync(options, restaurant, id)).Lines).Quantity);
 
-        await service.AdvanceAsync(id);
+        await service.AdvanceAsync(id, OrderStatus.Prete);
         var error = await Assert.ThrowsAsync<DomainValidationException>(() => service.UpdateLinesAsync(id, [Line(dish, 6)]));
 
         Assert.Equal("Une commande servie ne peut plus être modifiée", error.Message);
@@ -620,8 +678,8 @@ public class OrderServiceTests(PostgresFixture postgres)
         Assert.Empty(await intruder.ListForDayAsync(Day));
         foreach (var attempt in new Func<Task>[]
                  {
-                     () => intruder.AdvanceAsync(id),
-                     () => intruder.CancelAsync(id),
+                     () => intruder.AdvanceAsync(id, OrderStatus.Nouvelle),
+                     () => intruder.CancelAsync(id, OrderStatus.Nouvelle),
                      () => intruder.UpdateLinesAsync(id, [Line(otherDish)])
                  })
         {
@@ -645,8 +703,8 @@ public class OrderServiceTests(PostgresFixture postgres)
 
         foreach (var attempt in new Func<Task>[]
                  {
-                     () => service.AdvanceAsync(999_999),
-                     () => service.CancelAsync(999_999),
+                     () => service.AdvanceAsync(999_999, OrderStatus.Nouvelle),
+                     () => service.CancelAsync(999_999, OrderStatus.Nouvelle),
                      () => service.UpdateLinesAsync(999_999, [Line(dish)])
                  })
         {

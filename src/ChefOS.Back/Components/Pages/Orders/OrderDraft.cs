@@ -36,6 +36,9 @@ public sealed class OrderDraft
 {
     private readonly List<OrderLineDraft> _lines = [];
 
+    // L'état au chargement (ou à la création) : ce qui est « enregistré », pour savoir si le chef a changé quelque chose.
+    private string _baseline = "";
+
     private OrderDraft()
     {
     }
@@ -48,7 +51,7 @@ public sealed class OrderDraft
 
     public IReadOnlyList<OrderLineDraft> Lines => _lines;
 
-    public static OrderDraft New() => new();
+    public static OrderDraft New() => WithBaseline(new OrderDraft());
 
     public static OrderDraft From(OrderSummary order)
     {
@@ -56,8 +59,31 @@ public sealed class OrderDraft
         foreach (var line in order.Lines)
             draft._lines.Add(new OrderLineDraft(line.RecipeId, line.DishName, line.Quantity, line.Note, unitPriceInclVat: null));
 
+        return WithBaseline(draft);
+    }
+
+    /// <summary>
+    /// La saisie n'est plus celle du chargement : une source, une table, une note ou une ligne changée, ajoutée ou retirée. Un texte vide ou blanc vaut aucun texte,
+    /// et revenir à la valeur d'origine annule la modification.
+    /// </summary>
+    public bool IsDirty => Snapshot() != _baseline;
+
+    private static OrderDraft WithBaseline(OrderDraft draft)
+    {
+        draft._baseline = draft.Snapshot();
         return draft;
     }
+
+    private string Snapshot() => string.Join(
+        '\u001f',
+        [
+            Source.ToString(),
+            Text(TableOrCustomer),
+            Text(Note),
+            .. _lines.Select(l => $"{l.RecipeId}/{l.Quantity}/{Text(l.Note)}")
+        ]);
+
+    private static string Text(string? value) => string.IsNullOrWhiteSpace(value) ? "" : value.Trim();
 
     /// <summary>Ajoute une portion du plat : à la ligne du plat s'il y en a déjà une, sinon sur une nouvelle ligne.</summary>
     public void AddDish(int recipeId, string dishName, decimal? unitPriceInclVat)

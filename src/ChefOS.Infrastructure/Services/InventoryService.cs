@@ -77,7 +77,7 @@ public class InventoryService(IDbContextFactory<ChefOsDbContext> factory)
             .Select(i =>
             {
                 linesByIngredient.TryGetValue(i.Id, out var line);
-                return new StockCountSheetLine(i.Id, i.Name, i.Category, i.BaseUnit, line?.Quantity, line?.Unit);
+                return new StockCountSheetLine(i.Id, i.Name, i.Category, i.BaseUnit, line?.Quantity, line?.Unit, i.AveragePieceWeightGrams);
             })
             .ToList();
 

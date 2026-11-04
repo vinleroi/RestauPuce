@@ -114,15 +114,24 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
     }
 
     /// <summary>
-    /// Fait passer la commande au statut suivant (<c>Nouvelle → EnPreparation → Prete → Servie</c>). Le changement est une mise à jour conditionnelle
-    /// (« uniquement si le statut est encore celui qu'on a lu ») : deux clics simultanés ne peuvent pas sauter une étape, le second est refusé.
+    /// Fait passer la commande au statut suivant (<c>Nouvelle → EnPreparation → Prete → Servie</c>), à condition qu'elle soit encore à <paramref name="expectedFrom"/> :
+    /// l'appelant dit de quel statut il part (celui qu'il affiche), pour qu'un écran périmé ne fasse pas faire une autre étape que celle de son bouton
+    /// (« Marquer prête » ne doit jamais servir la commande). Le changement est une mise à jour conditionnelle (« uniquement si le statut est encore celui qu'on a lu ») :
+    /// deux clics simultanés ne peuvent pas sauter une étape, le second est refusé.
     /// </summary>
-    /// <exception cref="DomainValidationException">Commande inconnue, annulée ou déjà servie ; statut changé entre-temps par un autre appel.</exception>
-    public async Task AdvanceAsync(int orderId)
+    /// <param name="expectedFrom">Le statut que l'appelant croit être celui de la commande.</param>
+    /// <exception cref="DomainValidationException">
+    /// Commande inconnue ; statut différent de <paramref name="expectedFrom"/> (« La commande a déjà changé de statut ») ou changé entre-temps par un autre appel ;
+    /// commande annulée ou déjà servie.
+    /// </exception>
+    public async Task AdvanceAsync(int orderId, OrderStatus expectedFrom)
     {
         await using var db = await factory.CreateDbContextAsync();
 
         var current = (await RequireOrderAsync(db, orderId, includeLines: false)).Status;
+        if (current != expectedFrom)
+            throw new DomainValidationException(StatusChangedMessage);
+
         var next = current switch
         {
             OrderStatus.Nouvelle => OrderStatus.EnPreparation,
@@ -135,13 +144,19 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
         await ChangeStatusAsync(db, orderId, current, next);
     }
 
-    /// <summary>Annule la commande, tant qu'elle n'est pas servie. Annuler une commande déjà annulée ne change rien.</summary>
-    /// <exception cref="DomainValidationException">Commande inconnue ou servie ; statut changé entre-temps par un autre appel.</exception>
-    public async Task CancelAsync(int orderId)
+    /// <summary>
+    /// Annule la commande, tant qu'elle n'est pas servie et qu'elle est encore à <paramref name="expectedFrom"/> (voir <see cref="AdvanceAsync"/>).
+    /// Annuler une commande que l'appelant sait déjà annulée (<paramref name="expectedFrom"/> = <c>Annulee</c>) ne change rien.
+    /// </summary>
+    /// <exception cref="DomainValidationException">Commande inconnue ou servie ; statut différent de <paramref name="expectedFrom"/> ou changé entre-temps par un autre appel.</exception>
+    public async Task CancelAsync(int orderId, OrderStatus expectedFrom)
     {
         await using var db = await factory.CreateDbContextAsync();
 
         var current = (await RequireOrderAsync(db, orderId, includeLines: false)).Status;
+        if (current != expectedFrom)
+            throw new DomainValidationException(StatusChangedMessage);
+
         if (current == OrderStatus.Servie)
             throw new DomainValidationException(ServedCannotBeCancelledMessage);
         if (current == OrderStatus.Annulee)
