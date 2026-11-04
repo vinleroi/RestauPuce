@@ -233,3 +233,77 @@ public record StockCountSheetLine(
     BaseUnit BaseUnit,
     decimal? Quantity,
     MeasureUnit? Unit);
+
+// ── Statistiques ─────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Un plat vendu pendant la période (les plats sans vente n'y figurent pas). Les ventes saisies (totaux de semaine compris) et les commandes
+/// se cumulent dans <paramref name="QuantitySold"/> ; <paramref name="QuantityFromEntries"/> et <paramref name="QuantityFromOrders"/> les distinguent.
+/// <paramref name="UnitCost"/> est le coût de revient d'une portion aux prix du dernier jour de la période, <paramref name="TotalCost"/> = coût unitaire ×
+/// quantité vendue, <paramref name="Margin"/> = CA HT − coût total (le CA suit les prix figés à la vente, pas le prix actuel), et
+/// <paramref name="FoodCostPercent"/> = coût total ÷ CA HT (null si le CA est nul). Tout est non arrondi.
+/// <paramref name="CostIncomplete"/> : le coût ne porte que sur les lignes chiffrées de la recette, il est partiel. <paramref name="Class"/> est la classe
+/// de menu engineering ; null pour un plat au coût incomplet, qui n'entre pas dans la matrice.
+/// </summary>
+public record DishProfit(
+    int RecipeId,
+    string Name,
+    decimal QuantitySold,
+    decimal QuantityFromEntries,
+    decimal QuantityFromOrders,
+    decimal RevenueExclVat,
+    decimal? UnitCost,
+    decimal? TotalCost,
+    decimal? Margin,
+    decimal? FoodCostPercent,
+    bool CostIncomplete,
+    MenuClass? Class);
+
+/// <summary>Chiffre d'affaires HT d'un jour UTC, par origine. Les totaux de semaine n'y figurent pas.</summary>
+public record DayRevenue(DateTime Day, decimal FromEntries, decimal FromOrders);
+
+/// <summary>Coût (non arrondi) des pertes d'un motif ; une perte au coût inconnu compte dans <paramref name="Count"/> mais pas dans <paramref name="Cost"/>.</summary>
+public record WasteByReason(WasteReason Reason, decimal Cost, int Count);
+
+/// <summary>
+/// Écart d'un ingrédient entre deux inventaires clôturés, en unité de base (<paramref name="BaseUnit"/>) : <paramref name="ActualUse"/> = ouverture + achats − clôture,
+/// <paramref name="VarianceQuantity"/> = réel − théorique, valorisé au prix à la clôture (<paramref name="VarianceValue"/> est null si ce prix est inconnu).
+/// </summary>
+public record VarianceRow(
+    int IngredientId,
+    string Name,
+    BaseUnit BaseUnit,
+    decimal Opening,
+    decimal Purchases,
+    decimal Closing,
+    decimal ActualUse,
+    decimal TheoreticalUse,
+    decimal VarianceQuantity,
+    decimal? VarianceValue);
+
+/// <summary>L'écart entre l'inventaire d'ouverture et celui de clôture ; <paramref name="TotalVarianceValue"/> = Σ des valeurs connues.</summary>
+public record VarianceReport(DateTime OpeningDate, DateTime ClosingDate, IReadOnlyList<VarianceRow> Rows, decimal TotalVarianceValue);
+
+/// <summary>
+/// Les chiffres d'une période (voir <see cref="StatsService.GetAsync"/>). <paramref name="RevenueFromEntries"/> comprend
+/// <paramref name="WeeklyTotalsRevenue"/> (les totaux de semaine saisis d'un bloc) ; <paramref name="RevenueByDay"/> ne les comprend pas.
+/// <paramref name="ActualFoodCost"/> et <paramref name="Variance"/> portent sur l'intervalle entre les deux inventaires (<see cref="VarianceReport.OpeningDate"/> à
+/// <see cref="VarianceReport.ClosingDate"/>), pas sur la période demandée.
+/// </summary>
+public record PeriodStats(
+    DateTime From,
+    DateTime To,
+    decimal RevenueExclVat,
+    decimal RevenueFromEntries,
+    decimal RevenueFromOrders,
+    decimal WeeklyTotalsRevenue,
+    decimal TheoreticalCost,
+    bool CostIncomplete,
+    decimal GrossMargin,
+    decimal? TheoreticalFoodCost,
+    decimal WasteCost,
+    decimal? ActualFoodCost,
+    IReadOnlyList<DayRevenue> RevenueByDay,
+    IReadOnlyList<DishProfit> Dishes,
+    IReadOnlyList<WasteByReason> Waste,
+    VarianceReport? Variance);

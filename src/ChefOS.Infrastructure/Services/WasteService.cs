@@ -156,58 +156,17 @@ public class WasteService(IDbContextFactory<ChefOsDbContext> factory)
             ? await db.Recipes.AsNoTracking().Include(r => r.Lines.OrderBy(l => l.Id)).ToListAsync()
             : [];
 
-        var ingredientsById = ingredients.ToDictionary(i => i.Id);
-        var recipesById = recipes.ToDictionary(r => r.Id);
-        var booksByDay = new Dictionary<DateTime, RecipeBook>();
-
-        // Un livre par jour de perte : tous les coûts d'une même date partagent les mêmes prix (et le même cache de coûts).
-        RecipeBook BookAt(DateTime day)
-        {
-            if (!booksByDay.TryGetValue(day, out var book))
-            {
-                book = new RecipeBook(recipes, PriceAsOf.WithPricesAt(ingredients, history, day));
-                booksByDay[day] = book;
-            }
-            return book;
-        }
+        var costing = new WasteCosting(recipes, ingredients, history);
 
         var items = new List<WasteItem>(entries.Count);
         foreach (var entry in entries)
         {
-            var day = DateTime.SpecifyKind(entry.Date, DateTimeKind.Utc);
-
-            if (entry.IngredientId is { } ingredientId && ingredientsById.TryGetValue(ingredientId, out var ingredient))
-            {
-                var cost = CostOfIngredient(entry, ingredient, PriceAsOf.At(history[ingredient.Id], day, ingredient.CurrentPricePerBaseUnit));
-                items.Add(ToItem(entry, day, ingredient.Name, isRecipe: false, cost, costIncomplete: false));
-            }
-            else if (entry.RecipeId is { } recipeId && recipesById.TryGetValue(recipeId, out var recipe))
-            {
-                var result = BookAt(day).Cost(recipe.Id);
-                items.Add(ToItem(entry, day, recipe.Name, isRecipe: true, CostOfRecipe(entry, recipe, result), !result.IsComplete));
-            }
             // Sinon, la cible a été supprimée entre les lectures (la perte part avec elle par cascade) : rien à afficher.
+            if (costing.Value(entry) is { } valuation)
+                items.Add(ToItem(entry, DateTime.SpecifyKind(entry.Date, DateTimeKind.Utc), valuation));
         }
 
         return items;
-    }
-
-    private static decimal? CostOfIngredient(WasteEntry entry, Ingredient ingredient, decimal? pricePerBaseUnit)
-    {
-        var quantity = UnitConverter.ToBase(entry.Quantity, entry.Unit, ingredient.BaseUnit, ingredient.AveragePieceWeightGrams);
-        return quantity.Success && pricePerBaseUnit is { } price ? quantity.Value * price : null;
-    }
-
-    private static decimal? CostOfRecipe(WasteEntry entry, Recipe recipe, CostResult result)
-    {
-        if (recipe.Kind == RecipeKind.Dish)
-            return entry.Unit == MeasureUnit.Piece ? result.TotalCost * entry.Quantity : null;
-
-        if (recipe.OutputQuantity is not { } outputQuantity || outputQuantity <= 0m || recipe.OutputUnit is not { } outputUnit)
-            return null;
-
-        var quantity = UnitConverter.ToBase(entry.Quantity, entry.Unit, outputUnit, averagePieceWeightGrams: null);
-        return quantity.Success ? quantity.Value * result.TotalCost / outputQuantity : null;
     }
 
     /// <summary>Un plat se perd en portions (<c>Piece</c>) ; une préparation, dans une unité qui se convertit dans son unité de production.</summary>
@@ -220,6 +179,6 @@ public class WasteService(IDbContextFactory<ChefOsDbContext> factory)
                && UnitConverter.ToBase(quantity, unit, outputUnit, averagePieceWeightGrams: null).Success;
     }
 
-    private static WasteItem ToItem(WasteEntry entry, DateTime day, string name, bool isRecipe, decimal? cost, bool costIncomplete) =>
-        new(entry.Id, day, name, isRecipe, entry.Quantity, entry.Unit, entry.Reason, entry.Note, cost, costIncomplete);
+    private static WasteItem ToItem(WasteEntry entry, DateTime day, WasteValuation valuation) =>
+        new(entry.Id, day, valuation.ItemName, valuation.IsRecipe, entry.Quantity, entry.Unit, entry.Reason, entry.Note, valuation.Cost, valuation.CostIncomplete);
 }
