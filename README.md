@@ -100,7 +100,7 @@ L'écart d'inventaire (consommation réelle − consommation théorique) porte s
 
 ### Données de démonstration
 
-Le jeu de démonstration comprend 8 semaines de ventes saisies au jour (le bistro est fermé le lundi), une quinzaine de commandes sur les 7 derniers jours (dont une annulée), 6 pertes, des tickets appliqués de Metro et des autres fournisseurs, et deux inventaires clôturés : à J-28 et aujourd'hui. Les dates sont relatives au jour du premier lancement. La page `/stats` sur les 4 dernières semaines affiche ainsi les quatre cases du menu engineering et un écart d'inventaire (beurre, crème et crevettes grises en tête).
+Le jeu de démonstration comprend 8 semaines de ventes saisies au jour (le bistro est fermé le lundi), une quinzaine de commandes sur les 7 derniers jours (dont une annulée), 6 pertes, des tickets appliqués de Metro et des autres fournisseurs, et deux inventaires clôturés : à J-28 et aujourd'hui. Les dates sont relatives au jour du premier lancement. Ce jour-là, la page `/stats` sur les 4 dernières semaines affiche les quatre cases du menu engineering et un écart d'inventaire (beurre, crème et crevettes grises en tête). Dès le lendemain, la période par défaut se termine après le dernier inventaire clôturé (celui du jour du lancement) : il n'y a plus d'écart ni de food cost réel. Choisissez alors une période personnalisée qui se termine le jour du lancement, ou repartez d'une base vierge (`docker compose down -v && docker compose up -d`) avant une démonstration.
 
 ## Tests
 

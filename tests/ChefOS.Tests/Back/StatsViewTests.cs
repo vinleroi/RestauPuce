@@ -55,6 +55,40 @@ public class StatsViewTests
         Assert.Equal([10m, 9m, 8m], StatsView.TopVariance(rows, 3).Select(r => r.VarianceValue!.Value));
     }
 
+    // ── Écart d'inventaire : un total partiel n'est pas présenté comme exact ──
+
+    private static VarianceReport Report(params VarianceRow[] rows) =>
+        new(Day(2026, 10, 7), Day(2026, 11, 4), rows, rows.Sum(r => r.VarianceValue ?? 0m), [], []);
+
+    [Fact]
+    public void VarianceIncomplete_AllRowsPriced_IsFalse()
+    {
+        Assert.False(StatsView.VarianceIncomplete(Report(Row(1, "Beurre", 12m), Row(2, "Sel", -3m), Row(3, "Eau", 0m))));
+    }
+
+    [Fact]
+    public void VarianceIncomplete_AnyRowWithoutAPrice_IsTrue()
+    {
+        // La valeur d'une ligne sans prix compte pour 0 dans le total et le coût réel : ces deux chiffres sont alors partiels.
+        Assert.True(StatsView.VarianceIncomplete(Report(Row(1, "Beurre", 12m), Row(2, "Safran", null))));
+        Assert.True(StatsView.VarianceIncomplete(Report(Row(1, "Safran", null))));
+    }
+
+    [Fact]
+    public void VarianceIncomplete_NoRows_IsFalse()
+    {
+        Assert.False(StatsView.VarianceIncomplete(Report()));
+    }
+
+    [Fact]
+    public void VarianceIncomplete_LooksAtAllRows_NotOnlyTheFirstFifteenShown()
+    {
+        var rows = Enumerable.Range(1, 20).Select(i => Row(i, $"I{i:00}", 100 - i)).Append(Row(21, "Sans prix", null)).ToArray();
+
+        Assert.DoesNotContain(StatsView.TopVariance(rows), r => r.VarianceValue is null);      // la ligne sans prix n'est pas affichée…
+        Assert.True(StatsView.VarianceIncomplete(Report(rows)));                                 // …mais le total en tient compte
+    }
+
     // ── Graphique du chiffre d'affaires ──────────────────────────────────────
 
     [Fact]

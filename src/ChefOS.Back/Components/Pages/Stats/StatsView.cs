@@ -27,6 +27,12 @@ public static class StatsView
             .Take(limit)
             .ToList();
 
+    /// <summary>
+    /// Vrai quand au moins un ingrédient compté n'a pas de prix à la clôture : sa valeur d'écart est inconnue, le service la compte pour 0 dans le total des écarts
+    /// et laisse sa consommation hors du coût réel. Ces deux chiffres sont alors partiels (un minimum, pas un montant exact), même si la ligne n'est pas affichée.
+    /// </summary>
+    public static bool VarianceIncomplete(VarianceReport variance) => variance.Rows.Any(r => r.VarianceValue is null);
+
     /// <summary>Vrai quand au moins un jour a du chiffre d'affaires (sinon le graphique serait vide).</summary>
     public static bool HasRevenue(IReadOnlyList<DayRevenue> days) => days.Any(d => d.FromEntries != 0m || d.FromOrders != 0m);
 

@@ -321,7 +321,7 @@
                                 Total@(variance.Rows.Count > top.Count ? $" des {variance.Rows.Count} ingrédients comptés ({top.Count} premiers écarts affichés)" : "")
                             </td>
                             <td style="@("text-align: right; white-space: nowrap; " + VarianceStyle(variance.TotalVarianceValue))">
-                                @Ui.SignedMoney(variance.TotalVarianceValue)
+                                @Amount(variance.TotalVarianceValue, StatsView.VarianceIncomplete(variance), signed: true)
                             </td>
                         </tr>
                     </tfoot>
@@ -331,6 +331,10 @@
             <MudText Typo="Typo.caption" Class="mt-2" Style="@Muted" HtmlTag="p">
                 Écart positif : il a disparu plus de stock que les ventes et les pertes déclarées ne l'expliquent. Valorisé au prix du jour de la clôture.
                 Seuls les achats passés par un ticket validé sont comptés.
+                @if (StatsView.VarianceIncomplete(variance))
+                {
+                    <text> Certains ingrédients comptés n'ont pas de prix : leur valeur n'entre ni dans le total ni dans le food cost réel, qui sont des minimums.</text>
+                }
             </MudText>
 
             @if (variance.NotCountedIngredients.Count > 0)
@@ -510,9 +514,10 @@
         _ => ""
     };
 
-    private RenderFragment Amount(decimal? amount, bool incomplete) =>
+    // signed : montant signé (« +12,50 € »), pour une valeur d'écart.
+    private RenderFragment Amount(decimal? amount, bool incomplete, bool signed = false) =>
         @<span>
-            @(amount is { } value ? Ui.Money(value) : "—")
+            @(amount is { } value ? (signed ? Ui.SignedMoney(value) : Ui.Money(value)) : "—")
             @if (incomplete)
             {
                 <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span" title="Un prix manque : ce montant est partiel">(incomplet)</MudText>
@@ -539,7 +544,14 @@
     private RenderFragment ActualFoodCostKpi(PeriodStats stats) =>
         @<MudPaper Elevation="1" Class="pa-4" Style="height: 100%">
             <MudText Typo="Typo.overline" Style="@Muted">Food cost réel</MudText>
-            <MudText Typo="Typo.h4" HtmlTag="p">@(stats.ActualFoodCost is { } actual ? Ui.Percent(actual) : "—")</MudText>
+            <MudText Typo="Typo.h4" HtmlTag="p">
+                @(stats.ActualFoodCost is { } actual ? Ui.Percent(actual) : "—")
+                @if (stats.ActualFoodCost is not null && stats.Variance is { } priced && StatsView.VarianceIncomplete(priced))
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span"
+                             title="Un prix manque : la consommation de certains ingrédients comptés n'est pas valorisée">(incomplet)</MudText>
+                }
+            </MudText>
             @if (stats.Variance is { } variance)
             {
                 <MudText Typo="Typo.caption" Style="@Muted" HtmlTag="p">
