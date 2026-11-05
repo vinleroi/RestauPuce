@@ -3,6 +3,7 @@ using ChefOS.Core.Recipes;
 using ChefOS.Core.Sales;
 using ChefOS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace ChefOS.Infrastructure.Services;
 
@@ -20,6 +21,9 @@ public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
     private const string NegativeQuantityMessage = "La quantité ne peut pas être négative";
     private const string WeeklyTotalMondayMessage = "Un total de semaine doit être daté du lundi";
     private const string QuantityTooHighMessage = "Quantité trop élevée";
+    private const string ModifiedElsewhereMessage = "Ces ventes ont été modifiées sur un autre appareil, rechargez";
+
+    private const string SalesEntryKeyIndex = "IX_SalesEntries_Key";
 
     /// <summary>Plafond d'une saisie, en portions : au-delà, c'est une faute de frappe.</summary>
     private const decimal MaxQuantity = 1_000_000m;
@@ -82,7 +86,8 @@ public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
     /// </summary>
     /// <exception cref="DomainValidationException">
     /// Quantité négative ou supérieure à 1 000 000, total de semaine qui n'est pas daté d'un lundi, plat inconnu (ou qui n'est pas un plat du
-    /// restaurant courant), ou plat sans prix de vente alors qu'une quantité positive est saisie.
+    /// restaurant courant), ou plat sans prix de vente alors qu'une quantité positive est saisie ; saisies modifiées sur un autre appareil pendant l'enregistrement
+    /// (une même case créée en même temps, ou une saisie à modifier ou à supprimer qui n'existe plus) : rien n'est enregistré.
     /// </exception>
     public async Task SaveCellsAsync(IReadOnlyList<SalesCell> cells)
     {
@@ -152,8 +157,19 @@ public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
             }
         }
 
-        await db.SaveChangesAsync();
+        try
+        {
+            await db.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (IsSalesEntryKeyConflict(ex) || ex is DbUpdateConcurrencyException)
+        {
+            // Deux appareils ont enregistré la même case en même temps (violation de l'index unique), ou une saisie lue a disparu entre-temps : rien n'est écrit.
+            throw new DomainValidationException(ModifiedElsewhereMessage);
+        }
     }
+
+    private static bool IsSalesEntryKeyConflict(DbUpdateException ex) =>
+        ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: SalesEntryKeyIndex };
 
     private readonly record struct CellKey(int RecipeId, DateTime Date, ServicePeriod Service, bool IsWeeklyTotal);
 

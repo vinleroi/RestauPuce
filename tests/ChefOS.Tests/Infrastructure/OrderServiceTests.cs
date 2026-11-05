@@ -19,6 +19,7 @@ public class OrderServiceTests(PostgresFixture postgres)
     private const string UnknownOrderMessage = "Commande introuvable";
     private const string StatusChangedMessage = "La commande a déjà changé de statut";
     private const string NumberMessage = "Impossible d'attribuer un numéro de commande, réessayez";
+    private const string ModifiedElsewhereMessage = "La commande a été modifiée sur un autre appareil, rechargez";
 
     private static readonly DateTime Day = new(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc);
 
@@ -595,6 +596,125 @@ public class OrderServiceTests(PostgresFixture postgres)
         Assert.Equal(5, Assert.Single((await LoadOrderAsync(options, restaurant, id)).Lines).Quantity);
     }
 
+    private sealed record UpdateOutcome(string? Message, int Quantity);
+
+    [Fact]
+    public async Task UpdateLines_Concurrent_NeverCrashes_AndLeavesOneCoherentSet()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var tartare = await AddDishAsync(options, restaurant, "Tartare");
+        var burger = await AddDishAsync(options, restaurant, "Burger", 18m, 0.06m);
+        var id = await CreateService(options, restaurant).CreateAsync(Order(Line(tartare, 1), Line(burger, 1)));
+
+        // Quatre appareils enregistrent en même temps des lignes différentes (sur des services, donc des contextes, indépendants) :
+        // sans réservation de la commande, ils se disputeraient les mêmes lignes et la page planterait sur une erreur de concurrence.
+        using var gate = new ManualResetEventSlim(false);
+        var tasks = Enumerable.Range(2, 4)
+            .Select(quantity => Task.Run(async () =>
+            {
+                var service = CreateService(options, restaurant);
+                gate.Wait();
+                try
+                {
+                    await service.UpdateLinesAsync(id, [Line(tartare, quantity), Line(burger, quantity)]);
+                    return new UpdateOutcome(null, quantity);
+                }
+                catch (DomainValidationException ex)
+                {
+                    return new UpdateOutcome(ex.Message, quantity);
+                }
+            }))
+            .ToList();
+        gate.Set();
+        var results = await Task.WhenAll(tasks);
+
+        // Seul le message français de conflit est permis ; au moins un appareil a enregistré.
+        Assert.All(results.Where(r => r.Message is not null), r => Assert.Equal(ModifiedElsewhereMessage, r.Message));
+        var winners = results.Where(r => r.Message is null).Select(r => r.Quantity).ToList();
+        Assert.NotEmpty(winners);
+
+        // Les lignes sont exactement celles d'un seul appareil : deux lignes (pas de doublons), de la même quantité, aux prix figés d'origine.
+        var order = await LoadOrderAsync(options, restaurant, id);
+        Assert.Equal(2, order.Lines.Count);
+        Assert.Equal([tartare, burger], order.Lines.OrderBy(l => l.Id).Select(l => l.RecipeId).Order());
+        var finalQuantity = order.Lines.Select(l => l.Quantity).Distinct().Single();
+        Assert.Contains(finalQuantity, winners);
+        Assert.Equal(22.40m, order.Lines.Single(l => l.RecipeId == tartare).UnitPriceInclVat);
+        Assert.Equal(OrderStatus.Nouvelle, order.Status);
+    }
+
+    /// <summary>
+    /// Juste avant d'enregistrer les nouvelles lignes d'une commande, un autre appareil remplace ses lignes (suppression et insertion validées dans une autre transaction).
+    /// </summary>
+    private sealed class CompetingEditInterceptor(DbContextOptions<ChefOsDbContext> options, int restaurantId, int orderId, int dishId) : SaveChangesInterceptor
+    {
+        public int Attempts { get; private set; }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (Attempts++ == 0)
+            {
+                await using var db = OpenContext(options, restaurantId);
+                await db.OrderLines.Where(l => l.OrderId == orderId).ExecuteDeleteAsync(cancellationToken);
+                db.OrderLines.Add(new OrderLine { OrderId = orderId, RecipeId = dishId, Quantity = 9, UnitPriceInclVat = 10m, VatRate = 0.06m });
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    [Fact]
+    public async Task UpdateLines_LinesReplacedByAnotherDevice_ReportedInFrench_AndNothingOfOursIsSaved()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var tartare = await AddDishAsync(options, restaurant, "Tartare");
+        var burger = await AddDishAsync(options, restaurant, "Burger", 18m, 0.06m);
+        var id = await CreateService(options, restaurant).CreateAsync(Order(Line(tartare, 1)));
+
+        var interceptor = new CompetingEditInterceptor(options, restaurant, id, burger);
+        var intercepted = new DbContextOptionsBuilder<ChefOsDbContext>(options).AddInterceptors(interceptor).Options;
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() =>
+            CreateService(intercepted, restaurant).UpdateLinesAsync(id, [Line(tartare, 5)]));
+
+        Assert.Equal(ModifiedElsewhereMessage, error.Message);
+        Assert.Equal(1, interceptor.Attempts);
+
+        // Les lignes sont celles de l'autre appareil : rien de l'enregistrement refusé n'a été écrit.
+        var line = Assert.Single((await LoadOrderAsync(options, restaurant, id)).Lines);
+        Assert.Equal((burger, 9), (line.RecipeId, line.Quantity));
+    }
+
+    [Fact]
+    public async Task UpdateLines_OrderServedWhileWaiting_RefusedAsServed()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var dish = await AddDishAsync(options, restaurant, "Tartare");
+        var service = CreateService(options, restaurant);
+        var id = await service.CreateAsync(Order(Line(dish)));
+        await service.AdvanceAsync(id, OrderStatus.Nouvelle);
+        await service.AdvanceAsync(id, OrderStatus.EnPreparation);
+
+        // Un autre appareil sert la commande (transaction ouverte) pendant que celui-ci enregistre : il attend l'issue, puis refuse.
+        await using var serving = OpenContext(options, restaurant);
+        await using var transaction = await serving.Database.BeginTransactionAsync();
+        await serving.Orders.Where(o => o.Id == id).ExecuteUpdateAsync(set => set.SetProperty(o => o.Status, OrderStatus.Servie));
+
+        var update = service.UpdateLinesAsync(id, [Line(dish, 4)]);
+        await Task.Delay(500);
+        Assert.False(update.IsCompleted);
+
+        await transaction.CommitAsync();
+
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() => update);
+        Assert.Equal("Une commande servie ne peut plus être modifiée", error.Message);
+        Assert.Equal(1, Assert.Single((await LoadOrderAsync(options, restaurant, id)).Lines).Quantity);
+    }
+
     // ── ListForDayAsync ──────────────────────────────────────────────────────
 
     [Fact]
@@ -610,7 +730,7 @@ public class OrderServiceTests(PostgresFixture postgres)
         var firstId = await InsertOrderAsync(options, restaurant, 1, Day, tartare);
         var cancelledId = await InsertOrderAsync(options, restaurant, 2, Day.AddHours(12), burger, OrderStatus.Annulee);
         await InsertOrderAsync(options, restaurant, 4, Day.AddDays(1), tartare);
-        await InsertOrderAsync(options, restaurant, 5, Day.AddTicks(-1), tartare);
+        await InsertOrderAsync(options, restaurant, 5, Day.AddTicks(-1), tartare, OrderStatus.Servie);   // la veille, déjà servie : hors du jour
 
         // Les lignes de la commande 2 : deux plats, prix figés différents du prix actuel.
         await using (var db = OpenContext(options, restaurant))
@@ -647,7 +767,8 @@ public class OrderServiceTests(PostgresFixture postgres)
         var tartare = await AddDishAsync(options, restaurant, "Tartare", 22.40m, 0.12m);
         var burger = await AddDishAsync(options, restaurant, "Burger", 18m, 0.06m);
         var service = CreateService(options, restaurant);
-        var id = await service.CreateAsync(new OrderInput(OrderSource.Vitrine, "Mme Martin", null, [Line(tartare, 2, "saignant"), Line(burger, 3)]));
+        var id = await service.CreateAsync(
+            new OrderInput(OrderSource.Vitrine, "Mme Martin", "Allergie aux arachides", [Line(tartare, 2, "saignant"), Line(burger, 3)]));
 
         // Le jour est celui de la création enregistrée (pas d'égalité sur l'heure de l'horloge).
         var createdAt = (await LoadOrderAsync(options, restaurant, id)).CreatedAt;
@@ -655,11 +776,105 @@ public class OrderServiceTests(PostgresFixture postgres)
 
         Assert.Equal((id, 1, OrderSource.Vitrine, OrderStatus.Nouvelle, "Mme Martin"),
             (summary.Id, summary.Number, summary.Source, summary.Status, summary.TableOrCustomer));
+        Assert.Equal("Allergie aux arachides", summary.Note);   // la note saisie à la prise de commande doit arriver à l'écran de la cuisine
         Assert.Equal(2 * 22.40m + 3 * 18m, summary.TotalInclVat);
         Assert.Equal([("Tartare", 2, "saignant"), ("Burger", 3, null)], summary.Lines.Select(l => (l.DishName, l.Quantity, l.Note)));
         Assert.Equal([tartare, burger], summary.Lines.Select(l => l.RecipeId));   // l'écran de modification en a besoin : deux plats peuvent porter le même nom
-        Assert.Empty(await service.ListForDayAsync(createdAt.AddDays(1)));
         Assert.Empty(await service.ListForDayAsync(createdAt.AddDays(-1)));
+
+        // Encore à traiter, la commande reste au tableau les jours suivants ; servie, elle n'y est plus.
+        Assert.Equal(id, Assert.Single(await service.ListForDayAsync(createdAt.AddDays(1))).Id);
+        await service.AdvanceAsync(id, OrderStatus.Nouvelle);
+        await service.AdvanceAsync(id, OrderStatus.EnPreparation);
+        await service.AdvanceAsync(id, OrderStatus.Prete);
+        Assert.Empty(await service.ListForDayAsync(createdAt.AddDays(1)));
+    }
+
+    [Fact]
+    public async Task OrderNote_BlankIsNone_AndSurvivesEveryStatus()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var dish = await AddDishAsync(options, restaurant, "Tartare");
+        var service = CreateService(options, restaurant);
+        var withNote = await service.CreateAsync(new OrderInput(OrderSource.Salle, "T1", "  sans gluten  ", [Line(dish)]));
+        var blank = await service.CreateAsync(new OrderInput(OrderSource.Salle, "T2", "   ", [Line(dish)]));
+        await service.CancelAsync(withNote, OrderStatus.Nouvelle);
+
+        var createdAt = (await LoadOrderAsync(options, restaurant, withNote)).CreatedAt;
+        var orders = (await service.ListForDayAsync(createdAt)).ToDictionary(o => o.Id);
+
+        Assert.Equal("sans gluten", orders[withNote].Note);
+        Assert.Equal(OrderStatus.Annulee, orders[withNote].Status);
+        Assert.Null(orders[blank].Note);
+        Assert.Equal("sans gluten", (await service.GetAsync(withNote))!.Note);
+        Assert.Null((await service.GetAsync(blank))!.Note);
+    }
+
+    [Fact]
+    public async Task ListForDay_IncludesOpenOrdersFromEarlierDays()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var tartare = await AddDishAsync(options, restaurant, "Tartare");
+
+        // Hier et avant-hier : les commandes encore à traiter restent au tableau, les servies et annulées non.
+        var newYesterday = await InsertOrderAsync(options, restaurant, 3, Day.AddDays(-1).AddHours(23).AddMinutes(40), tartare, OrderStatus.Nouvelle);
+        var preparingBefore = await InsertOrderAsync(options, restaurant, 1, Day.AddDays(-2).AddHours(12), tartare, OrderStatus.EnPreparation);
+        var readyYesterday = await InsertOrderAsync(options, restaurant, 4, Day.AddDays(-1).AddHours(9), tartare, OrderStatus.Prete);
+        await InsertOrderAsync(options, restaurant, 2, Day.AddDays(-2).AddHours(13), tartare, OrderStatus.Servie);
+        await InsertOrderAsync(options, restaurant, 5, Day.AddDays(-1).AddHours(18), tartare, OrderStatus.Annulee);
+        // Aujourd'hui : toutes, annulée comprise, après celles d'hier. Demain n'y est pas.
+        var servedToday = await InsertOrderAsync(options, restaurant, 7, Day.AddHours(11), tartare, OrderStatus.Servie);
+        var cancelledToday = await InsertOrderAsync(options, restaurant, 6, Day.AddHours(18), tartare, OrderStatus.Annulee);
+        await InsertOrderAsync(options, restaurant, 8, Day.AddDays(1), tartare, OrderStatus.Nouvelle);
+
+        var orders = await CreateService(options, restaurant).ListForDayAsync(Day.AddHours(15));
+
+        // D'abord les commandes encore à traiter d'un jour précédent, par date de création ; puis celles du jour, par numéro.
+        Assert.Equal([preparingBefore, readyYesterday, newYesterday, cancelledToday, servedToday], orders.Select(o => o.Id));
+        Assert.Equal([1, 4, 3, 6, 7], orders.Select(o => o.Number));
+        Assert.All(orders, o => Assert.Equal(DateTimeKind.Utc, o.CreatedAt.Kind));
+        Assert.Equal(Day.AddDays(-1).AddHours(23).AddMinutes(40), orders[2].CreatedAt);
+    }
+
+    // ── GetAsync ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetAsync_ReturnsAnyOrderOfTheRestaurant_WhateverItsDayOrStatus()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var tartare = await AddDishAsync(options, restaurant, "Tartare");
+        var oldServed = await InsertOrderAsync(options, restaurant, 1, Day.AddDays(-30), tartare, OrderStatus.Servie);
+        var service = CreateService(options, restaurant);
+        var created = await service.CreateAsync(new OrderInput(OrderSource.Emporter, "M. Dupont", "Allergie", [Line(tartare, 2, "bien cuit")]));
+
+        var old = await service.GetAsync(oldServed);
+        var summary = await service.GetAsync(created);
+
+        Assert.NotNull(old);
+        Assert.Equal((oldServed, 1, OrderStatus.Servie, Day.AddDays(-30)), (old.Id, old.Number, old.Status, old.CreatedAt));
+        Assert.Equal(2 * 10m, old.TotalInclVat);
+        Assert.NotNull(summary);
+        Assert.Equal((created, 2, OrderSource.Emporter, OrderStatus.Nouvelle, "M. Dupont", "Allergie"),
+            (summary.Id, summary.Number, summary.Source, summary.Status, summary.TableOrCustomer, summary.Note));
+        Assert.Equal([("Tartare", 2, "bien cuit")], summary.Lines.Select(l => (l.DishName, l.Quantity, l.Note)));
+        Assert.Equal(tartare, Assert.Single(summary.Lines).RecipeId);
+        Assert.Null(await service.GetAsync(999_999));
+    }
+
+    [Fact]
+    public async Task GetAsync_OtherRestaurant_Null()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var other = await TestData.CreateRestaurantAsync(options, "Brasserie");
+        var dish = await AddDishAsync(options, restaurant, "Tartare");
+        var id = await InsertOrderAsync(options, restaurant, 1, Day, dish);
+
+        Assert.Null(await CreateService(options, other).GetAsync(id));
+        Assert.NotNull(await CreateService(options, restaurant).GetAsync(id));
     }
 
     // ── Isolation ────────────────────────────────────────────────────────────
@@ -676,6 +891,7 @@ public class OrderServiceTests(PostgresFixture postgres)
         var intruder = CreateService(options, other);
 
         Assert.Empty(await intruder.ListForDayAsync(Day));
+        Assert.Empty(await intruder.ListForDayAsync(Day.AddDays(3)));   // même une commande encore à traiter d'un jour précédent
         foreach (var attempt in new Func<Task>[]
                  {
                      () => intruder.AdvanceAsync(id, OrderStatus.Nouvelle),

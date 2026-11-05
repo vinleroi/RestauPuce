@@ -128,82 +128,131 @@ public class InventorySheetFormTests
     public void Groups_OfAnEmptySheet_AreEmpty() =>
         Assert.Empty(InventorySheetForm.From(Sheet(StockCountStatus.Brouillon)).Groups());
 
-    // ── Enregistrement : l'ensemble complet ──────────────────────────────────
+    // ── Enregistrement : seulement les changements ───────────────────────────
 
     [Fact]
-    public void ToInputs_SendsEveryCountedLine_NotOnlyTheEditedOnes()
+    public void ToChanges_OfAnUntouchedSheet_IsEmpty()
     {
-        var form = InventorySheetForm.From(DraftSheet());
+        var changes = InventorySheetForm.From(DraftSheet()).ToChanges();
 
-        LineOf(form, Cream).Quantity = 1.5m;
-        LineOf(form, Cream).Unit = MeasureUnit.L;
-
-        var inputs = form.ToInputs();
-
-        Assert.Equivalent(
-            new StockCountLineInput[]
-            {
-                new(Cream, 1.5m, MeasureUnit.L),
-                new(Eggs, 30m, MeasureUnit.Piece),
-                new(Carrots, 2.5m, MeasureUnit.Kg)
-            },
-            inputs);
+        Assert.True(changes.IsEmpty);
+        Assert.Empty(changes.Upserts);
+        Assert.Empty(changes.ClearedIngredientIds);
     }
 
     [Fact]
-    public void ToInputs_StillIncludesTheCountedLinesHiddenByTheSearchFilter()
+    public void ToChanges_SendsOnlyTheEditedLines_NotTheOtherCountedOnes()
     {
         var form = InventorySheetForm.From(DraftSheet());
 
-        // Seules les échalotes (non comptées) sont visibles : les œufs et les carottes comptés n'en partent pas moins.
+        // Les œufs et les carottes comptés (par cet appareil ou un autre) ne sont pas renvoyés : ils ne sont pas touchés.
+        LineOf(form, Cream).Quantity = 1.5m;
+        LineOf(form, Cream).Unit = MeasureUnit.L;
+
+        var changes = form.ToChanges();
+
+        Assert.Equal([new StockCountLineInput(Cream, 1.5m, MeasureUnit.L)], changes.Upserts);
+        Assert.Empty(changes.ClearedIngredientIds);
+    }
+
+    [Fact]
+    public void ToChanges_ModifyingAStoredLine_SendsItWithItsNewValue()
+    {
+        var form = InventorySheetForm.From(DraftSheet());
+
+        LineOf(form, Carrots).Quantity = 3m;
+        LineOf(form, Eggs).Unit = MeasureUnit.Piece;   // inchangée : ni quantité ni unité modifiée
+
+        Assert.Equal([new StockCountLineInput(Carrots, 3m, MeasureUnit.Kg)], form.ToChanges().Upserts);
+    }
+
+    [Fact]
+    public void ToChanges_StillIncludesTheEditedLinesHiddenByTheSearchFilter()
+    {
+        var form = InventorySheetForm.From(DraftSheet());
+
+        // Les carottes sont modifiées, puis une recherche ne laisse visibles que les échalotes : la modification n'en part pas moins.
+        LineOf(form, Carrots).Quantity = 4m;
         var visible = form.Groups("echalote").SelectMany(g => g.Lines).Select(l => l.IngredientId);
         Assert.Equal([Shallots], visible);
         LineOf(form, Shallots).Quantity = 4m;
 
-        var inputs = form.ToInputs();
-
         Assert.Equivalent(
             new StockCountLineInput[]
             {
-                new(Eggs, 30m, MeasureUnit.Piece),
-                new(Carrots, 2.5m, MeasureUnit.Kg),
+                new(Carrots, 4m, MeasureUnit.Kg),
                 new(Shallots, 4m, MeasureUnit.Kg)
             },
-            inputs);
+            form.ToChanges().Upserts);
     }
 
     [Fact]
-    public void ToInputs_LeavesOutTheLinesWithoutAQuantity()
-    {
-        var inputs = InventorySheetForm.From(DraftSheet()).ToInputs();
-
-        Assert.DoesNotContain(inputs, i => i.IngredientId == Shallots);
-        Assert.DoesNotContain(inputs, i => i.IngredientId == Cream);
-    }
-
-    [Fact]
-    public void ToInputs_ClearingAStoredQuantity_RemovesItFromTheSet()
+    public void ToChanges_ClearingAStoredQuantity_IsReportedAsCleared_NotAsAnUpsert()
     {
         var form = InventorySheetForm.From(DraftSheet());
 
         LineOf(form, Eggs).Quantity = null;
 
-        Assert.DoesNotContain(form.ToInputs(), i => i.IngredientId == Eggs);
+        var changes = form.ToChanges();
+
+        Assert.Equal([Eggs], changes.ClearedIngredientIds);
+        Assert.Empty(changes.Upserts);
+        Assert.True(LineOf(form, Eggs).IsCleared);
+        Assert.False(changes.IsEmpty);
     }
 
     [Fact]
-    public void ToInputs_ZeroIsARealCount()
+    public void ToChanges_ClearingThenRetypingTheStoredValue_IsNoChange()
+    {
+        var form = InventorySheetForm.From(DraftSheet());
+
+        LineOf(form, Eggs).Quantity = null;
+        LineOf(form, Eggs).Quantity = 30m;
+
+        Assert.True(form.ToChanges().IsEmpty);
+        Assert.False(LineOf(form, Eggs).IsCleared);
+    }
+
+    [Fact]
+    public void ToChanges_AnUncountedLineTheUserEmptied_IsNotCleared()
+    {
+        var form = InventorySheetForm.From(DraftSheet());
+
+        LineOf(form, Shallots).Quantity = 4m;
+        LineOf(form, Shallots).Quantity = null;
+
+        // Rien n'était enregistré pour les échalotes : il n'y a rien à supprimer.
+        Assert.True(form.ToChanges().IsEmpty);
+        Assert.False(LineOf(form, Shallots).IsCleared);
+    }
+
+    [Fact]
+    public void ToChanges_ZeroIsARealCount()
     {
         var form = InventorySheetForm.From(DraftSheet());
 
         LineOf(form, Shallots).Quantity = 0m;
 
-        Assert.Contains(form.ToInputs(), i => i == new StockCountLineInput(Shallots, 0m, MeasureUnit.Kg));
+        var changes = form.ToChanges();
+
+        Assert.Equal([new StockCountLineInput(Shallots, 0m, MeasureUnit.Kg)], changes.Upserts);
+        Assert.Empty(changes.ClearedIngredientIds);
     }
 
     [Fact]
-    public void ToInputs_OfAnUntouchedSheet_ResendsWhatIsStored() =>
-        Assert.Equal(2, InventorySheetForm.From(DraftSheet()).ToInputs().Count);
+    public void ToChanges_CombinesUpsertsAndClears()
+    {
+        var form = InventorySheetForm.From(DraftSheet());
+
+        LineOf(form, Cream).Quantity = 2m;
+        LineOf(form, Cream).Unit = MeasureUnit.L;
+        LineOf(form, Carrots).Quantity = null;
+
+        var changes = form.ToChanges();
+
+        Assert.Equal([new StockCountLineInput(Cream, 2m, MeasureUnit.L)], changes.Upserts);
+        Assert.Equal([Carrots], changes.ClearedIngredientIds);
+    }
 
     // ── Modifications ────────────────────────────────────────────────────────
 

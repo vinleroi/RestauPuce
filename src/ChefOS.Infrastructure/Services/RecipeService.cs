@@ -19,6 +19,7 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
     private const string UnknownIngredientMessage = "Ingrédient introuvable";
     private const string UnknownPreparationMessage = "Préparation introuvable";
     private const string DishInOrdersMessage = "Ce plat figure dans des commandes : archivez-le";
+    private const string RecipeInSalesOrWasteMessage = "Cette recette figure dans des ventes ou des pertes : archivez-la";
 
     // Échelles des colonnes numeric : arrondir avant de valider évite qu'une quantité positive soit stockée comme 0.
     private const int QuantityScale = 4;
@@ -123,10 +124,10 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
 
     /// <summary>
     /// Supprime la recette et ses lignes, sauf si elle sert de sous-préparation : le résultat liste alors les recettes concernées.
-    /// Un plat qui figure dans des commandes ne se supprime pas (une commande garde ses plats) : il s'archive.
-    /// Ses ventes saisies et ses pertes, elles, partent avec lui par cascade en base.
+    /// Un plat qui figure dans des commandes ne se supprime pas (une commande garde ses plats) : il s'archive. Il en va de même d'une recette qui a des ventes saisies
+    /// ou des pertes : la supprimer effacerait en silence cet historique (et les chiffres des statistiques avec lui).
     /// </summary>
-    /// <exception cref="DomainValidationException">La recette est inconnue ou figure dans des commandes.</exception>
+    /// <exception cref="DomainValidationException">La recette est inconnue, figure dans des commandes, ou a des ventes saisies ou des pertes.</exception>
     public async Task<DeleteResult> DeleteAsync(int id)
     {
         await using var db = await factory.CreateDbContextAsync();
@@ -139,6 +140,9 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
 
         if (await db.OrderLines.AnyAsync(l => l.RecipeId == id))
             throw new DomainValidationException(DishInOrdersMessage);
+
+        if (await db.SalesEntries.AnyAsync(e => e.RecipeId == id) || await db.WasteEntries.AnyAsync(e => e.RecipeId == id))
+            throw new DomainValidationException(RecipeInSalesOrWasteMessage);
 
         // Les lignes de la recette suivent par cascade en base.
         db.Recipes.Remove(recipe);

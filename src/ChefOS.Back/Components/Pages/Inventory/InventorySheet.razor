@@ -185,7 +185,8 @@ else
         }
     }
 
-    // La feuille envoie l'ensemble complet de ce qui est compté : le service retire de l'inventaire tout ingrédient qui n'y figure pas.
+    // La feuille n'envoie que ses changements (lignes modifiées, quantités vidées) : ce qu'un autre appareil a compté depuis le chargement reste en base,
+    // et la relecture qui suit l'affiche.
     private async Task SaveAsync()
     {
         if (_busy || _form is null)
@@ -194,7 +195,7 @@ else
         _busy = true;
         try
         {
-            await InventoryService.SaveLinesAsync(Id, _form.ToInputs());
+            await SaveChangesAsync(_form.ToChanges());
             Snackbar.Add("Inventaire enregistré", Severity.Success);
             await LoadAsync(showLoading: false);
         }
@@ -208,7 +209,10 @@ else
         }
     }
 
-    // Enregistre le comptage affiché puis clôture : le chef clôture ce qu'il voit.
+    private Task SaveChangesAsync(InventoryChanges changes) =>
+        InventoryService.SaveLinesAsync(Id, changes.Upserts, changes.ClearedIngredientIds);
+
+    // Enregistre les changements de la feuille puis clôture ; le service refuse la clôture d'un inventaire où personne n'a rien compté.
     private async Task CloseAsync()
     {
         if (_busy || _form is null)
@@ -233,7 +237,7 @@ else
         var saved = false;
         try
         {
-            await InventoryService.SaveLinesAsync(Id, _form.ToInputs());
+            await SaveChangesAsync(_form.ToChanges());
             saved = true;
 
             await InventoryService.CloseAsync(Id);

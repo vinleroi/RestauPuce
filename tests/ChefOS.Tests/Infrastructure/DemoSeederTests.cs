@@ -416,7 +416,28 @@ public class DemoSeederTests(PostgresFixture postgres)
         Assert.Empty(variance.Warnings);
         // Les herbes ne sont pas comptées : elles sont nommées à part, avec tout ce qui a bougé sans être compté aux deux inventaires.
         Assert.Equal(["Laurier séché", "Persil plat", "Thym frais"], variance.NotCountedIngredients.Order(StringComparer.Ordinal));
+        // Elles sont utilisées (et achetées) : le food cost réel ne les compte pas, il est marqué partiel.
+        Assert.True(stats.ActualFoodCostPartial);
     }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_ClosesTheCountsAtTheEndOfTheirDay()
+    {
+        var before = DateTime.UtcNow;
+        var (options, restaurantId, _) = await SeedAndReadLastFourWeeksAsync();
+        var after = DateTime.UtcNow;
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        var counts = await db.StockCounts.OrderBy(c => c.Date).ToListAsync();
+
+        // Un inventaire se compte en fin de journée, après le service et les livraisons : celui d'il y a 28 jours est clôturé à 23 h 30 son jour.
+        Assert.Equal(Today.AddDays(-28).AddHours(23).AddMinutes(30), counts[0].ClosedAt);
+
+        // Celui d'aujourd'hui l'est à 23 h 30 aussi, ou à l'instant du démarrage si la soirée n'est pas finie (jamais dans le futur).
+        var endOfToday = Today.AddHours(23).AddMinutes(30);
+        Assert.InRange(counts[1].ClosedAt!.Value, Min(endOfToday, before.AddMinutes(-1)), Min(endOfToday, after.AddMinutes(-1)));
+    }
+
+    private static DateTime Min(DateTime a, DateTime b) => a <= b ? a : b;
 
     [Fact]
     public async Task Seed_EmptyDatabase_ClosesTwoCountsOfTheSameIngredients_BracketingAppliedMetroReceipts()

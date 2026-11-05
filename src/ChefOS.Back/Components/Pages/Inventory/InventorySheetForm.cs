@@ -67,6 +67,9 @@ public sealed class InventoryLine
         (Quantity is { } quantity ? Round(quantity) : (decimal?)null) != _storedQuantity
         || (Quantity is not null && Unit != _storedUnit);
 
+    /// <summary>La quantité enregistrée a été vidée : l'ingrédient n'est plus compté, sa ligne est à supprimer.</summary>
+    public bool IsCleared => Quantity is null && _storedQuantity is not null;
+
     internal StockCountLineInput ToInput() => new(IngredientId, Quantity!.Value, Unit);
 
     private static decimal Round(decimal value) => Math.Round(value, QuantityScale, MidpointRounding.AwayFromZero);
@@ -76,10 +79,19 @@ public sealed class InventoryLine
 public sealed record InventoryGroup(string Category, IReadOnlyList<InventoryLine> Lines);
 
 /// <summary>
+/// Les changements d'une feuille depuis son chargement : les quantités à enregistrer (<see cref="Upserts"/>, dans l'unité saisie) et les ingrédients dont
+/// la quantité enregistrée a été vidée (<see cref="ClearedIngredientIds"/>). Tout le reste de l'inventaire est laissé tel quel par <c>InventoryService.SaveLinesAsync</c>.
+/// </summary>
+public sealed record InventoryChanges(IReadOnlyList<StockCountLineInput> Upserts, IReadOnlyList<int> ClearedIngredientIds)
+{
+    /// <summary>Rien n'a changé : il n'y a rien à enregistrer.</summary>
+    public bool IsEmpty => Upserts.Count == 0 && ClearedIngredientIds.Count == 0;
+}
+
+/// <summary>
 /// État de la feuille de comptage d'un inventaire, sans dépendance à l'interface : se construit depuis la feuille enregistrée (<see cref="From"/>)
-/// et se transforme en lignes à enregistrer (<see cref="ToInputs"/>). <c>InventoryService.SaveLinesAsync</c> prend l'ensemble complet de ce qui est
-/// compté (un ingrédient absent n'est plus compté) : <see cref="ToInputs"/> renvoie donc toujours toutes les lignes qui ont une quantité,
-/// modifiées ou non.
+/// et se transforme en changements à enregistrer (<see cref="ToChanges"/>). <c>InventoryService.SaveLinesAsync</c> ne touche que ce qu'on lui envoie : la feuille
+/// n'envoie donc que les lignes qu'elle a modifiées ou vidées, jamais le reste, qu'un autre appareil a pu compter depuis son chargement.
 /// </summary>
 public sealed class InventorySheetForm
 {
@@ -125,7 +137,11 @@ public sealed class InventorySheetForm
             .Select(group => new InventoryGroup(group.First().Category, group.ToList()))
             .ToList();
 
-    /// <summary>Toutes les lignes qui ont une quantité : l'ensemble complet attendu par <c>SaveLinesAsync</c>.</summary>
-    public IReadOnlyList<StockCountLineInput> ToInputs() =>
-        Lines.Where(line => line.IsCounted).Select(line => line.ToInput()).ToList();
+    /// <summary>
+    /// Ce qui a changé depuis le chargement : les lignes comptées dont la quantité ou l'unité a été modifiée (ou ajoutée), et les ingrédients comptés dont la quantité
+    /// a été vidée, qu'elles soient visibles ou masquées par la recherche. Une ligne non touchée n'est pas renvoyée.
+    /// </summary>
+    public InventoryChanges ToChanges() => new(
+        Lines.Where(line => line.IsCounted && line.IsModified).Select(line => line.ToInput()).ToList(),
+        Lines.Where(line => line.IsCleared).Select(line => line.IngredientId).ToList());
 }

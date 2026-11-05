@@ -480,7 +480,7 @@ else
 
         var confirmed = await DialogService.ShowMessageBoxAsync(
             "Supprimer la recette",
-            $"Supprimer définitivement « {_savedName} » et ses lignes ?",
+            $"Supprimer définitivement « {_savedName} » et ses lignes ? Une recette qui figure dans des commandes, des ventes ou des pertes ne peut pas être supprimée : archivez-la plutôt.",
             yesText: "Supprimer",
             cancelText: "Annuler");
 

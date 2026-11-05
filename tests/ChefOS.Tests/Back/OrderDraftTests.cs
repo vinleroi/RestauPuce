@@ -96,7 +96,7 @@ public class OrderDraftTests
     public void From_AnExistingOrder_KeepsItsLinesWithTheirDishIds()
     {
         var summary = new OrderSummary(
-            12, 5, new DateTime(2026, 11, 3, 12, 0, 0, DateTimeKind.Utc), OrderSource.Emporter, OrderStatus.EnPreparation, "Mme Dupont", 62.8m,
+            12, 5, new DateTime(2026, 11, 3, 12, 0, 0, DateTimeKind.Utc), OrderSource.Emporter, OrderStatus.EnPreparation, "Mme Dupont", null, 62.8m,
             [new OrderLineSummary(Waterzooi, "Waterzooi", 2, "saignant"), new OrderLineSummary(Carbonade, "Carbonade", 1, null)]);
 
         var draft = OrderDraft.From(summary);
@@ -111,7 +111,7 @@ public class OrderDraftTests
     public void AnExistingOrderHasNoEstimatedTotal_ItsFrozenPricesAreNotKnownHere()
     {
         var summary = new OrderSummary(
-            12, 5, DateTime.UtcNow, OrderSource.Salle, OrderStatus.Nouvelle, null, 62.8m,
+            12, 5, DateTime.UtcNow, OrderSource.Salle, OrderStatus.Nouvelle, null, null, 62.8m,
             [new OrderLineSummary(Waterzooi, "Waterzooi", 2, null)]);
 
         Assert.Null(OrderDraft.From(summary).EstimatedTotal);
@@ -129,7 +129,7 @@ public class OrderDraftTests
     // ── Modifications non enregistrées ───────────────────────────────────────
 
     private static OrderSummary ExistingOrder() => new(
-        12, 5, new DateTime(2026, 11, 3, 12, 0, 0, DateTimeKind.Utc), OrderSource.Emporter, OrderStatus.EnPreparation, "Mme Dupont", 62.8m,
+        12, 5, new DateTime(2026, 11, 3, 12, 0, 0, DateTimeKind.Utc), OrderSource.Emporter, OrderStatus.EnPreparation, "Mme Dupont", null, 62.8m,
         [new OrderLineSummary(Waterzooi, "Waterzooi", 2, "saignant"), new OrderLineSummary(Carbonade, "Carbonade", 1, null)]);
 
     [Fact]

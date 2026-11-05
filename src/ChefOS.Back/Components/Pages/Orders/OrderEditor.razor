@@ -27,7 +27,7 @@ else if (_notFound)
 {
     <MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Élément introuvable</MudText>
     <MudAlert Severity="Severity.Warning" Class="mb-4">
-        Cette commande n'existe pas, n'est pas du jour, ou elle n'appartient pas au restaurant actif.
+        Cette commande n'existe pas, ou elle n'appartient pas au restaurant actif.
     </MudAlert>
     <MudButton Href="/orders" Variant="Variant.Filled" Color="Color.Primary">Retour aux commandes</MudButton>
 }
@@ -72,6 +72,15 @@ else
                         <MudItem xs="12">
                             <MudTextField T="string" @bind-Value="_draft.Note" Label="Note" Lines="2" Variant="Variant.Outlined" Margin="Margin.Dense"
                                           HelperText="Allergie, heure de passage, remarque pour la cuisine…" />
+                        </MudItem>
+                    }
+                    else if (!string.IsNullOrWhiteSpace(_existing.Note))
+                    {
+                        @* La note saisie à la prise de commande ne se modifie plus, mais elle reste sous les yeux de celui qui modifie les lignes. *@
+                        <MudItem xs="12">
+                            <MudAlert Severity="Severity.Warning" Dense="true" Icon="@Icons.Material.Filled.ReportProblem">
+                                <strong>Note de la commande :</strong> @_existing.Note
+                            </MudAlert>
                         </MudItem>
                     }
                 </MudGrid>
@@ -219,8 +228,8 @@ else
 
             if (Id is { } id)
             {
-                // Le tableau ne montre que les commandes du jour, et c'est là qu'on en modifie une.
-                _existing = (await OrderService.ListForDayAsync(DateTime.UtcNow.Date)).FirstOrDefault(o => o.Id == id);
+                // Une commande encore à traiter d'un jour précédent se modifie aussi : on la charge par son identifiant, pas par le jour.
+                _existing = await OrderService.GetAsync(id);
                 _notFound = _existing is null;
                 if (_notFound)
                     return;

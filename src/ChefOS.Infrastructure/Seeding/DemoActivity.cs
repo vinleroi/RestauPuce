@@ -379,7 +379,8 @@ internal static class DemoActivity
             Date = today.AddDays(-28),
             Status = StockCountStatus.Cloture,
             Note = "Inventaire de réserve",
-            ClosedAt = today.AddDays(-28).AddHours(22).AddMinutes(30),
+            // Compté en fin de journée, après le service et les livraisons du jour : l'intervalle ]A, B] des écarts compte les achats et les ventes du jour B.
+            ClosedAt = today.AddDays(-28).AddHours(23).AddMinutes(30),
             Lines = opening
         });
         db.StockCounts.Add(new StockCount
@@ -387,8 +388,8 @@ internal static class DemoActivity
             Date = today,
             Status = StockCountStatus.Cloture,
             Note = "Inventaire de réserve",
-            // Compté ce matin, ou à l'instant si le démarrage a lieu avant ; jamais dans le futur.
-            ClosedAt = Utc(new[] { today.AddHours(6).AddMinutes(30), now.AddMinutes(-1) }.Min()),
+            // Compté en fin de journée (23:30), ou à l'instant si le démarrage a lieu avant ; jamais dans le futur.
+            ClosedAt = Utc(new[] { today.AddHours(23).AddMinutes(30), now.AddMinutes(-1) }.Min()),
             Lines = closing
         });
     }

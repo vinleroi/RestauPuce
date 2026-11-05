@@ -85,19 +85,23 @@ public class InventoryService(IDbContextFactory<ChefOsDbContext> factory)
     }
 
     /// <summary>
-    /// Enregistre le comptage d'un brouillon, tout ou rien : toutes les lignes sont validées avant la moindre écriture, puis appliquées d'un seul
-    /// <c>SaveChanges</c>. <paramref name="lines"/> est l'ensemble complet de ce qui est compté : un ingrédient qui n'y figure pas n'est plus compté
-    /// (sa ligne est supprimée), une ligne existante est modifiée sur place, et si un ingrédient revient plusieurs fois la dernière valeur gagne.
+    /// Enregistre des changements de comptage sur un brouillon, tout ou rien : toutes les lignes sont validées avant la moindre écriture, puis appliquées d'un seul
+    /// <c>SaveChanges</c>. Seul ce qui est fourni est touché : chaque ligne de <paramref name="upserts"/> crée ou modifie (sur place) la ligne de son ingrédient,
+    /// chaque ingrédient de <paramref name="clearedIngredientIds"/> perd sa ligne (il n'est plus compté), et tout le reste de l'inventaire est conservé tel quel : ce que
+    /// quelqu'un a compté depuis un autre appareil n'est donc jamais effacé par l'enregistrement d'une feuille périmée. Un ingrédient à la fois modifié et effacé est modifié,
+    /// et si un ingrédient revient plusieurs fois dans <paramref name="upserts"/> la dernière valeur gagne. Effacer un ingrédient qui n'est pas compté ne fait rien.
     /// Une quantité de 0 est une vraie saisie (« plus rien en stock »). La quantité est arrondie à 4 décimales (échelle de la colonne) ;
     /// <c>BaseQuantity</c> est la quantité convertie dans l'unité de base de l'ingrédient.
     /// Les écritures prennent d'abord le verrou de la ligne de l'inventaire par une mise à jour conditionnelle (« encore en brouillon ») : une clôture
     /// qui se produit en même temps attend l'issue de la sauvegarde, et une sauvegarde qui arrive pendant une clôture est refusée une fois celle-ci validée.
     /// </summary>
+    /// <param name="upserts">Les quantités à enregistrer, dans l'unité saisie.</param>
+    /// <param name="clearedIngredientIds">Les ingrédients dont la quantité est effacée ; vide ou omis : aucune ligne n'est supprimée.</param>
     /// <exception cref="DomainValidationException">
     /// Inventaire inconnu ou clôturé, quantité négative ou supérieure à 1 000 000, ingrédient inconnu (ou d'un autre restaurant),
     /// unité incompatible avec l'unité de base de l'ingrédient.
     /// </exception>
-    public async Task SaveLinesAsync(int id, IReadOnlyList<StockCountLineInput> lines)
+    public async Task SaveLinesAsync(int id, IReadOnlyList<StockCountLineInput> upserts, IReadOnlyList<int>? clearedIngredientIds = null)
     {
         await using var db = await factory.CreateDbContextAsync();
 
@@ -110,14 +114,14 @@ public class InventoryService(IDbContextFactory<ChefOsDbContext> factory)
         if (status == StockCountStatus.Cloture)
             throw new DomainValidationException(ClosedMessage);
 
-        var ingredientIds = lines.Select(l => l.IngredientId).Distinct().ToList();
+        var ingredientIds = upserts.Select(l => l.IngredientId).Distinct().ToList();
         var ingredients = await db.Ingredients.AsNoTracking()
             .Where(i => ingredientIds.Contains(i.Id))
             .ToDictionaryAsync(i => i.Id);
 
         // Toutes les lignes sont validées, y compris celles qu'une valeur plus tardive pour le même ingrédient écrasera.
         var counted = new Dictionary<int, CountedValue>();
-        foreach (var line in lines)
+        foreach (var line in upserts)
         {
             var ingredient = ingredients.GetValueOrDefault(line.IngredientId)
                              ?? throw new DomainValidationException(UnknownIngredientMessage);
@@ -135,6 +139,8 @@ public class InventoryService(IDbContextFactory<ChefOsDbContext> factory)
             counted[line.IngredientId] = new CountedValue(quantity, line.Unit, baseQuantity.Value);
         }
 
+        var cleared = (clearedIngredientIds ?? []).Where(ingredientId => !counted.ContainsKey(ingredientId)).Distinct().ToList();
+
         await using var transaction = await db.Database.BeginTransactionAsync();
 
         // Verrou de l'inventaire : « encore en brouillon » en une instruction (qui ne change rien d'autre). Une clôture ou une suppression en cours
@@ -145,12 +151,14 @@ public class InventoryService(IDbContextFactory<ChefOsDbContext> factory)
         if (locked != 1)
             throw new DomainValidationException(await RefusalAsync(db, id));
 
-        var existing = (await db.StockCountLines.Where(l => l.StockCountId == id).ToListAsync())
+        // Seules les lignes concernées sont lues : celles qu'un autre appareil a comptées entre-temps ne sont ni lues ni touchées.
+        var touched = counted.Keys.Concat(cleared).ToList();
+        var existing = (await db.StockCountLines.Where(l => l.StockCountId == id && touched.Contains(l.IngredientId)).ToListAsync())
             .ToDictionary(l => l.IngredientId);
 
-        foreach (var (ingredientId, line) in existing)
+        foreach (var ingredientId in cleared)
         {
-            if (!counted.ContainsKey(ingredientId))
+            if (existing.TryGetValue(ingredientId, out var line))
                 db.StockCountLines.Remove(line);
         }
 
@@ -217,7 +225,8 @@ public class InventoryService(IDbContextFactory<ChefOsDbContext> factory)
     /// Les inventaires du restaurant courant, du plus récent au plus ancien (à date égale, le dernier créé d'abord).
     /// <see cref="StockCountSummary.Value"/> vaut Σ quantité de base × prix en vigueur à la date de l'inventaire (voir <see cref="PriceAsOf"/>), non arrondi.
     /// Les lignes dont l'ingrédient n'a aucun prix sont ignorées : la valeur reste calculée pour les ingrédients dont le prix est connu, donc elle
-    /// peut sous-estimer un inventaire partiellement chiffré. Elle est null quand aucune ligne n'a de prix (inventaire vide, ou rien de chiffrable).
+    /// peut sous-estimer un inventaire partiellement chiffré, ce que signale <see cref="StockCountSummary.ValueIncomplete"/> (au moins une ligne sans prix).
+    /// Elle est null quand aucune ligne n'a de prix (inventaire vide, ou rien de chiffrable).
     /// </summary>
     public async Task<IReadOnlyList<StockCountSummary>> ListAsync()
     {
@@ -255,14 +264,17 @@ public class InventoryService(IDbContextFactory<ChefOsDbContext> factory)
                 var countLines = linesByCount[c.Id].ToList();
 
                 decimal? value = null;
+                var incomplete = false;
                 foreach (var line in countLines)
                 {
                     var price = PriceAsOf.At(history[line.IngredientId], day, currentPrices.GetValueOrDefault(line.IngredientId));
                     if (price is { } known)
                         value = (value ?? 0m) + line.BaseQuantity * known;
+                    else
+                        incomplete = true;
                 }
 
-                return new StockCountSummary(c.Id, day, c.Status, countLines.Count, value);
+                return new StockCountSummary(c.Id, day, c.Status, countLines.Count, value, incomplete);
             })
             .ToList();
     }

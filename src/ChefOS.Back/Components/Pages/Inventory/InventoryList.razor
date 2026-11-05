@@ -15,11 +15,11 @@
 
 <MudPaper Elevation="1" Class="pa-3 mb-4">
     <MudGrid Spacing="2" Class="align-center">
-        <MudItem xs="12" sm="4" md="3">
+        <MudItem xs="12" sm="6" md="4">
             <MudDatePicker @bind-Date="_newDate" Label="Date du comptage" Culture="Ui.Fr" DateFormat="dd/MM/yyyy" MaxDate="@Latest" Editable="true"
-                           Variant="Variant.Outlined" Margin="Margin.Dense" />
+                           Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="Comptez en fin de journée, après le service et les livraisons du jour" />
         </MudItem>
-        <MudItem xs="12" sm="8" md="5">
+        <MudItem xs="12" sm="6" md="4">
             <MudTextField T="string" @bind-Value="_newNote" Label="Note (facultatif)" Variant="Variant.Outlined" Margin="Margin.Dense" />
         </MudItem>
         <MudItem xs="12" md="4">
@@ -49,7 +49,14 @@
             </MudChip>
         </MudTd>
         <MudTd DataLabel="Lignes comptées" Style="text-align: right">@context.LineCount</MudTd>
-        <MudTd DataLabel="Valeur" Style="white-space: nowrap; text-align: right">@(context.Value is { } value ? Ui.Money(value) : "—")</MudTd>
+        <MudTd DataLabel="Valeur" Style="white-space: nowrap; text-align: right">
+            @(context.Value is { } value ? Ui.Money(value) : "—")
+            @if (context.Value is not null && context.ValueIncomplete)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span"
+                         title="Certains ingrédients comptés n'ont pas de prix : cette valeur est partielle">(incomplet)</MudText>
+            }
+        </MudTd>
         <MudTd Style="white-space: nowrap; text-align: right">
             @if (context.Status == StockCountStatus.Brouillon)
             {
@@ -64,7 +71,7 @@
 </MudTable>
 
 <MudText Typo="Typo.caption" Style="color: var(--mud-palette-text-secondary)" Class="d-block mt-2">
-    La valeur est le stock compté au prix en vigueur à la date de l'inventaire ; les ingrédients sans prix n'y comptent pas.
+    La valeur est le stock compté au prix en vigueur à la date de l'inventaire ; les ingrédients sans prix n'y comptent pas (la valeur est alors marquée « incomplet »).
 </MudText>
 
 @code {

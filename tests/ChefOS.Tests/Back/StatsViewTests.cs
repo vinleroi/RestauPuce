@@ -58,7 +58,7 @@ public class StatsViewTests
     // ── Écart d'inventaire : un total partiel n'est pas présenté comme exact ──
 
     private static VarianceReport Report(params VarianceRow[] rows) =>
-        new(Day(2026, 10, 7), Day(2026, 11, 4), rows, rows.Sum(r => r.VarianceValue ?? 0m), [], []);
+        new(Day(2026, 10, 7), Day(2026, 11, 4), rows, rows.Sum(r => r.VarianceValue ?? 0m), [], false, []);
 
     [Fact]
     public void VarianceIncomplete_AllRowsPriced_IsFalse()

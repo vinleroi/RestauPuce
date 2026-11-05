@@ -8,6 +8,7 @@
 @using ChefOS.Infrastructure.Services
 
 @inject StatsService StatsService
+@inject InventoryService InventoryService
 @inject RestaurantService RestaurantService
 @inject ITenantContext Tenant
 
@@ -20,10 +21,13 @@
         @foreach (var preset in StatsPeriod.Presets)
         {
             var current = preset;
-            <MudButton Variant="@(_preset == current ? Variant.Filled : Variant.Outlined)" Color="Color.Primary" Size="Size.Small"
-                       OnClick="@(() => SelectPresetAsync(current))" Disabled="_loading && _stats is null">
-                @StatsPeriod.Label(current)
-            </MudButton>
+            var unavailable = current == StatsPreset.BetweenCounts && _betweenCounts is null;
+            <span title="@(unavailable ? "Il faut deux inventaires clôturés, de deux jours différents" : null)">
+                <MudButton Variant="@(_preset == current ? Variant.Filled : Variant.Outlined)" Color="Color.Primary" Size="Size.Small"
+                           OnClick="@(() => SelectPresetAsync(current))" Disabled="@((_loading && _stats is null) || unavailable)">
+                    @StatsPeriod.Label(current)
+                </MudButton>
+            </span>
         }
     </div>
 
@@ -130,7 +134,7 @@
                     @context.Name
                     @if (context.CostIncomplete)
                     {
-                        <span title="Coût incomplet : certaines lignes de la recette n'ont pas de prix" aria-label="Coût incomplet">⚠️</span>
+                        <span title="@IncompleteCostHint" aria-label="Coût incomplet">⚠️</span>
                     }
                 </MudTd>
                 <MudTd DataLabel="Quantité" Style="text-align: right; white-space: nowrap">
@@ -250,6 +254,10 @@
     @* ── Écart d'inventaire ── *@
     <MudPaper Elevation="1" Class="pa-4 mb-4">
         <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Écart d'inventaire</MudText>
+        <MudText Typo="Typo.caption" Class="d-block mb-2" Style="@Muted">
+            Comptez en fin de journée, après le service et les livraisons du jour. Les achats et les ventes du jour de l'inventaire de clôture comptent dans l'écart ;
+            ceux du jour de l'inventaire d'ouverture n'y comptent pas.
+        </MudText>
 
         @if (stats.Variance is not { } variance)
         {
@@ -333,7 +341,7 @@
                 Seuls les achats passés par un ticket validé sont comptés.
                 @if (StatsView.VarianceIncomplete(variance))
                 {
-                    <text> Certains ingrédients comptés n'ont pas de prix : leur valeur n'entre ni dans le total ni dans le food cost réel, qui sont des minimums.</text>
+                    <text> Certains ingrédients comptés n'ont pas de prix : leur valeur n'entre ni dans le total ni dans le food cost réel, qui sont partiels.</text>
                 }
             </MudText>
 
@@ -362,10 +370,18 @@
 
     private static readonly Restaurant Defaults = new();
 
+    // Un chiffre « incomplet » ne vient pas que d'un prix manquant : une unité qui ne se convertit pas, une quantité produite invalide ou une recette sans ligne comptent aussi.
+    private const string IncompleteFigureHint = "Un prix, une unité ou une quantité produite manque ou est invalide : ce chiffre est partiel";
+    private const string IncompleteCostHint = "Coût incomplet : la recette n'a aucune ligne, ou un prix, une unité ou une quantité produite manque ou est invalide";
+    private const string PartialFoodCostNote = "Certains ingrédients utilisés n'ont pas été comptés aux deux inventaires : le coût réel est sous-estimé";
+
     private StatsPreset _preset = StatsPreset.Last4Weeks;
     private StatsPeriod _period;
     private DateTime? _customFrom;
     private DateTime? _customTo;
+
+    // Les deux derniers inventaires clôturés ; null tant qu'il n'y a pas deux jours d'inventaires clôturés.
+    private StatsPeriod? _betweenCounts;
 
     private PeriodStats? _stats;
     private string? _error;
@@ -392,6 +408,8 @@
         var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;
         _threshold = restaurant?.FoodCostAlertThreshold ?? Defaults.FoodCostAlertThreshold;
 
+        _betweenCounts = StatsPeriod.BetweenLastCounts(await InventoryService.ListAsync());
+
         _period = StatsPeriod.Of(_preset, DateTime.UtcNow);
         await LoadAsync(_period);
     }
@@ -406,6 +424,14 @@
             _customFrom ??= _period.From;
             _customTo ??= _period.To;
             await LoadCustomAsync();
+            return;
+        }
+
+        if (preset == StatsPreset.BetweenCounts)
+        {
+            if (_betweenCounts is { } between)
+                await LoadAsync(between);
+
             return;
         }
 
@@ -520,7 +546,7 @@
             @(amount is { } value ? (signed ? Ui.SignedMoney(value) : Ui.Money(value)) : "—")
             @if (incomplete)
             {
-                <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span" title="Un prix manque : ce montant est partiel">(incomplet)</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span" title="@IncompleteFigureHint">(incomplet)</MudText>
             }
         </span>;
 
@@ -532,7 +558,7 @@
                 @if (incomplete)
                 {
                     <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span"
-                             title="Un prix manque : ce chiffre est partiel">(incomplet)</MudText>
+                             title="@IncompleteFigureHint">(incomplet)</MudText>
                 }
             </MudText>
             @if (caption is not null)
@@ -551,6 +577,10 @@
                     <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span"
                              title="Un prix manque : la consommation de certains ingrédients comptés n'est pas valorisée">(incomplet)</MudText>
                 }
+                @if (stats.ActualFoodCost is not null && stats.ActualFoodCostPartial)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Warning" Class="ml-1" HtmlTag="span" title="@PartialFoodCostNote">(partiel)</MudText>
+                }
             </MudText>
             @if (stats.Variance is { } variance)
             {
@@ -560,6 +590,10 @@
                 @if (stats.ActualFoodCost is not null)
                 {
                     <MudText Typo="Typo.caption" Style="@Muted" HtmlTag="p">sur les ingrédients comptés aux deux inventaires</MudText>
+                    @if (stats.ActualFoodCostPartial)
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Warning" HtmlTag="p">@PartialFoodCostNote</MudText>
+                    }
                 }
                 else
                 {

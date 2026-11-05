@@ -44,8 +44,9 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
     /// </description></item>
     /// <item><description>
     /// <b>Coûts</b> : aux prix en vigueur au dernier jour de la période (<see cref="PriceAsOf"/>) ; un prix postérieur est ignoré. Le coût d'un plat est le
-    /// <see cref="CostResult.TotalCost"/> de sa recette ; un coût incomplet entre quand même dans le total, qui devient incomplet. Seuls les plats vendus et
-    /// complets entrent dans la matrice de menu engineering (la marge unitaire y est arrondie à 6 décimales).
+    /// <see cref="CostResult.TotalCost"/> de sa recette ; un coût incomplet entre quand même dans le total, qui devient incomplet. Une recette sans aucune ligne (ou
+    /// qui utilise une préparation sans ligne) n'a pas un coût nul : son coût est inconnu, donc incomplet. Seuls les plats vendus et complets entrent dans la matrice
+    /// de menu engineering (la marge unitaire y est arrondie à 6 décimales).
     /// </description></item>
     /// <item><description>
     /// <b>Pertes</b> : chacune au prix de sa date (voir <see cref="WasteCosting"/>), regroupées par motif. Une perte au coût inconnu est comptée sans coût ;
@@ -60,9 +61,10 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
     /// Seuls les ingrédients comptés aux deux inventaires ont une ligne d'écart (un ingrédient non compté à l'un serait pris pour un stock nul et ferait inventer des
     /// pertes) ; ceux qui ont bougé dans l'intervalle ou n'ont été comptés qu'à un des deux sont nommés dans <see cref="VarianceReport.NotCountedIngredients"/>.
     /// Le total des écarts et le coût réel (<see cref="PeriodStats.ActualFoodCost"/> = Σ consommation réelle × prix à B, les ingrédients sans prix n'y comptant pas,
-    /// ÷ CA HT de ]A, B]) ne portent donc que sur les lignes comptées : ce dernier ignore la consommation des ingrédients non comptés.
-    /// <see cref="VarianceReport.Warnings"/> signale ce que la consommation théorique sous-estime : recettes dont la décomposition est incomplète, pertes d'ingrédient dont
-    /// l'unité ne se convertit plus.
+    /// ÷ CA HT de ]A, B]) ne portent donc que sur les lignes comptées : ce dernier ignore la consommation des ingrédients non comptés, et
+    /// <see cref="PeriodStats.ActualFoodCostPartial"/> le signale dès qu'un de ces ingrédients a été acheté ou consommé (théoriquement) dans l'intervalle.
+    /// <see cref="VarianceReport.Warnings"/> signale ce que les consommations théorique et réelle sous-estiment : recettes dont la décomposition est incomplète ou qui n'ont
+    /// aucune ligne, pertes d'ingrédient dont l'unité ne se convertit plus, lignes de ticket dont l'unité ne se convertit plus (écartées des achats).
     /// Approximation : un total de semaine n'est pas ventilé par jour, il compte dans ]A, B] si son lundi y est.
     /// </description></item>
     /// </list>
@@ -112,6 +114,7 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
             waste.Sum(w => w.Cost),
             waste.Any(w => w.CostIncomplete),
             actualFoodCost,
+            variance?.ActualFoodCostPartial ?? false,
             ComputeRevenueByDay(periodSales, from, to),
             dishes,
             waste,
@@ -189,9 +192,11 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
                     where receipt.Status == ReceiptStatus.Applied
                           && (receipt.ReceiptDate ?? receipt.CreatedAt) >= firstDay && (receipt.ReceiptDate ?? receipt.CreatedAt) < lastDayExclusive
                           && !line.IsIgnored && line.IngredientId != null
-                    select new { line.IngredientId, line.Quantity, line.Unit, line.LineTotalExclVat })
+                    select new { line.IngredientId, line.Quantity, line.Unit, line.LineTotalExclVat, line.RawLabel, Date = receipt.ReceiptDate ?? receipt.CreatedAt })
                 .ToListAsync();
-            purchases = lines.Select(l => new PurchaseLine(l.IngredientId!.Value, l.Quantity, l.Unit, l.LineTotalExclVat)).ToList();
+            purchases = lines
+                .Select(l => new PurchaseLine(l.IngredientId!.Value, l.Quantity, l.Unit, l.LineTotalExclVat, l.RawLabel, UtcDays.Of(l.Date)))
+                .ToList();
         }
 
         return new Dataset(ingredients, history, recipes, sales, waste, purchases);
@@ -204,6 +209,7 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
         // Coûts aux prix du dernier jour de la période, un seul livre pour tous les plats.
         var book = new RecipeBook(data.Recipes, PriceAsOf.WithPricesAt(data.Ingredients, data.History, to));
         var namesById = data.Recipes.ToDictionary(r => r.Id, r => r.Name);
+        var gaps = new RecipeGaps(data.Recipes);
 
         var rows = new List<DishProfit>();
         var menuItems = new List<MenuItem>();
@@ -213,6 +219,9 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
             var revenue = group.Sum(s => s.RevenueExclVat);
             var cost = book.Cost(group.Key);
             var totalCost = cost.TotalCost * quantity;
+
+            // Une recette sans aucune ligne coûte « 0 » sans être complète : son coût est inconnu.
+            var costIncomplete = !cost.IsComplete || gaps.IsHollow(group.Key);
 
             rows.Add(new DishProfit(
                 group.Key,
@@ -225,11 +234,11 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
                 totalCost,
                 revenue - totalCost,
                 revenue == 0m ? null : totalCost / revenue,
-                !cost.IsComplete,
+                costIncomplete,
                 Class: null));
 
             // Un plat au coût partiel aurait une marge fausse : il reste hors de la matrice.
-            if (cost.IsComplete)
+            if (!costIncomplete)
                 menuItems.Add(new MenuItem(group.Key, quantity, Math.Round((revenue - totalCost) / quantity, MarginScale, MidpointRounding.AwayFromZero)));
         }
 
@@ -289,7 +298,8 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
         var ingredientsById = data.Ingredients.ToDictionary(i => i.Id);
         var opening = CountedQuantities(window.Opening);
         var closing = CountedQuantities(window.Closing);
-        var purchases = PurchasedQuantities(data.Purchases, ingredientsById);
+        var purchased = PurchasedQuantities(data.Purchases, ingredientsById);
+        var purchases = purchased.Totals;
 
         var windowSales = data.Sales.Where(s => s.Day > window.After && s.Day <= window.Through).ToList();
         var windowWaste = data.Waste.Where(e => UtcDays.Of(e.Date) > window.After && UtcDays.Of(e.Date) <= window.Through).ToList();
@@ -311,6 +321,10 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
             .ThenBy(name => name, StringComparer.Ordinal)
             .ToList();
 
+        // Le coût réel ignore ces ingrédients : s'il y en a un d'utilisé, il est sous-estimé.
+        var actualFoodCostPartial = purchases.Concat(theoretical)
+            .Any(q => q.Value > 0m && !countedInBoth.Contains(q.Key) && ingredientsById.ContainsKey(q.Key));
+
         Dictionary<int, decimal> Counted(Dictionary<int, decimal> quantities) =>
             quantities.Where(q => countedInBoth.Contains(q.Key)).ToDictionary(q => q.Key, q => q.Value);
 
@@ -328,8 +342,9 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
             })
             .ToList();
 
+        var warnings = consumption.Warnings.Concat(purchased.Warnings).Distinct().ToList();
         var report = new VarianceReport(
-            window.After, window.Through, rows, rows.Sum(r => r.VarianceValue ?? 0m), notCounted, consumption.Warnings);
+            window.After, window.Through, rows, rows.Sum(r => r.VarianceValue ?? 0m), notCounted, actualFoodCostPartial, warnings);
 
         // Coût réel : la consommation réelle (des lignes comptées) valorisée au prix du jour B, rapportée au CA de l'intervalle ; sans CA ou sans aucun prix connu, il est inconnu.
         var windowRevenue = windowSales.Sum(s => s.RevenueExclVat);
@@ -348,11 +363,13 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
 
     /// <summary>
     /// Les quantités achetées, en unité de base. La quantité ne dépend pas du prix : une ligne dont seul le total est invalide (un problème de prix) est
-    /// quand même une livraison, on la compte ; une ligne sans quantité exploitable ou dans une unité incompatible est écartée.
+    /// quand même une livraison, on la compte ; une ligne sans quantité exploitable est écartée, et une ligne dont l'unité ne se convertit plus dans l'unité de base
+    /// de l'ingrédient l'est aussi, avec un avertissement (sans doublon, triés par date puis libellé) : ces achats manquent à la consommation réelle.
     /// </summary>
-    private static Dictionary<int, decimal> PurchasedQuantities(List<PurchaseLine> lines, Dictionary<int, Ingredient> ingredientsById)
+    private static Purchases PurchasedQuantities(List<PurchaseLine> lines, Dictionary<int, Ingredient> ingredientsById)
     {
-        var purchases = new Dictionary<int, decimal>();
+        var totals = new Dictionary<int, decimal>();
+        var unconvertible = new HashSet<(DateTime Day, string Label)>();
         foreach (var line in lines)
         {
             if (!ingredientsById.TryGetValue(line.IngredientId, out var ingredient))
@@ -363,10 +380,19 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
                 price = ReceiptLinePricing.Compute(line.Quantity, line.Unit, lineTotalExclVat: 1m, ingredient);
 
             if (price.Issue == ReceiptLineIssue.None && price.BaseQuantity is { } quantity)
-                purchases[line.IngredientId] = purchases.GetValueOrDefault(line.IngredientId) + quantity;
+                totals[line.IngredientId] = totals.GetValueOrDefault(line.IngredientId) + quantity;
+            else if (price.Issue == ReceiptLineIssue.IncompatibleUnit)
+                unconvertible.Add((line.Day, line.Label));
         }
 
-        return purchases;
+        var warnings = unconvertible
+            .OrderBy(l => l.Day)
+            .ThenBy(l => l.Label, StringComparer.InvariantCultureIgnoreCase)
+            .ThenBy(l => l.Label, StringComparer.Ordinal)
+            .Select(l => $"Ligne de ticket « {l.Label} » du {l.Day.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture)} ignorée : unité non convertible")
+            .ToList();
+
+        return new Purchases(totals, warnings);
     }
 
     /// <summary>
@@ -379,8 +405,10 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
         Dataset data, List<Sale> sales, List<WasteEntry> waste, Dictionary<int, Ingredient> ingredientsById)
     {
         var explosion = new RecipeExplosion(data.Recipes, data.Ingredients);
+        var gaps = new RecipeGaps(data.Recipes);
         var totals = new Dictionary<int, decimal>();
         var incompleteRecipeIds = new HashSet<int>();
+        var emptyRecipeIds = new HashSet<int>();
         var unconvertibleWaste = new HashSet<(DateTime Day, int IngredientId)>();
 
         void Add(int ingredientId, decimal quantity) => totals[ingredientId] = totals.GetValueOrDefault(ingredientId) + quantity;
@@ -389,6 +417,9 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
         {
             if (result.Issues.Count > 0)
                 incompleteRecipeIds.Add(recipeId);
+
+            // Une recette sans ligne (ou une préparation sans ligne qu'elle utilise) se décompose en rien : sa consommation n'est pas nulle, elle est inconnue.
+            emptyRecipeIds.UnionWith(gaps.EmptyRecipesUnder(recipeId));
 
             foreach (var (ingredientId, quantity) in result.GrossBaseQuantityByIngredient)
                 Add(ingredientId, quantity);
@@ -423,6 +454,12 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
             .OrderBy(name => name, StringComparer.InvariantCultureIgnoreCase)
             .ThenBy(name => name, StringComparer.Ordinal)
             .Select(name => $"Recette « {name} » incomplète : consommation théorique sous-estimée")
+            .Concat(emptyRecipeIds
+                .Where(recipeNames.ContainsKey)
+                .Select(id => recipeNames[id])
+                .OrderBy(name => name, StringComparer.InvariantCultureIgnoreCase)
+                .ThenBy(name => name, StringComparer.Ordinal)
+                .Select(name => $"Recette « {name} » sans ligne : consommation théorique inconnue"))
             .Concat(unconvertibleWaste
                 .Select(w => (w.Day, ingredientsById[w.IngredientId].Name))
                 .OrderBy(w => w.Day)
@@ -450,7 +487,73 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
     /// <summary>La consommation théorique par ingrédient (unité de base) et les avertissements sur ce qu'elle sous-estime.</summary>
     private sealed record Consumption(Dictionary<int, decimal> Totals, IReadOnlyList<string> Warnings);
 
-    private readonly record struct PurchaseLine(int IngredientId, decimal? Quantity, MeasureUnit? Unit, decimal? LineTotalExclVat);
+    /// <summary>Une ligne de ticket appliqué : son ingrédient, sa quantité et son total saisis, son libellé lu et le jour UTC du ticket.</summary>
+    private readonly record struct PurchaseLine(
+        int IngredientId, decimal? Quantity, MeasureUnit? Unit, decimal? LineTotalExclVat, string Label, DateTime Day);
+
+    /// <summary>Les quantités achetées par ingrédient (unité de base) et les avertissements sur les lignes écartées.</summary>
+    private sealed record Purchases(Dictionary<int, decimal> Totals, IReadOnlyList<string> Warnings);
+
+    /// <summary>
+    /// Les recettes sans aucune ligne : leur coût et leur consommation sont inconnus, pas nuls. Une recette qui en utilise une, directement ou non, est dans le même cas.
+    /// </summary>
+    private sealed class RecipeGaps(IEnumerable<Recipe> recipes)
+    {
+        private readonly Dictionary<int, Recipe> _recipesById = recipes.ToDictionary(r => r.Id);
+        private readonly Dictionary<int, bool> _hollow = [];
+
+        /// <summary>Vrai si la recette n'a aucune ligne, ou utilise une préparation qui n'en a aucune.</summary>
+        public bool IsHollow(int recipeId) =>
+            _recipesById.TryGetValue(recipeId, out var recipe) && IsHollow(recipe, []);
+
+        /// <summary>Les identifiants des recettes sans aucune ligne parmi <paramref name="recipeId"/> et les préparations qu'elle utilise, directement ou non.</summary>
+        public HashSet<int> EmptyRecipesUnder(int recipeId)
+        {
+            var empty = new HashSet<int>();
+            Collect(recipeId, new HashSet<int>(), empty);
+            return empty;
+        }
+
+        private void Collect(int recipeId, HashSet<int> visited, HashSet<int> empty)
+        {
+            if (!visited.Add(recipeId) || !_recipesById.TryGetValue(recipeId, out var recipe))
+                return;
+
+            if (recipe.Lines.Count == 0)
+                empty.Add(recipeId);
+
+            foreach (var line in recipe.Lines)
+            {
+                if (line.SubRecipeId is { } subRecipeId)
+                    Collect(subRecipeId, visited, empty);
+            }
+        }
+
+        private bool IsHollow(Recipe recipe, HashSet<int> visiting)
+        {
+            if (_hollow.TryGetValue(recipe.Id, out var known))
+                return known;
+
+            if (recipe.Lines.Count == 0)
+                return _hollow[recipe.Id] = true;
+
+            // Une boucle de préparations est déjà signalée par le chiffrage : ici, elle ne rend pas la recette creuse.
+            if (!visiting.Add(recipe.Id))
+                return false;
+
+            try
+            {
+                var hollow = recipe.Lines.Any(l => l.SubRecipeId is { } subRecipeId
+                                                   && _recipesById.TryGetValue(subRecipeId, out var subRecipe)
+                                                   && IsHollow(subRecipe, visiting));
+                return _hollow[recipe.Id] = hollow;
+            }
+            finally
+            {
+                visiting.Remove(recipe.Id);
+            }
+        }
+    }
 
     /// <summary>L'intervalle ]After, Through] entre les jours de deux inventaires clôturés, avec ces inventaires et leurs lignes.</summary>
     private sealed record VarianceWindow(DateTime After, DateTime Through, StockCount Opening, StockCount Closing);

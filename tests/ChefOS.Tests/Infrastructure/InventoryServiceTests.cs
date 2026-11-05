@@ -229,7 +229,7 @@ public class InventoryServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task Inventory_SaveLines_ReplacesTheCountedLines_UpdatingInPlace()
+    public async Task Inventory_SaveLines_UpsertsOnlyTheLinesGiven_UpdatingInPlace()
     {
         var options = await postgres.CreateDatabaseAsync();
         var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
@@ -242,20 +242,74 @@ public class InventoryServiceTests(PostgresFixture postgres)
         await service.SaveLinesAsync(id, [Line(farine, 1000m), Line(sucre, 500m)]);
         var farineLineId = (await LoadCountAsync(options, restaurant, id)).Lines.Single(l => l.IngredientId == farine).Id;
 
-        // Une quantité de 0 est une vraie saisie ; un ingrédient absent de la liste n'est plus compté (sa ligne disparaît) ;
-        // un ingrédient répété garde sa dernière valeur ; la ligne existante est modifiée sur place.
+        // Une quantité de 0 est une vraie saisie ; un ingrédient absent de la liste garde sa ligne ; un ingrédient répété garde sa dernière valeur ;
+        // la ligne existante est modifiée sur place.
         await service.SaveLinesAsync(id, [Line(farine, 2m, MeasureUnit.Kg), Line(sel, 0m), Line(farine, 3m, MeasureUnit.Kg)]);
 
         var lines = (await LoadCountAsync(options, restaurant, id)).Lines;
-        Assert.Equal([farine, sel], lines.Select(l => l.IngredientId).Order());
+        Assert.Equal([farine, sucre, sel], lines.Select(l => l.IngredientId).Order());
         var farineLine = lines.Single(l => l.IngredientId == farine);
         Assert.Equal(farineLineId, farineLine.Id);
         Assert.Equal((3m, MeasureUnit.Kg, 3000m), (farineLine.Quantity, farineLine.Unit, farineLine.BaseQuantity));
         var selLine = lines.Single(l => l.IngredientId == sel);
         Assert.Equal((0m, 0m), (selLine.Quantity, selLine.BaseQuantity));
+        var sucreLine = lines.Single(l => l.IngredientId == sucre);
+        Assert.Equal((500m, MeasureUnit.G, 500m), (sucreLine.Quantity, sucreLine.Unit, sucreLine.BaseQuantity));
 
-        // Sauvegarder une liste vide vide l'inventaire.
+        // Sauvegarder une liste vide, sans rien à effacer, ne touche à rien.
         await service.SaveLinesAsync(id, []);
+        await service.SaveLinesAsync(id, [], []);
+        Assert.Equal(3, (await LoadCountAsync(options, restaurant, id)).Lines.Count);
+    }
+
+    [Fact]
+    public async Task Inventory_SaveLines_OtherDevicesLinesKept()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var farine = await AddIngredientAsync(options, restaurant, "Farine");
+        var sucre = await AddIngredientAsync(options, restaurant, "Sucre");
+        var id = await CreateService(options, restaurant).CreateAsync(Nov3, null);
+
+        // Deux appareils, deux feuilles ouvertes sur le même brouillon : chacun enregistre l'ingrédient qu'il a compté.
+        var phone = CreateService(options, restaurant);
+        var tablet = CreateService(options, restaurant);
+        await phone.SaveLinesAsync(id, [Line(farine, 1000m)], []);
+        await tablet.SaveLinesAsync(id, [Line(sucre, 500m)], []);
+
+        var lines = (await LoadCountAsync(options, restaurant, id)).Lines.ToDictionary(l => l.IngredientId);
+        Assert.Equal([farine, sucre], lines.Keys.Order());
+        Assert.Equal(1000m, lines[farine].BaseQuantity);
+        Assert.Equal(500m, lines[sucre].BaseQuantity);
+    }
+
+    [Fact]
+    public async Task Inventory_SaveLines_ClearedIngredientsAreDeleted_AndOnlyThose()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var farine = await AddIngredientAsync(options, restaurant, "Farine");
+        var sucre = await AddIngredientAsync(options, restaurant, "Sucre");
+        var sel = await AddIngredientAsync(options, restaurant, "Sel");
+        var poivre = await AddIngredientAsync(options, restaurant, "Poivre");
+        var id = await service.CreateAsync(Nov3, null);
+        await service.SaveLinesAsync(id, [Line(farine, 1000m), Line(sucre, 500m), Line(sel, 100m)]);
+
+        // Farine est effacée, poivre (jamais compté) aussi sans effet, et une quantité est modifiée dans le même enregistrement.
+        await service.SaveLinesAsync(id, [Line(sel, 150m)], [farine, poivre]);
+
+        var lines = (await LoadCountAsync(options, restaurant, id)).Lines.ToDictionary(l => l.IngredientId);
+        Assert.Equal([sucre, sel], lines.Keys.Order());
+        Assert.Equal(500m, lines[sucre].Quantity);
+        Assert.Equal(150m, lines[sel].Quantity);
+
+        // Un ingrédient à la fois modifié et effacé est modifié (la modification l'emporte).
+        await service.SaveLinesAsync(id, [Line(sucre, 700m)], [sucre]);
+        Assert.Equal(700m, (await LoadCountAsync(options, restaurant, id)).Lines.Single(l => l.IngredientId == sucre).Quantity);
+
+        // Effacer tout ce qui est compté vide l'inventaire.
+        await service.SaveLinesAsync(id, [], [sucre, sel]);
         Assert.Empty((await LoadCountAsync(options, restaurant, id)).Lines);
     }
 
@@ -290,9 +344,17 @@ public class InventoryServiceTests(PostgresFixture postgres)
         await Refused(UnknownIngredientMessage, Line(foreign, 1m));
         await Refused(UnknownIngredientMessage, Line(999_999, 1m));
 
+        // Un effacement demandé avec une ligne refusée n'est pas appliqué non plus.
+        var withClear = await Assert.ThrowsAsync<DomainValidationException>(
+            () => service.SaveLinesAsync(id, [Line(lait, -1m, MeasureUnit.L)], [farine]));
+        Assert.Equal(NegativeQuantityMessage, withClear.Message);
+        Assert.Equal(1000m, Assert.Single((await LoadCountAsync(options, restaurant, id)).Lines).Quantity);
+
         // Le plafond lui-même est accepté.
         await service.SaveLinesAsync(id, [Line(lait, 1_000_000m, MeasureUnit.Ml)]);
-        Assert.Equal(1_000_000m, Assert.Single((await LoadCountAsync(options, restaurant, id)).Lines).Quantity);
+        var lines = (await LoadCountAsync(options, restaurant, id)).Lines;
+        Assert.Equal(1_000_000m, lines.Single(l => l.IngredientId == lait).Quantity);
+        Assert.Equal(1000m, lines.Single(l => l.IngredientId == farine).Quantity);
     }
 
     [Fact]
@@ -331,7 +393,7 @@ public class InventoryServiceTests(PostgresFixture postgres)
 
         // Plus aucune écriture : ni lignes, ni nouvelle clôture, ni suppression.
         var save = await Assert.ThrowsAsync<DomainValidationException>(() => service.SaveLinesAsync(id, [Line(farine, 5m)]));
-        var clear = await Assert.ThrowsAsync<DomainValidationException>(() => service.SaveLinesAsync(id, []));
+        var clear = await Assert.ThrowsAsync<DomainValidationException>(() => service.SaveLinesAsync(id, [], [farine]));
         var close = await Assert.ThrowsAsync<DomainValidationException>(() => service.CloseAsync(id));
         var delete = await Assert.ThrowsAsync<DomainValidationException>(() => service.DeleteAsync(id));
         Assert.Equal(ClosedMessage, save.Message);
@@ -489,14 +551,15 @@ public class InventoryServiceTests(PostgresFixture postgres)
 
         // Date décroissante, puis le plus récent d'abord à date égale.
         Assert.Equal([november, unpriced, empty, october], list.Select(s => s.Id));
+        // La valeur est partielle (« incomplet ») dès qu'une ligne comptée n'a pas de prix : le sel d'octobre, ou le seul sel du brouillon sans valeur.
         Assert.Equal(
-            new StockCountSummary(november, Nov3, StockCountStatus.Brouillon, 1, 40m), list[0]);
+            new StockCountSummary(november, Nov3, StockCountStatus.Brouillon, 1, 40m, false), list[0]);
         Assert.Equal(
-            new StockCountSummary(unpriced, Nov2, StockCountStatus.Brouillon, 1, null), list[1]);
+            new StockCountSummary(unpriced, Nov2, StockCountStatus.Brouillon, 1, null, true), list[1]);
         Assert.Equal(
-            new StockCountSummary(empty, Nov2, StockCountStatus.Brouillon, 0, null), list[2]);
+            new StockCountSummary(empty, Nov2, StockCountStatus.Brouillon, 0, null, false), list[2]);
         Assert.Equal(
-            new StockCountSummary(october, Oct15, StockCountStatus.Cloture, 3, 23m), list[3]);
+            new StockCountSummary(october, Oct15, StockCountStatus.Cloture, 3, 23m, true), list[3]);
         Assert.All(list, s => Assert.Equal(DateTimeKind.Utc, s.Date.Kind));
     }
 

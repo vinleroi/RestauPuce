@@ -89,7 +89,7 @@ public record DashboardSummary(
 /// <summary>
 /// Les chiffres des 7 derniers jours, aujourd'hui compris (du jour <paramref name="From"/> au jour <paramref name="To"/>, UTC) : chiffre d'affaires HT des ventes saisies et des
 /// commandes, marge brute (chiffre d'affaires - coût théorique des plats vendus). <paramref name="CostIncomplete"/> : le coût d'un plat vendu ne porte que sur les lignes
-/// chiffrées, la marge est alors un maximum. Montants non arrondis.
+/// chiffrées (ou la recette n'a aucune ligne), la marge est alors partielle. Montants non arrondis.
 /// </summary>
 public record SevenDayFigures(DateTime From, DateTime To, decimal RevenueExclVat, decimal GrossMargin, bool CostIncomplete);
 
@@ -177,7 +177,10 @@ public record OrderInput(OrderSource Source, string? TableOrCustomer, string? No
 /// <summary><paramref name="RecipeId"/> permet de modifier les lignes d'une commande sans passer par le nom du plat, que deux plats peuvent partager.</summary>
 public record OrderLineSummary(int RecipeId, string DishName, int Quantity, string? Note);
 
-/// <summary><paramref name="TotalInclVat"/> : somme des quantités × prix figés des lignes (non arrondie).</summary>
+/// <summary>
+/// <paramref name="Note"/> : la note de la commande (allergie, heure de passage…), saisie à la prise de commande ; null quand il n'y en a pas.
+/// <paramref name="TotalInclVat"/> : somme des quantités × prix figés des lignes (non arrondie).
+/// </summary>
 public record OrderSummary(
     int Id,
     int Number,
@@ -185,6 +188,7 @@ public record OrderSummary(
     OrderSource Source,
     OrderStatus Status,
     string? TableOrCustomer,
+    string? Note,
     decimal TotalInclVat,
     IReadOnlyList<OrderLineSummary> Lines);
 
@@ -223,9 +227,10 @@ public record WasteItem(
 
 /// <summary>
 /// <paramref name="Value"/> : somme des quantités de base × prix en vigueur à la date de l'inventaire ; les ingrédients sans prix n'y comptent pas.
-/// Null quand aucune ligne n'a de prix (inventaire vide, ou ingrédients tous sans prix).
+/// Null quand aucune ligne n'a de prix (inventaire vide, ou ingrédients tous sans prix). <paramref name="ValueIncomplete"/> : au moins un ingrédient compté
+/// n'a pas de prix à cette date, la valeur est alors partielle.
 /// </summary>
-public record StockCountSummary(int Id, DateTime Date, StockCountStatus Status, int LineCount, decimal? Value);
+public record StockCountSummary(int Id, DateTime Date, StockCountStatus Status, int LineCount, decimal? Value, bool ValueIncomplete);
 
 /// <summary>Une quantité comptée, dans l'unité saisie.</summary>
 public record StockCountLineInput(int IngredientId, decimal Quantity, MeasureUnit Unit);
@@ -254,8 +259,9 @@ public record StockCountSheetLine(
 /// <paramref name="UnitCost"/> est le coût de revient d'une portion aux prix du dernier jour de la période, <paramref name="TotalCost"/> = coût unitaire ×
 /// quantité vendue, <paramref name="Margin"/> = CA HT − coût total (le CA suit les prix figés à la vente, pas le prix actuel), et
 /// <paramref name="FoodCostPercent"/> = coût total ÷ CA HT (null si le CA est nul). Tout est non arrondi.
-/// <paramref name="CostIncomplete"/> : le coût ne porte que sur les lignes chiffrées de la recette, il est partiel. <paramref name="Class"/> est la classe
-/// de menu engineering ; null pour un plat au coût incomplet, qui n'entre pas dans la matrice.
+/// <paramref name="CostIncomplete"/> : le coût ne porte que sur les lignes chiffrées de la recette (prix, unité ou quantité produite manquant ou invalide), ou la
+/// recette n'a aucune ligne (ou utilise une préparation sans ligne) : il est partiel. <paramref name="Class"/> est la classe de menu engineering ; null pour un plat
+/// au coût incomplet, qui n'entre pas dans la matrice.
 /// </summary>
 public record DishProfit(
     int RecipeId,
@@ -277,7 +283,7 @@ public record DayRevenue(DateTime Day, decimal FromEntries, decimal FromOrders);
 /// <summary>
 /// Coût (non arrondi) des pertes d'un motif ; une perte au coût inconnu compte dans <paramref name="Count"/> mais pas dans <paramref name="Cost"/>.
 /// <paramref name="CostIncomplete"/> est vrai quand au moins une perte du motif a un coût inconnu ou partiel (recette dont une ligne n'est pas chiffrée) :
-/// <paramref name="Cost"/> est alors un minimum.
+/// <paramref name="Cost"/> est alors partiel.
 /// </summary>
 public record WasteByReason(WasteReason Reason, decimal Cost, int Count, bool CostIncomplete);
 
@@ -302,8 +308,10 @@ public record VarianceRow(
 /// ingrédient absent de l'un des deux serait compté à 0 et ferait inventer des pertes. <paramref name="TotalVarianceValue"/> (Σ des valeurs connues) et le
 /// coût réel (<see cref="PeriodStats.ActualFoodCost"/>) ne portent donc que sur ces lignes.
 /// <paramref name="NotCountedIngredients"/> : les noms (triés) des ingrédients qui ont bougé dans l'intervalle (achats ou consommation théorique) ou qui n'ont été
-/// comptés qu'à un des deux inventaires, mais pas aux deux : leur écart est inconnu. <paramref name="Warnings"/> : les approximations de la consommation
-/// théorique, sans doublon (recette dont la décomposition est incomplète, perte d'ingrédient dont l'unité ne se convertit plus).
+/// comptés qu'à un des deux inventaires, mais pas aux deux : leur écart est inconnu. <paramref name="ActualFoodCostPartial"/> : au moins un de ces ingrédients a été
+/// acheté ou consommé (théoriquement) dans l'intervalle : le coût réel, qui ne porte que sur les ingrédients comptés aux deux inventaires, est alors sous-estimé.
+/// <paramref name="Warnings"/> : les approximations de la consommation théorique et des achats, sans doublon (recette dont la décomposition est incomplète ou qui n'a
+/// aucune ligne, perte d'ingrédient ou ligne de ticket dont l'unité ne se convertit plus).
 /// </summary>
 public record VarianceReport(
     DateTime OpeningDate,
@@ -311,6 +319,7 @@ public record VarianceReport(
     IReadOnlyList<VarianceRow> Rows,
     decimal TotalVarianceValue,
     IReadOnlyList<string> NotCountedIngredients,
+    bool ActualFoodCostPartial,
     IReadOnlyList<string> Warnings);
 
 /// <summary>
@@ -318,7 +327,10 @@ public record VarianceReport(
 /// <paramref name="WeeklyTotalsRevenue"/> (les totaux de semaine saisis d'un bloc) ; <paramref name="RevenueByDay"/> ne les comprend pas.
 /// <paramref name="ActualFoodCost"/> et <paramref name="Variance"/> portent sur l'intervalle entre les deux inventaires (<see cref="VarianceReport.OpeningDate"/> à
 /// <see cref="VarianceReport.ClosingDate"/>), pas sur la période demandée.
-/// <paramref name="WasteCostIncomplete"/> : au moins une perte de la période a un coût inconnu ou partiel, <paramref name="WasteCost"/> est alors un minimum.
+/// <paramref name="WasteCostIncomplete"/> : au moins une perte de la période a un coût inconnu ou partiel, <paramref name="WasteCost"/> est alors partiel.
+/// <paramref name="CostIncomplete"/> : le coût d'un plat vendu est partiel (prix, unité ou quantité produite manquant ou invalide, ou recette sans ligne).
+/// <paramref name="ActualFoodCostPartial"/> : <paramref name="ActualFoodCost"/> ignore des ingrédients utilisés mais non comptés aux deux inventaires, il est sous-estimé
+/// (voir <see cref="VarianceReport.ActualFoodCostPartial"/>).
 /// </summary>
 public record PeriodStats(
     DateTime From,
@@ -334,6 +346,7 @@ public record PeriodStats(
     decimal WasteCost,
     bool WasteCostIncomplete,
     decimal? ActualFoodCost,
+    bool ActualFoodCostPartial,
     IReadOnlyList<DayRevenue> RevenueByDay,
     IReadOnlyList<DishProfit> Dishes,
     IReadOnlyList<WasteByReason> Waste,

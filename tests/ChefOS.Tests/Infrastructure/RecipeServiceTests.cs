@@ -21,6 +21,7 @@ public class RecipeServiceTests(PostgresFixture postgres)
     private const string LineSourceMessage = "Chaque ligne doit contenir un ingrédient ou une préparation";
     private const string QuantityMessage = "La quantité doit être supérieure à 0";
     private const string DishInOrdersMessage = "Ce plat figure dans des commandes : archivez-le";
+    private const string InSalesOrWasteMessage = "Cette recette figure dans des ventes ou des pertes : archivez-la";
 
     private static RecipeService CreateService(DbContextOptions<ChefOsDbContext> options, int restaurantId) =>
         new(new TestContextFactory(options, restaurantId));
@@ -649,6 +650,96 @@ public class RecipeServiceTests(PostgresFixture postgres)
         // Archiver reste possible, et un plat jamais commandé se supprime toujours.
         await service.SetArchivedAsync(dish.Id, true);
         Assert.True((await service.DeleteAsync(unordered.Id)).Deleted);
+    }
+
+    [Fact]
+    public async Task Delete_DishWithSalesEntries_Refused_AndKeepsItsSalesHistory()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var os = await AddIngredientAsync(options, restaurant, "Os de veau", 0.004m);
+        var sold = await service.SaveAsync(Dish("Carbonnade", [Grams(os, 100m)]));
+        var unsold = await service.SaveAsync(Dish("Stoemp", [Grams(os, 50m)]));
+        var soldAt = new DateTime(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc);
+        await using (var db = OpenContext(options, restaurant))
+        {
+            db.SalesEntries.Add(new SalesEntry
+            {
+                RecipeId = sold.Id, Date = soldAt, Service = ServicePeriod.Midi, Quantity = 12m, UnitPriceInclVat = 22.40m, VatRate = 0.12m, UpdatedAt = soldAt
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var ex = await Assert.ThrowsAsync<DomainValidationException>(() => service.DeleteAsync(sold.Id));
+
+        // Le plat et l'historique de ses ventes sont intacts (la cascade de la base ne les a pas effacés).
+        Assert.Equal(InSalesOrWasteMessage, ex.Message);
+        Assert.NotNull(await service.GetAsync(sold.Id));
+        await using var check = OpenContext(options, restaurant);
+        Assert.Equal(12m, Assert.Single(await check.SalesEntries.ToListAsync()).Quantity);
+
+        // Archiver reste possible, et un plat sans vente se supprime toujours.
+        await service.SetArchivedAsync(sold.Id, true);
+        Assert.True((await service.DeleteAsync(unsold.Id)).Deleted);
+        Assert.Single(await check.SalesEntries.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Delete_RecipeWithWasteEntries_Refused_ButIngredientWasteDoesNotBlock()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var os = await AddIngredientAsync(options, restaurant, "Os de veau", 0.004m);
+        var wastedDish = await service.SaveAsync(Dish("Carbonnade", [Grams(os, 100m)]));
+        var wastedPreparation = await service.SaveAsync(Preparation("Fond", [Grams(os, 500m)]));
+        var other = await service.SaveAsync(Dish("Stoemp", [Grams(os, 50m)]));
+        var day = new DateTime(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc);
+        await using (var db = OpenContext(options, restaurant))
+        {
+            db.WasteEntries.AddRange(
+                new WasteEntry { Date = day, RecipeId = wastedDish.Id, Quantity = 1m, Unit = MeasureUnit.Piece, Reason = WasteReason.Erreur, CreatedAt = day },
+                new WasteEntry { Date = day, RecipeId = wastedPreparation.Id, Quantity = 200m, Unit = MeasureUnit.Ml, Reason = WasteReason.Perime, CreatedAt = day },
+                // Une perte d'ingrédient n'a pas de recette : elle ne retient aucun plat.
+                new WasteEntry { Date = day, IngredientId = os, Quantity = 100m, Unit = MeasureUnit.G, Reason = WasteReason.Casse, CreatedAt = day });
+            await db.SaveChangesAsync();
+        }
+
+        var dishError = await Assert.ThrowsAsync<DomainValidationException>(() => service.DeleteAsync(wastedDish.Id));
+        var preparationError = await Assert.ThrowsAsync<DomainValidationException>(() => service.DeleteAsync(wastedPreparation.Id));
+
+        Assert.Equal(InSalesOrWasteMessage, dishError.Message);
+        Assert.Equal(InSalesOrWasteMessage, preparationError.Message);
+        await using var check = OpenContext(options, restaurant);
+        Assert.Equal(3, await check.WasteEntries.CountAsync());
+        Assert.NotNull(await service.GetAsync(wastedDish.Id));
+
+        Assert.True((await service.DeleteAsync(other.Id)).Deleted);
+        Assert.Equal(3, await check.WasteEntries.CountAsync());
+    }
+
+    [Fact]
+    public async Task Delete_PreparationUsedInRecipes_StillReportsTheRecipes_BeforeTheHistoryCheck()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var os = await AddIngredientAsync(options, restaurant, "Os de veau", 0.004m);
+        var fond = await service.SaveAsync(Preparation("Fond", [Grams(os, 500m)]));
+        await service.SaveAsync(Dish("Carbonnade", [Millilitres(fond.Id, 500m)]));
+        var day = new DateTime(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc);
+        await using (var db = OpenContext(options, restaurant))
+        {
+            db.WasteEntries.Add(new WasteEntry { Date = day, RecipeId = fond.Id, Quantity = 200m, Unit = MeasureUnit.Ml, Reason = WasteReason.Perime, CreatedAt = day });
+            await db.SaveChangesAsync();
+        }
+
+        // La préparation sert encore à un plat ET figure dans des pertes : le refus existant (liste des recettes) reste celui qu'on obtient.
+        var result = await service.DeleteAsync(fond.Id);
+
+        Assert.False(result.Deleted);
+        Assert.Equal(["Carbonnade"], result.UsedInRecipes);
     }
 
     [Fact]

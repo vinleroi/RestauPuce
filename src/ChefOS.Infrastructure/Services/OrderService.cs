@@ -28,8 +28,12 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
     private const string AlreadyServedMessage = "Cette commande est déjà servie";
     private const string CancelledCannotAdvanceMessage = "Une commande annulée ne peut plus avancer";
     private const string ServedCannotBeCancelledMessage = "Une commande servie ne peut pas être annulée";
+    private const string ModifiedElsewhereMessage = "La commande a été modifiée sur un autre appareil, rechargez";
 
     private const string OrderNumberIndex = "IX_Orders_Number";
+
+    /// <summary>Les statuts d'une commande encore à traiter : elle reste visible au tableau tant qu'elle n'est ni servie ni annulée, même d'un jour précédent.</summary>
+    private static readonly OrderStatus[] OpenStatuses = [OrderStatus.Nouvelle, OrderStatus.EnPreparation, OrderStatus.Prete];
 
     /// <summary>Plafond de portions par ligne de commande : au-delà, c'est une faute de frappe.</summary>
     private const int MaxLineQuantity = 1000;
@@ -91,26 +95,58 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
     /// <summary>
     /// Remplace les lignes d'une commande qui n'est ni servie ni annulée. Une ligne qui reprend un plat déjà présent dans la commande garde ses
     /// prix figés ; un plat ajouté prend le prix actuel (et doit être un plat non archivé, avec un prix de vente).
+    /// La commande est d'abord réservée par une mise à jour conditionnelle sans effet (« encore ni servie ni annulée »), dans une transaction : deux modifications
+    /// simultanées passent l'une après l'autre (la seconde relit les lignes que la première a écrites) au lieu de se disputer les mêmes lignes, et une commande servie
+    /// ou annulée entre-temps est refusée. Si les lignes ont quand même changé sous les pieds de l'appelant, il en est averti en français.
     /// </summary>
-    /// <exception cref="DomainValidationException">Commande inconnue, servie ou annulée ; lignes invalides (voir <see cref="CreateAsync"/>).</exception>
+    /// <exception cref="DomainValidationException">
+    /// Commande inconnue, servie ou annulée ; lignes invalides (voir <see cref="CreateAsync"/>) ; commande modifiée sur un autre appareil pendant l'enregistrement.
+    /// </exception>
     public async Task UpdateLinesAsync(int orderId, IReadOnlyList<OrderLineInput> lines)
     {
         await using var db = await factory.CreateDbContextAsync();
+        await using var transaction = await db.Database.BeginTransactionAsync();
 
-        var order = await RequireOrderAsync(db, orderId, includeLines: true);
-        if (order.Status == OrderStatus.Servie)
-            throw new DomainValidationException(ServedCannotBeEditedMessage);
-        if (order.Status == OrderStatus.Annulee)
-            throw new DomainValidationException(CancelledCannotBeEditedMessage);
+        // Verrou de la commande : « ni servie ni annulée » en une instruction (qui ne change rien d'autre). Une modification concurrente tient la ligne :
+        // cette instruction attend sa fin, puis réévalue la condition sur la commande telle qu'elle est devenue.
+        var claimed = await db.Orders
+            .Where(o => o.Id == orderId && o.Status != OrderStatus.Servie && o.Status != OrderStatus.Annulee)
+            .ExecuteUpdateAsync(set => set.SetProperty(o => o.Note, o => o.Note));
+        if (claimed != 1)
+        {
+            var status = await db.Orders.AsNoTracking()
+                .Where(o => o.Id == orderId)
+                .Select(o => (OrderStatus?)o.Status)
+                .FirstOrDefaultAsync();
+            throw new DomainValidationException(status switch
+            {
+                null => UnknownOrderMessage,
+                OrderStatus.Servie => ServedCannotBeEditedMessage,
+                _ => CancelledCannotBeEditedMessage
+            });
+        }
 
         RequireLines(lines);
+
+        // Les lignes sont lues une fois la commande réservée : ce sont celles que la dernière modification validée a écrites.
+        var order = await RequireOrderAsync(db, orderId, includeLines: true);
         var priced = await PriceLinesAsync(lines, order.Lines);
 
         // Les anciennes lignes sont supprimées par orphelinage (clé étrangère obligatoire) ; les nouvelles sont insérées dans le même SaveChanges.
         order.Lines.Clear();
         order.Lines.AddRange(priced.Select(l => l.ToEntity()));
 
-        await db.SaveChangesAsync();
+        try
+        {
+            await db.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Une ligne à supprimer n'existe plus : la commande a été modifiée entre la lecture et l'enregistrement.
+            throw new DomainValidationException(ModifiedElsewhereMessage);
+        }
+
+        await transaction.CommitAsync();
     }
 
     /// <summary>
@@ -166,7 +202,9 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
     }
 
     /// <summary>
-    /// Les commandes créées le jour UTC de <paramref name="dayUtc"/> (de 00:00 inclus à 24:00 exclu), annulées comprises, triées par numéro.
+    /// Les commandes créées le jour UTC de <paramref name="dayUtc"/> (de 00:00 inclus à 24:00 exclu), annulées comprises, triées par numéro, précédées des commandes
+    /// encore à traiter (nouvelles, en préparation ou prêtes) créées un jour plus tôt, triées par date de création : une commande oubliée la veille ne disparaît pas du
+    /// tableau. Une commande servie ou annulée d'un jour précédent n'y figure pas.
     /// Le total est la somme des quantités × prix figés des lignes, non arrondie.
     /// </summary>
     public async Task<IReadOnlyList<OrderSummary>> ListForDayAsync(DateTime dayUtc)
@@ -178,10 +216,30 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
 
         var orders = await db.Orders.AsNoTracking()
             .Include(o => o.Lines.OrderBy(l => l.Id))
-            .Where(o => o.CreatedAt >= start && o.CreatedAt < end)
-            .OrderBy(o => o.Number)
+            .Where(o => (o.CreatedAt >= start && o.CreatedAt < end) || (o.CreatedAt < start && OpenStatuses.Contains(o.Status)))
             .ToListAsync();
 
+        var ordered = orders.Where(o => o.CreatedAt < start).OrderBy(o => o.CreatedAt).ThenBy(o => o.Number)
+            .Concat(orders.Where(o => o.CreatedAt >= start).OrderBy(o => o.Number))
+            .ToList();
+
+        return await SummarizeAsync(db, ordered);
+    }
+
+    /// <summary>La commande (et ses lignes, dans l'ordre d'enregistrement) du restaurant courant, quel que soit son jour ou son statut ; null si elle n'existe pas.</summary>
+    public async Task<OrderSummary?> GetAsync(int id)
+    {
+        await using var db = await factory.CreateDbContextAsync();
+
+        var order = await db.Orders.AsNoTracking()
+            .Include(o => o.Lines.OrderBy(l => l.Id))
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        return order is null ? null : (await SummarizeAsync(db, [order]))[0];
+    }
+
+    private static async Task<List<OrderSummary>> SummarizeAsync(ChefOsDbContext db, List<Order> orders)
+    {
         var recipeIds = orders.SelectMany(o => o.Lines).Select(l => l.RecipeId).Distinct().ToList();
         var names = await db.Recipes.AsNoTracking()
             .Where(r => recipeIds.Contains(r.Id))
@@ -195,6 +253,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
                 o.Source,
                 o.Status,
                 o.TableOrCustomer,
+                o.Note,
                 o.Lines.Sum(l => l.Quantity * l.UnitPriceInclVat),
                 o.Lines.Select(l => new OrderLineSummary(l.RecipeId, names[l.RecipeId], l.Quantity, l.Note)).ToList()))
             .ToList();

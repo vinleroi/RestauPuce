@@ -265,6 +265,26 @@ public static class Ui
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
     };
 
+    /// <summary>
+    /// L'heure d'une commande sur le tableau, en heure locale : « 19:40 » pour une commande du jour affiché (<paramref name="dayUtc"/>, un jour UTC). Une commande encore à
+    /// traiter d'un jour précédent porte son jour : « hier 23:40 » si elle date de la veille (jour UTC, comme le tableau), sinon « 02/11 23:40 ».
+    /// </summary>
+    /// <param name="zone">Le fuseau d'affichage ; celui du serveur par défaut.</param>
+    public static string OrderTimeText(DateTime createdAtUtc, DateTime dayUtc, TimeZoneInfo? zone = null)
+    {
+        var created = DateTime.SpecifyKind(createdAtUtc, DateTimeKind.Utc);
+        var local = TimeZoneInfo.ConvertTimeFromUtc(created, zone ?? TimeZoneInfo.Local);
+        var time = local.ToString("HH:mm", Fr);
+
+        if (created >= dayUtc.Date)
+            return time;
+
+        return created.Date == dayUtc.Date.AddDays(-1) ? $"hier {time}" : $"{local.ToString("dd/MM", Fr)} {time}";
+    }
+
+    /// <summary>Vrai quand la commande n'est pas du jour affiché (<paramref name="dayUtc"/>) : une commande encore à traiter d'un jour précédent.</summary>
+    public static bool IsFromEarlierDay(DateTime createdAtUtc, DateTime dayUtc) => createdAtUtc < dayUtc.Date;
+
     public static string StockCountStatusLabel(StockCountStatus status) => status switch
     {
         StockCountStatus.Brouillon => "Brouillon",

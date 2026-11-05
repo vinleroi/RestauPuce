@@ -29,7 +29,7 @@ public static class StatsView
 
     /// <summary>
     /// Vrai quand au moins un ingrédient compté n'a pas de prix à la clôture : sa valeur d'écart est inconnue, le service la compte pour 0 dans le total des écarts
-    /// et laisse sa consommation hors du coût réel. Ces deux chiffres sont alors partiels (un minimum, pas un montant exact), même si la ligne n'est pas affichée.
+    /// et laisse sa consommation hors du coût réel. Ces deux chiffres sont alors partiels, même si la ligne n'est pas affichée.
     /// </summary>
     public static bool VarianceIncomplete(VarianceReport variance) => variance.Rows.Any(r => r.VarianceValue is null);
 

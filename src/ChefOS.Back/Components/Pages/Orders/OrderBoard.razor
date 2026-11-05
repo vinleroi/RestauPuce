@@ -104,7 +104,9 @@ else
     private RenderFragment OrderCard(OrderSummary order) => @<MudPaper Elevation="1" Class="pa-3 mb-3">
         <div class="d-flex align-center gap-2 mb-1">
             <MudText Typo="Typo.subtitle1"><strong>n° @order.Number</strong></MudText>
-            <MudText Typo="Typo.body2" Style="@Muted">@order.CreatedAt.ToLocalTime().ToString("HH:mm", Ui.Fr)</MudText>
+            <MudText Typo="Typo.body2" Color="@(Ui.IsFromEarlierDay(order.CreatedAt, _day) ? Color.Warning : Color.Default)" Style="@(Ui.IsFromEarlierDay(order.CreatedAt, _day) ? null : Muted)">
+                @Ui.OrderTimeText(order.CreatedAt, _day)
+            </MudText>
             <MudSpacer />
             <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@Ui.OrderSourceLabel(order.Source)</MudChip>
             @if (OrderDraft.IsOpen(order.Status))
@@ -120,6 +122,14 @@ else
         @if (!string.IsNullOrWhiteSpace(order.TableOrCustomer))
         {
             <MudText Typo="Typo.body2" Class="mb-1"><strong>@order.TableOrCustomer</strong></MudText>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(order.Note))
+        {
+            @* La note de la commande (allergie, heure de passage…) doit atteindre la cuisine : bien visible sur la carte. *@
+            <MudAlert Severity="Severity.Warning" Dense="true" Icon="@Icons.Material.Filled.ReportProblem" Class="my-2">
+                <strong>Note :</strong> @order.Note
+            </MudAlert>
         }
 
         <ul class="my-1 pl-4">

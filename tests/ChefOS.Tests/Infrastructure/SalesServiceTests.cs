@@ -4,6 +4,7 @@ using ChefOS.Core.Sales;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace ChefOS.Tests.Infrastructure;
 
@@ -14,6 +15,7 @@ public class SalesServiceTests(PostgresFixture postgres)
     private const string WeeklyTotalMondayMessage = "Un total de semaine doit être daté du lundi";
     private const string NegativeQuantityMessage = "La quantité ne peut pas être négative";
     private const string QuantityTooHighMessage = "Quantité trop élevée";
+    private const string ModifiedElsewhereMessage = "Ces ventes ont été modifiées sur un autre appareil, rechargez";
 
     // Semaine du lundi 2 au dimanche 8 novembre 2026 (dates fixes, indépendantes de l'heure d'exécution).
     private static readonly DateTime Monday = new(2026, 11, 2, 0, 0, 0, DateTimeKind.Utc);
@@ -448,6 +450,71 @@ public class SalesServiceTests(PostgresFixture postgres)
         var remaining = Assert.Single(entries);
         Assert.Equal(burger, remaining.RecipeId);
         Assert.Equal(5m, remaining.Quantity);
+    }
+
+    /// <summary>Juste avant d'enregistrer, un autre appareil fait <paramref name="competing"/> dans une autre transaction (validée) : l'enregistrement en cours arrive trop tard.</summary>
+    private sealed class CompetingDeviceInterceptor(Func<Task> competing) : SaveChangesInterceptor
+    {
+        public int Attempts { get; private set; }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (Attempts++ == 0)
+                await competing();
+
+            return result;
+        }
+    }
+
+    private static SalesService CreateInterceptedService(
+        DbContextOptions<ChefOsDbContext> options, int restaurantId, CompetingDeviceInterceptor interceptor) =>
+        CreateService(new DbContextOptionsBuilder<ChefOsDbContext>(options).AddInterceptors(interceptor).Options, restaurantId);
+
+    [Fact]
+    public async Task SaveCells_SameCellCreatedByAnotherDevice_ReportedInFrench_AndNothingIsSaved()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var tartare = await AddRecipeAsync(options, restaurant, "Tartare");
+        var burger = await AddRecipeAsync(options, restaurant, "Burger");
+
+        // Un autre appareil a saisi la case du tartare du lundi (même plat, jour et service) entre la lecture et l'enregistrement.
+        var interceptor = new CompetingDeviceInterceptor(() => AddEntryAsync(options, restaurant, tartare, Monday, 7m));
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() =>
+            CreateInterceptedService(options, restaurant, interceptor).SaveCellsAsync([Day(tartare, Monday, 4m), Day(burger, Monday, 3m)]));
+
+        Assert.Equal(ModifiedElsewhereMessage, error.Message);
+        Assert.Equal(1, interceptor.Attempts);
+
+        // Seule la saisie de l'autre appareil existe : la nôtre (burger compris) n'a rien écrit.
+        var entry = Assert.Single(await LoadEntriesAsync(options, restaurant));
+        Assert.Equal((tartare, 7m), (entry.RecipeId, entry.Quantity));
+
+        // Rechargée, la même saisie passe.
+        await CreateService(options, restaurant).SaveCellsAsync([Day(tartare, Monday, 4m), Day(burger, Monday, 3m)]);
+        Assert.Equal([4m, 3m], (await LoadEntriesAsync(options, restaurant)).OrderBy(e => e.RecipeId).Select(e => e.Quantity));
+    }
+
+    [Fact]
+    public async Task SaveCells_EntryDeletedByAnotherDevice_ReportedInFrench()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var tartare = await AddRecipeAsync(options, restaurant, "Tartare");
+        await AddEntryAsync(options, restaurant, tartare, Monday, 5m);
+
+        // Un autre appareil efface la case pendant que celui-ci la modifie.
+        var interceptor = new CompetingDeviceInterceptor(async () =>
+        {
+            await using var db = OpenContext(options, restaurant);
+            await db.SalesEntries.ExecuteDeleteAsync();
+        });
+        var error = await Assert.ThrowsAsync<DomainValidationException>(() =>
+            CreateInterceptedService(options, restaurant, interceptor).SaveCellsAsync([Day(tartare, Monday, 9m)]));
+
+        Assert.Equal(ModifiedElsewhereMessage, error.Message);
+        Assert.Empty(await LoadEntriesAsync(options, restaurant));
     }
 
     [Fact]

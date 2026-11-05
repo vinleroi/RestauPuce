@@ -1,4 +1,6 @@
 using ChefOS.Back.Components.Pages.Stats;
+using ChefOS.Core.Sales;
+using ChefOS.Infrastructure.Services;
 
 namespace ChefOS.Tests.Back;
 
@@ -122,6 +124,12 @@ public class StatsPeriodTests
     }
 
     [Fact]
+    public void Of_BetweenCounts_HasNoRangeOfItsOwn_ItComesFromTheCounts()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => StatsPeriod.Of(StatsPreset.BetweenCounts, Day(2026, 11, 4)));
+    }
+
+    [Fact]
     public void Of_UnknownPreset_Throws()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => StatsPeriod.Of((StatsPreset)99, Day(2026, 11, 4)));
@@ -131,7 +139,7 @@ public class StatsPeriodTests
     public void Presets_ListsEveryShortcutInDisplayOrderWithCustomLast()
     {
         Assert.Equal(
-            [StatsPreset.ThisWeek, StatsPreset.LastWeek, StatsPreset.ThisMonth, StatsPreset.LastMonth, StatsPreset.Last4Weeks, StatsPreset.Custom],
+            [StatsPreset.ThisWeek, StatsPreset.LastWeek, StatsPreset.ThisMonth, StatsPreset.LastMonth, StatsPreset.Last4Weeks, StatsPreset.BetweenCounts, StatsPreset.Custom],
             StatsPeriod.Presets);
     }
 
@@ -141,6 +149,7 @@ public class StatsPeriodTests
     [InlineData(StatsPreset.ThisMonth, "Ce mois")]
     [InlineData(StatsPreset.LastMonth, "Mois dernier")]
     [InlineData(StatsPreset.Last4Weeks, "4 dernières semaines")]
+    [InlineData(StatsPreset.BetweenCounts, "Entre les deux derniers inventaires")]
     [InlineData(StatsPreset.Custom, "Personnalisée")]
     public void Label_IsInFrench(StatsPreset preset, string expected)
     {
@@ -151,6 +160,72 @@ public class StatsPeriodTests
     public void Label_UnknownPreset_Throws()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => StatsPeriod.Label((StatsPreset)99));
+    }
+
+    // ── Entre les deux derniers inventaires ──────────────────────────────────
+
+    private static StockCountSummary Count(int id, DateTime date, StockCountStatus status = StockCountStatus.Cloture) =>
+        new(id, date, status, 12, 345.67m, false);
+
+    [Fact]
+    public void BetweenLastCounts_IsFromTheSecondLastClosedCountToTheLastOne()
+    {
+        // La liste du service va du plus récent au plus ancien, mais le calcul ne doit pas en dépendre.
+        var counts = new[] { Count(1, Day(2026, 9, 30)), Count(3, Day(2026, 11, 4)), Count(2, Day(2026, 10, 7)) };
+
+        var period = StatsPeriod.BetweenLastCounts(counts);
+
+        AssertPeriod(Day(2026, 10, 7), Day(2026, 11, 4), period!.Value);
+        Assert.Equal(29, period.Value.Days);
+    }
+
+    [Fact]
+    public void BetweenLastCounts_IgnoresDrafts()
+    {
+        var counts = new[]
+        {
+            Count(5, Day(2026, 11, 5), StockCountStatus.Brouillon),    // un brouillon, plus récent : ne compte pas
+            Count(4, Day(2026, 11, 4)),
+            Count(3, Day(2026, 11, 1), StockCountStatus.Brouillon),
+            Count(2, Day(2026, 10, 7)),
+            Count(1, Day(2026, 9, 30))
+        };
+
+        AssertPeriod(Day(2026, 10, 7), Day(2026, 11, 4), StatsPeriod.BetweenLastCounts(counts)!.Value);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void BetweenLastCounts_WithFewerThanTwoClosedCounts_IsNull(int closed)
+    {
+        var counts = Enumerable.Range(1, closed).Select(i => Count(i, Day(2026, 10, i))).ToList();
+        counts.Add(Count(90, Day(2026, 11, 2), StockCountStatus.Brouillon));
+        counts.Add(Count(91, Day(2026, 11, 3), StockCountStatus.Brouillon));
+
+        Assert.Null(StatsPeriod.BetweenLastCounts(counts));
+        Assert.Null(StatsPeriod.BetweenLastCounts([]));
+    }
+
+    [Fact]
+    public void BetweenLastCounts_TwoCountsOnTheSameDay_DoNotDelimitAnInterval()
+    {
+        // Deux comptages du 4 novembre : l'intervalle va du 7 octobre au 4 novembre (la variance veut un jour de clôture après celui d'ouverture).
+        var counts = new[] { Count(1, Day(2026, 10, 7)), Count(2, Day(2026, 11, 4)), Count(3, Day(2026, 11, 4)) };
+
+        AssertPeriod(Day(2026, 10, 7), Day(2026, 11, 4), StatsPeriod.BetweenLastCounts(counts)!.Value);
+
+        // Et si tous sont du même jour, il n'y a pas de période.
+        Assert.Null(StatsPeriod.BetweenLastCounts([Count(1, Day(2026, 11, 4)), Count(2, Day(2026, 11, 4))]));
+    }
+
+    [Fact]
+    public void BetweenLastCounts_ReadsTheCountDatesAsUtcDays()
+    {
+        var late = new DateTime(2026, 11, 4, 23, 30, 0, DateTimeKind.Utc);
+        var counts = new[] { Count(1, Day(2026, 10, 7)), Count(2, late) };
+
+        AssertPeriod(Day(2026, 10, 7), Day(2026, 11, 4), StatsPeriod.BetweenLastCounts(counts)!.Value);
     }
 
     [Fact]

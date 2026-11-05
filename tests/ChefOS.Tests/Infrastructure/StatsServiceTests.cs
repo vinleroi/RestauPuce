@@ -215,6 +215,61 @@ public class StatsServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Profitability_RecipeWithoutLines_IsIncompleteNotFree()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var boeuf = await AddIngredientAsync(options, restaurant, "Boeuf", price: 0.02m);
+        var complet = await AddDishAsync(options, restaurant, "Complet", Line(boeuf, 100m));       // coût 2,00
+        var vide = await AddDishAsync(options, restaurant, "Recette vide");                        // aucune ligne : son coût est inconnu, pas nul
+        var fondVide = await AddPreparationAsync(options, restaurant, "Fond vide", 1000m, BaseUnit.Milliliter);
+        var surFondVide = await AddDishAsync(options, restaurant, "Sur fond vide",
+            Line(boeuf, 50m), new RecipeLine { SubRecipeId = fondVide, Quantity = 200m, Unit = MeasureUnit.Ml });   // une préparation sans ligne le rend incomplet aussi
+        var service = CreateService(options, restaurant);
+
+        await AddEntryAsync(options, restaurant, complet, Oct5, 1m);                               // CA 20
+        await AddEntryAsync(options, restaurant, vide, Oct5, 50m, ServicePeriod.Soir);             // CA 1 000
+        await AddEntryAsync(options, restaurant, surFondVide, Oct5, 10m, ServicePeriod.Soir);      // CA 200
+
+        var stats = await service.GetAsync(Oct5, Oct5);
+
+        var emptyDish = stats.Dishes.Single(d => d.RecipeId == vide);
+        Assert.True(emptyDish.CostIncomplete);
+        Assert.Null(emptyDish.Class);                      // hors matrice
+        Assert.Equal(0m, emptyDish.TotalCost);             // le montant reste celui des lignes chiffrées (aucune)
+        var onEmptyPreparation = stats.Dishes.Single(d => d.RecipeId == surFondVide);
+        Assert.True(onEmptyPreparation.CostIncomplete);
+        Assert.Null(onEmptyPreparation.Class);
+        Assert.Equal(10m, onEmptyPreparation.TotalCost);   // 10 × 50 g × 0,02 : la partie chiffrée
+
+        // Le plat complet reste seul dans la matrice.
+        var completeDish = stats.Dishes.Single(d => d.RecipeId == complet);
+        Assert.False(completeDish.CostIncomplete);
+        Assert.Equal(MenuClass.Etoile, completeDish.Class);
+
+        // Le total est marqué incomplet : sans cela, une recette sans ligne ferait passer sa marge pour 100 %.
+        Assert.True(stats.CostIncomplete);
+    }
+
+    [Fact]
+    public async Task Profitability_OnlyCompleteRecipes_AreNotFlagged()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var boeuf = await AddIngredientAsync(options, restaurant, "Boeuf", price: 0.02m);
+        var fond = await AddPreparationAsync(options, restaurant, "Fond", 1000m, BaseUnit.Milliliter, Line(boeuf, 500m));
+        var plat = await AddDishAsync(options, restaurant, "Plat", Line(boeuf, 100m), new RecipeLine { SubRecipeId = fond, Quantity = 100m, Unit = MeasureUnit.Ml });
+        var service = CreateService(options, restaurant);
+
+        await AddEntryAsync(options, restaurant, plat, Oct5, 4m);
+
+        var stats = await service.GetAsync(Oct5, Oct5);
+
+        Assert.False(Assert.Single(stats.Dishes).CostIncomplete);
+        Assert.False(stats.CostIncomplete);
+    }
+
+    [Fact]
     public async Task MenuEngineering_ClassesAssigned()
     {
         var options = await postgres.CreateDatabaseAsync();
@@ -647,6 +702,181 @@ public class StatsServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Variance_RecipeWithoutLines_AddsWarning_NamingTheEmptyRecipe()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var boeuf = await AddIngredientAsync(options, restaurant, "Boeuf", price: 0.02m);
+        var burger = await AddDishAsync(options, restaurant, "Burger", Line(boeuf, 100m));
+        var vide = await AddDishAsync(options, restaurant, "Recette vide");
+        var fondVide = await AddPreparationAsync(options, restaurant, "Fond vide", 1000m, BaseUnit.Milliliter);
+        var surFond = await AddDishAsync(options, restaurant, "Sur fond", Line(boeuf, 50m), new RecipeLine { SubRecipeId = fondVide, Quantity = 200m, Unit = MeasureUnit.Ml });
+        var jamaisVendue = await AddDishAsync(options, restaurant, "Jamais vendue");               // sans ligne, mais hors de l'intervalle : aucun avertissement
+        var service = CreateService(options, restaurant);
+
+        await AddCountAsync(options, restaurant, Oct1, StockCountStatus.Cloture, (boeuf, 10000m));
+        await AddCountAsync(options, restaurant, Oct31, StockCountStatus.Cloture, (boeuf, 9000m));
+        await AddEntryAsync(options, restaurant, burger, Oct12, 5m);
+        await AddEntryAsync(options, restaurant, vide, Oct12, 3m);                                  // vendue plusieurs fois : un seul avertissement
+        await AddEntryAsync(options, restaurant, vide, Oct12, 2m, ServicePeriod.Soir);
+        await AddEntryAsync(options, restaurant, surFond, Oct15, 2m);
+        await AddEntryAsync(options, restaurant, jamaisVendue, Oct1, 9m);                           // le jour de A : hors de ]A, B]
+
+        var stats = await service.GetAsync(Oct10, Oct20);
+
+        var variance = stats.Variance;
+        Assert.NotNull(variance);
+        Assert.Equal(
+            [
+                "Recette « Fond vide » sans ligne : consommation théorique inconnue",
+                "Recette « Recette vide » sans ligne : consommation théorique inconnue"
+            ],
+            variance.Warnings);
+        // Ce qui est décomposable compte quand même : burger 5 × 100 g + « Sur fond » 2 × 50 g.
+        Assert.Equal(600m, Assert.Single(variance.Rows).TheoreticalUse);
+    }
+
+    [Fact]
+    public async Task Variance_PreparationWithoutLinesLostAsWaste_AddsWarning()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var boeuf = await AddIngredientAsync(options, restaurant, "Boeuf", price: 0.02m);
+        var fondVide = await AddPreparationAsync(options, restaurant, "Fond vide", 1000m, BaseUnit.Milliliter);
+        var service = CreateService(options, restaurant);
+
+        await AddCountAsync(options, restaurant, Oct1, StockCountStatus.Cloture, (boeuf, 10000m));
+        await AddCountAsync(options, restaurant, Oct31, StockCountStatus.Cloture, (boeuf, 10000m));
+        await AddWasteAsync(options, restaurant, Oct20, null, fondVide, 200m, MeasureUnit.Ml, WasteReason.Perime);
+
+        var variance = (await service.GetAsync(Oct10, Oct20)).Variance;
+
+        Assert.NotNull(variance);
+        Assert.Equal(["Recette « Fond vide » sans ligne : consommation théorique inconnue"], variance.Warnings);
+    }
+
+    [Fact]
+    public async Task Variance_UsedButNotCountedAtBothCounts_MarksTheActualFoodCostPartial()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var boeuf = await AddIngredientAsync(options, restaurant, "Boeuf", price: 0.02m);
+        var fromage = await AddIngredientAsync(options, restaurant, "Fromage", price: 0.01m);
+        var burger = await AddDishAsync(options, restaurant, "Burger", Line(boeuf, 100m));
+        var service = CreateService(options, restaurant);
+
+        // Le fromage est acheté mais oublié à la clôture : sa consommation réelle est inconnue, le coût réel l'ignore.
+        await AddCountAsync(options, restaurant, Oct1, StockCountStatus.Cloture, (boeuf, 10000m), (fromage, 500m));
+        await AddCountAsync(options, restaurant, Oct31, StockCountStatus.Cloture, (boeuf, 9000m));
+        await AddReceiptAsync(options, restaurant, Oct10, ReceiptStatus.Applied, Item(fromage, 3m, MeasureUnit.Kg, 30m));
+        await AddEntryAsync(options, restaurant, burger, Oct12, 10m);
+
+        var stats = await service.GetAsync(Oct10, Oct20);
+
+        Assert.NotNull(stats.ActualFoodCost);
+        Assert.True(stats.ActualFoodCostPartial);
+        Assert.True(stats.Variance!.ActualFoodCostPartial);
+    }
+
+    [Fact]
+    public async Task Variance_UsedTheoreticallyButNeverCounted_MarksTheActualFoodCostPartial()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var boeuf = await AddIngredientAsync(options, restaurant, "Boeuf", price: 0.02m);
+        var ail = await AddIngredientAsync(options, restaurant, "Ail", price: 0.004m);
+        var burger = await AddDishAsync(options, restaurant, "Burger", Line(boeuf, 100m), Line(ail, 5m));    // l'ail est vendu mais jamais compté
+        var service = CreateService(options, restaurant);
+
+        await AddCountAsync(options, restaurant, Oct1, StockCountStatus.Cloture, (boeuf, 10000m));
+        await AddCountAsync(options, restaurant, Oct31, StockCountStatus.Cloture, (boeuf, 9000m));
+        await AddEntryAsync(options, restaurant, burger, Oct12, 10m);
+
+        var stats = await service.GetAsync(Oct10, Oct20);
+
+        Assert.Equal(["Ail"], stats.Variance!.NotCountedIngredients);
+        Assert.True(stats.ActualFoodCostPartial);
+    }
+
+    [Fact]
+    public async Task Variance_NotCountedButUnused_DoesNotMarkTheActualFoodCostPartial()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var boeuf = await AddIngredientAsync(options, restaurant, "Boeuf", price: 0.02m);
+        var moutarde = await AddIngredientAsync(options, restaurant, "Moutarde", price: 0.005m);
+        var burger = await AddDishAsync(options, restaurant, "Burger", Line(boeuf, 100m));
+        var service = CreateService(options, restaurant);
+
+        // La moutarde n'est comptée qu'à l'ouverture, sans achat ni consommation : elle est nommée à part, mais le coût réel n'a rien perdu.
+        await AddCountAsync(options, restaurant, Oct1, StockCountStatus.Cloture, (boeuf, 10000m), (moutarde, 200m));
+        await AddCountAsync(options, restaurant, Oct31, StockCountStatus.Cloture, (boeuf, 9000m));
+        await AddEntryAsync(options, restaurant, burger, Oct12, 10m);
+
+        var stats = await service.GetAsync(Oct10, Oct20);
+
+        Assert.Equal(["Moutarde"], stats.Variance!.NotCountedIngredients);
+        Assert.NotNull(stats.ActualFoodCost);
+        Assert.False(stats.ActualFoodCostPartial);
+        Assert.False(stats.Variance.ActualFoodCostPartial);
+    }
+
+    [Fact]
+    public async Task Variance_EverythingCountedAtBoth_OrNoWindow_IsNotPartial()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var boeuf = await AddIngredientAsync(options, restaurant, "Boeuf", price: 0.02m);
+        var burger = await AddDishAsync(options, restaurant, "Burger", Line(boeuf, 100m));
+        var service = CreateService(options, restaurant);
+
+        await AddEntryAsync(options, restaurant, burger, Oct12, 10m);
+        Assert.False((await service.GetAsync(Oct10, Oct20)).ActualFoodCostPartial);        // pas d'inventaires : pas de coût réel, rien de partiel
+
+        await AddCountAsync(options, restaurant, Oct1, StockCountStatus.Cloture, (boeuf, 10000m));
+        await AddCountAsync(options, restaurant, Oct31, StockCountStatus.Cloture, (boeuf, 9000m));
+
+        var stats = await service.GetAsync(Oct10, Oct20);
+        Assert.NotNull(stats.ActualFoodCost);
+        Assert.False(stats.ActualFoodCostPartial);
+    }
+
+    [Fact]
+    public async Task Variance_ReceiptLineWithAnUnconvertibleUnit_AddsWarning_AndIsLeftOutOfPurchases()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var boeuf = await AddIngredientAsync(options, restaurant, "Boeuf", price: 0.02m);
+        var service = CreateService(options, restaurant);
+
+        await AddCountAsync(options, restaurant, Oct1, StockCountStatus.Cloture, (boeuf, 10000m));
+        await AddCountAsync(options, restaurant, Oct31, StockCountStatus.Cloture, (boeuf, 11000m));
+
+        // Une ligne de ticket dont l'unité ne se convertit plus (l'ingrédient est en grammes) est écartée et signalée ; une ligne convertible compte ;
+        // une ligne ignorée à la validation n'est pas un achat et ne fait pas d'avertissement ; deux lignes identiques ne donnent qu'un avertissement.
+        await AddReceiptAsync(options, restaurant, Oct12, ReceiptStatus.Applied,
+            Labeled("BOEUF HACHE 1L", boeuf, 1m, MeasureUnit.L, 18m),
+            Labeled("BOEUF HACHE 1L", boeuf, 1m, MeasureUnit.L, 18m),
+            Labeled("BOEUF PIECE", boeuf, 2m, MeasureUnit.Kg, 36m),
+            Labeled("SACS POUBELLE", boeuf, 5m, MeasureUnit.L, 9m, ignored: true));
+        await AddReceiptAsync(options, restaurant, Oct10, ReceiptStatus.Applied, Labeled("BOEUF A LA PIECE", boeuf, 4m, MeasureUnit.Piece, 40m));
+        await AddReceiptAsync(options, restaurant, Oct12, ReceiptStatus.Extracted, Labeled("BROUILLON", boeuf, 1m, MeasureUnit.L, 5m));   // pas appliqué : hors achats
+
+        var stats = await service.GetAsync(Oct10, Oct20);
+
+        var variance = stats.Variance;
+        Assert.NotNull(variance);
+        Assert.Equal(
+            [
+                "Ligne de ticket « BOEUF A LA PIECE » du 10/10/2026 ignorée : unité non convertible",
+                "Ligne de ticket « BOEUF HACHE 1L » du 12/10/2026 ignorée : unité non convertible"
+            ],
+            variance.Warnings);
+        var row = Assert.Single(variance.Rows);
+        Assert.Equal(2000m, row.Purchases);                // seule la ligne en kilos compte
+    }
+
+    [Fact]
     public async Task Variance_UnconvertibleIngredientWaste_AddsWarning()
     {
         var options = await postgres.CreateDatabaseAsync();
@@ -954,6 +1184,13 @@ public class StatsServiceTests(PostgresFixture postgres)
             LineTotalExclVat = totalExclVat,
             IsIgnored = ignored
         };
+
+    private static ReceiptLine Labeled(string label, int? ingredientId, decimal quantity, MeasureUnit unit, decimal totalExclVat, bool ignored = false)
+    {
+        var line = Item(ingredientId, quantity, unit, totalExclVat, ignored);
+        line.RawLabel = label;
+        return line;
+    }
 
     /// <summary>Un ticket appliqué sans date lue : seule sa date de création (<paramref name="createdAt"/>) le situe, comme pour le prix qu'il a posé.</summary>
     private static async Task AddUndatedReceiptAsync(
