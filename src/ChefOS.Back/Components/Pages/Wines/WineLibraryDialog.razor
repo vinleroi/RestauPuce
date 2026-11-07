@@ -1,0 +1,174 @@
+@using ChefOS.Core.Common
+@using ChefOS.Core.Vitrine
+@using ChefOS.Infrastructure.Services
+
+@inject WineService WineService
+@inject ISnackbar Snackbar
+
+@* Recherche dans la bibliothèque partagée, puis millésime, producteur et prix ; se ferme avec DialogResult.Ok(id du vin ajouté). *@
+<MudDialog>
+    <DialogContent>
+        @if (_selected is null)
+        {
+            <MudGrid Spacing="2" Class="mb-2">
+                <MudItem xs="12" sm="8">
+                <MudTextField T="string" Value="_text" ValueChanged="OnTextChanged" Immediate="true" DebounceInterval="250" Label="Rechercher un vin"
+                              Placeholder="Nom, appellation, région, cépage" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                              Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                <MudSelect T="WineColor?" Value="_color" ValueChanged="OnColorChanged" Label="Couleur" Clearable="true"
+                           ToStringFunc="@(c => c is { } color ? Ui.WineColorLabel(color) : "Toutes")"
+                           Variant="Variant.Outlined" Margin="Margin.Dense">
+                    @foreach (var color in Enum.GetValues<WineColor>())
+                    {
+                        <MudSelectItem T="WineColor?" Value="@((WineColor?)color)">@Ui.WineColorLabel(color)</MudSelectItem>
+                    }
+                </MudSelect>
+                </MudItem>
+            </MudGrid>
+
+            @if (_loading)
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+            }
+            else if (_results.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true">Aucune fiche ne correspond à cette recherche.</MudAlert>
+            }
+            else
+            {
+                <MudList T="WineReference" Dense="true" Style="max-height: 360px; overflow-y: auto">
+                    @foreach (var reference in _results)
+                    {
+                        <MudListItem T="WineReference" OnClick="@(() => Select(reference))">
+                            <div class="d-flex align-center gap-2">
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@Ui.WineColorLabel(reference.Color)</MudChip>
+                                <div>
+                                    <b>@reference.Name</b>
+                                    <MudText Typo="Typo.body2" Style="color: var(--mud-palette-text-secondary)">
+                                        @string.Join(" · ", new[] { reference.Region, reference.Country }.Where(t => !string.IsNullOrWhiteSpace(t)))
+                                    </MudText>
+                                </div>
+                            </div>
+                        </MudListItem>
+                    }
+                </MudList>
+            }
+        }
+        else
+        {
+            <MudText Typo="Typo.subtitle1" Class="mb-1"><b>@_selected.Name</b></MudText>
+            <MudText Typo="Typo.body2" Class="mb-3" Style="color: var(--mud-palette-text-secondary)">
+                @Ui.WineColorLabel(_selected.Color) · @_selected.Region, @_selected.Country — la fiche est copiée sur votre carte et reste modifiable.
+            </MudText>
+            <MudGrid Spacing="3">
+                <MudItem xs="12" sm="6">
+                    <MudNumericField T="int?" @bind-Value="_vintage" Label="Millésime" Min="1900" Culture="Ui.Fr" Format="0" HideSpinButtons="true"
+                                     HelperText="Laissez vide pour un vin sans année" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudTextField T="string" @bind-Value="_producer" Label="Producteur" MaxLength="200" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudNumericField T="decimal?" @bind-Value="_priceBottle" Label="Prix de la bouteille" Min="0m" Culture="Ui.Fr" Format="N2"
+                                     HideSpinButtons="true" Adornment="Adornment.End" AdornmentText="€" Required="true" RequiredError="Le prix de la bouteille est obligatoire"
+                                     Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudNumericField T="decimal?" @bind-Value="_priceGlass" Label="Prix du verre (facultatif)" Min="0m" Culture="Ui.Fr" Format="N2"
+                                     HideSpinButtons="true" Adornment="Adornment.End" AdornmentText="€" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+            </MudGrid>
+        }
+    </DialogContent>
+    <DialogActions>
+        @if (_selected is null)
+        {
+            <MudButton OnClick="Cancel">Annuler</MudButton>
+        }
+        else
+        {
+            <MudButton OnClick="Back">Retour</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="AddAsync" Disabled="_saving">Ajouter à la carte</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    private IReadOnlyList<WineReference> _results = [];
+    private WineReference? _selected;
+    private string? _text;
+    private WineColor? _color;
+    private bool _loading = true;
+    private bool _saving;
+
+    private int? _vintage;
+    private string? _producer;
+    private decimal? _priceBottle;
+    private decimal? _priceGlass;
+
+    protected override Task OnInitializedAsync() => SearchAsync();
+
+    private Task OnTextChanged(string? text)
+    {
+        _text = text;
+        return SearchAsync();
+    }
+
+    private Task OnColorChanged(WineColor? color)
+    {
+        _color = color;
+        return SearchAsync();
+    }
+
+    private async Task SearchAsync()
+    {
+        _loading = true;
+        try
+        {
+            _results = await WineService.SearchLibraryAsync(_text, _color);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Select(WineReference reference) => _selected = reference;
+
+    private void Back() => _selected = null;
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task AddAsync()
+    {
+        if (_saving || _selected is null)
+            return;
+
+        if (_priceBottle is not { } priceBottle)
+        {
+            Snackbar.Add("Le prix de la bouteille est obligatoire", Severity.Error);
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            var wine = await WineService.AddFromLibraryAsync(_selected.Id, _vintage, _producer, priceBottle, _priceGlass);
+            MudDialog.Close(DialogResult.Ok(wine.Id));
+        }
+        catch (DomainValidationException e)
+        {
+            // La boîte reste ouverte pour corriger la saisie.
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

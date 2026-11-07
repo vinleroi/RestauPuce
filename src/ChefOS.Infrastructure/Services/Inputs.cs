@@ -404,3 +404,65 @@ public record PublicVitrine(
     IReadOnlyList<int> GalleryImageIds,
     IReadOnlyList<PublicMenuCategory> Menu,
     IReadOnlyList<PublicWine> Wines);
+
+// ── Carte des vins ───────────────────────────────────────────────────────────
+
+/// <summary>
+/// Vin de la carte à enregistrer (<paramref name="Id"/> null : création). <paramref name="DescriptionIsAiDraft"/> dit que la fiche vient de l'assistant ;
+/// seule <paramref name="ConfirmAiDraftReviewed"/> (« J'ai relu la fiche ») efface ce statut, et la publication l'exige tant qu'il dure.
+/// <paramref name="PairingRecipeIds"/> : plats du restaurant (accords).
+/// </summary>
+public record WineInput(
+    int? Id,
+    string Name,
+    string? Producer,
+    int? Vintage,
+    string? Appellation,
+    string Region,
+    string Country,
+    WineColor Color,
+    string Grapes,
+    string Robe,
+    string Nez,
+    string Bouche,
+    string Garde,
+    string ServiceTemperature,
+    string GeneralPairings,
+    string? PersonalNote,
+    decimal PriceBottle,
+    decimal? PriceGlass,
+    bool IsPublished,
+    bool DescriptionIsAiDraft,
+    bool ConfirmAiDraftReviewed,
+    IReadOnlyList<int> PairingRecipeIds);
+
+/// <summary>Un vin de la carte et les plats avec lesquels il est accordé.</summary>
+public record WineDetail(WineListItem Wine, IReadOnlyList<int> PairingRecipeIds);
+
+/// <summary>Un plat proposable en accord.</summary>
+public record WineDish(int Id, string Name);
+
+/// <summary>Un plat accordé, tel que le public le voit.</summary>
+public record PublicWinePairing(int RecipeId, string DishName);
+
+/// <summary>Fiche publique d'un vin publié.</summary>
+public record PublicWineDetail(
+    int Id,
+    string Name,
+    string? Producer,
+    int? Vintage,
+    string? Appellation,
+    string Region,
+    string Country,
+    WineColor Color,
+    string Grapes,
+    string Robe,
+    string Nez,
+    string Bouche,
+    string Garde,
+    string ServiceTemperature,
+    string GeneralPairings,
+    string? PersonalNote,
+    decimal PriceBottle,
+    decimal? PriceGlass,
+    IReadOnlyList<PublicWinePairing> Pairings);

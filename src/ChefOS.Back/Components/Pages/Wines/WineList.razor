@@ -1,0 +1,162 @@
+@page "/wines"
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Vitrine
+@using ChefOS.Infrastructure.Services
+
+@inject WineService WineService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<PageTitle>Carte des vins — ChefOS</PageTitle>
+
+<div class="d-flex align-center flex-wrap gap-2 mb-4">
+    <MudText Typo="Typo.h4" HtmlTag="h1" Class="flex-grow-1">Carte des vins</MudText>
+    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.LocalLibrary" OnClick="AddFromLibraryAsync">
+        Ajouter depuis la bibliothèque
+    </MudButton>
+    <MudButton Href="/wines/new" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add">
+        Ajouter un vin
+    </MudButton>
+</div>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_wines.Count == 0)
+{
+    <MudAlert Severity="Severity.Info">
+        Votre carte est vide. Partez de la bibliothèque (fiches prêtes à l'emploi) ou ajoutez un vin à la main, avec ou sans l'aide de l'assistant.
+    </MudAlert>
+}
+else
+{
+    @foreach (var color in Colors)
+    {
+        var group = _wines.Where(w => w.Color == color).ToList();
+        if (group.Count == 0)
+            continue;
+
+        <MudText Typo="Typo.h6" HtmlTag="h2" Class="mt-4 mb-1">@Ui.WineColorLabel(color) (@group.Count)</MudText>
+        <MudPaper Elevation="1">
+            <MudList T="WineListItem" Dense="true" Gutters="true">
+                @for (var index = 0; index < group.Count; index++)
+                {
+                    var wine = group[index];
+                    var position = index;
+                    <MudListItem T="WineListItem" Style="cursor: default">
+                        <div class="d-flex align-center flex-wrap gap-2">
+                            <div class="d-flex flex-column">
+                                <MudButton Variant="Variant.Text" Size="Size.Small" Disabled="@(position == 0 || _busy)"
+                                           OnClick="@(() => MoveAsync(wine, position - 1))" aria-label="@($"Monter {wine.Name}")"
+                                           Style="min-width: 0; padding: 0 6px">▲</MudButton>
+                                <MudButton Variant="Variant.Text" Size="Size.Small" Disabled="@(position == group.Count - 1 || _busy)"
+                                           OnClick="@(() => MoveAsync(wine, position + 1))" aria-label="@($"Descendre {wine.Name}")"
+                                           Style="min-width: 0; padding: 0 6px">▼</MudButton>
+                            </div>
+                            <div class="flex-grow-1">
+                                <MudLink Href="@($"/wines/{wine.Id}")" Underline="Underline.Hover" Color="Color.Inherit">
+                                    <b>@wine.Name</b>@(wine.Vintage is { } vintage ? $" {vintage}" : "")
+                                </MudLink>
+                                <MudText Typo="Typo.body2" Style="color: var(--mud-palette-text-secondary)">
+                                    @string.Join(" · ", new[] { wine.Producer, wine.Region }.Where(t => !string.IsNullOrWhiteSpace(t)))
+                                </MudText>
+                            </div>
+                            @if (wine.DescriptionIsAiDraft)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled">Fiche IA à relire</MudChip>
+                            }
+                            <MudChip T="string" Size="Size.Small" Color="@(wine.IsPublished ? Color.Success : Color.Default)" Variant="Variant.Outlined">
+                                @(wine.IsPublished ? "Publié" : "Brouillon")
+                            </MudChip>
+                            <MudText Typo="Typo.body2">
+                                @Ui.Money(wine.PriceBottle)@(wine.PriceGlass is { } glass ? $" · {Ui.Money(glass)} le verre" : "")
+                            </MudText>
+                            <MudSwitch T="bool" Value="wine.IsPublished" ValueChanged="@((bool value) => SetPublishedAsync(wine, value))" Color="Color.Success"
+                                       Disabled="_busy" Label="Publier" Class="ml-2" />
+                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Href="@($"/wines/{wine.Id}")" Size="Size.Small" aria-label="@($"Modifier {wine.Name}")" />
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" Disabled="_busy"
+                                           OnClick="@(() => DeleteAsync(wine))" aria-label="@($"Retirer {wine.Name}")" />
+                        </div>
+                    </MudListItem>
+                }
+            </MudList>
+        </MudPaper>
+    }
+}
+
+@code {
+    private static readonly WineColor[] Colors = Enum.GetValues<WineColor>();
+    private static readonly DialogOptions DialogOptions = new() { MaxWidth = MaxWidth.Medium, FullWidth = true };
+
+    private IReadOnlyList<WineListItem> _wines = [];
+    private bool _loading = true;
+    private bool _busy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _wines = await WineService.ListAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ReloadAsync() => _wines = await WineService.ListAsync();
+
+    private async Task AddFromLibraryAsync()
+    {
+        var dialog = await DialogService.ShowAsync<WineLibraryDialog>("Ajouter depuis la bibliothèque", DialogOptions);
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+        {
+            Snackbar.Add("Vin ajouté à la carte (brouillon) : vérifiez la fiche puis publiez-le", Severity.Success);
+            await ReloadAsync();
+        }
+    }
+
+    private async Task SetPublishedAsync(WineListItem wine, bool published) =>
+        await RunAsync(() => WineService.SetPublishedAsync(wine.Id, published));
+
+    private async Task MoveAsync(WineListItem wine, int newPosition) =>
+        await RunAsync(() => WineService.MoveAsync(wine.Id, newPosition));
+
+    private async Task DeleteAsync(WineListItem wine)
+    {
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Retirer le vin",
+            $"Retirer « {wine.Name} » de la carte ? Sa fiche et ses accords seront supprimés.",
+            yesText: "Retirer",
+            cancelText: "Annuler");
+
+        if (confirmed == true)
+            await RunAsync(() => WineService.DeleteAsync(wine.Id));
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await action();
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+
+        // Aussi après une erreur : la liste affichée a pu changer entre-temps.
+        await ReloadAsync();
+    }
+}

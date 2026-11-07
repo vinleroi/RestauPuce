@@ -1,0 +1,269 @@
+@page "/wines/new"
+@page "/wines/{Id:int}"
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Vitrine
+@using ChefOS.Infrastructure.Services
+
+@inject WineService WineService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+<PageTitle>@(_notFound ? "Vin introuvable" : _title) — ChefOS</PageTitle>
+
+<MudButton Href="/wines" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" Class="mb-2">Carte des vins</MudButton>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_notFound)
+{
+    <MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Vin introuvable</MudText>
+    <MudAlert Severity="Severity.Warning" Class="mb-4">Ce vin n'existe pas, ou il n'appartient pas au restaurant actif.</MudAlert>
+    <MudButton Href="/wines" Variant="Variant.Filled" Color="Color.Primary">Retour à la carte</MudButton>
+}
+else
+{
+    <div class="d-flex align-center flex-wrap gap-2 mb-4">
+        <MudText Typo="Typo.h4" HtmlTag="h1">@_title</MudText>
+        @if (_form.DescriptionIsAiDraft)
+        {
+            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled">Fiche IA à relire</MudChip>
+        }
+    </div>
+
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Le vin</MudText>
+        <MudGrid Spacing="3">
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Name" Label="Nom" Required="true" RequiredError="Le nom est obligatoire" MaxLength="200"
+                              Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Producer" Label="Producteur" MaxLength="200" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudNumericField T="int?" @bind-Value="_form.Vintage" Label="Millésime" Min="1900" Culture="Ui.Fr" Format="0" HideSpinButtons="true"
+                                 Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudSelect T="WineColor" @bind-Value="_form.Color" Label="Couleur" ToStringFunc="Ui.WineColorLabel" Variant="Variant.Outlined" Margin="Margin.Dense">
+                    @foreach (var color in Enum.GetValues<WineColor>())
+                    {
+                        <MudSelectItem T="WineColor" Value="@color">@Ui.WineColorLabel(color)</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Appellation" Label="Appellation" MaxLength="200" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudNumericField T="decimal?" @bind-Value="_form.PriceBottle" Label="Prix de la bouteille" Min="0m" Culture="Ui.Fr" Format="N2"
+                                 HideSpinButtons="true" Adornment="Adornment.End" AdornmentText="€" Required="true" RequiredError="Le prix de la bouteille est obligatoire"
+                                 Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudNumericField T="decimal?" @bind-Value="_form.PriceGlass" Label="Prix du verre (facultatif)" Min="0m" Culture="Ui.Fr" Format="N2"
+                                 HideSpinButtons="true" Adornment="Adornment.End" AdornmentText="€" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <div class="d-flex align-center flex-wrap gap-2 mb-2">
+            <MudText Typo="Typo.h6" HtmlTag="h2" Class="flex-grow-1">Fiche</MudText>
+            <MudButton Variant="Variant.Outlined" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.AutoAwesome"
+                       OnClick="DraftAsync" Disabled="@(_drafting || _saving || !_form.CanDraft)">
+                @(_drafting ? "Rédaction en cours…" : "Rédiger la fiche avec l'assistant")
+            </MudButton>
+        </div>
+        @if (_drafting)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Secondary" Class="mb-2" />
+        }
+        <MudText Typo="Typo.body2" Class="mb-3" Style="color: var(--mud-palette-text-secondary)">
+            L'assistant rédige à partir du nom, du millésime, du producteur et de l'appellation, et propose des accords avec vos plats publiés.
+            Les champs de la fiche déjà remplis sont remplacés ; relisez le résultat avant de publier.
+        </MudText>
+        <MudGrid Spacing="3">
+            <MudItem xs="12" md="4">
+                <MudTextField T="string" @bind-Value="_form.Region" Label="Région" MaxLength="100" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudTextField T="string" @bind-Value="_form.Country" Label="Pays" MaxLength="100" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudTextField T="string" @bind-Value="_form.ServiceTemperature" Label="Température de service" MaxLength="100" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_form.Grapes" Label="Cépages" MaxLength="300" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Robe" Label="Robe" Lines="3" Sizing="InputSizing.Auto" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Nez" Label="Nez" Lines="3" Sizing="InputSizing.Auto" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Bouche" Label="Bouche" Lines="3" Sizing="InputSizing.Auto" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_form.Garde" Label="Garde" Lines="3" Sizing="InputSizing.Auto" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_form.GeneralPairings" Label="Accords en général" Lines="3" Sizing="InputSizing.Auto" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Accords avec vos plats</MudText>
+        @if (_dishes.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">
+                Aucun plat publié : cochez « Afficher sur la vitrine » sur une recette de type plat pour pouvoir l'accorder.
+            </MudAlert>
+        }
+        else
+        {
+            <MudSelect T="int" MultiSelection="true" SelectedValues="_form.PairingRecipeIds" SelectedValuesChanged="OnPairingsChanged" Label="Plats accordés"
+                       ToStringFunc="DishName" MultiSelectionTextFunc="PairingsText" Variant="Variant.Outlined" Margin="Margin.Dense">
+                @foreach (var dish in _dishes)
+                {
+                    <MudSelectItem T="int" Value="@dish.Id">@dish.Name</MudSelectItem>
+                }
+            </MudSelect>
+        }
+    </MudPaper>
+
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Note personnelle</MudText>
+        <MudTextField T="string" @bind-Value="_form.PersonalNote" Label="Votre mot sur ce vin" Lines="3" Sizing="InputSizing.Auto"
+                      HelperText="Affiché avec la fiche : une anecdote, une suggestion du chef…" Variant="Variant.Outlined" Margin="Margin.Dense" />
+    </MudPaper>
+
+    <MudPaper Elevation="1" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Publication</MudText>
+        @if (_form.DescriptionIsAiDraft)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">
+                Cette fiche a été rédigée par l'assistant : relisez-la et corrigez-la au besoin. Elle ne peut pas être publiée avant votre confirmation.
+            </MudAlert>
+            <MudCheckBox T="bool" @bind-Value="_form.ConfirmAiDraftReviewed" Color="Color.Primary" Label="J'ai relu la fiche" />
+        }
+        <MudSwitch T="bool" @bind-Value="_form.IsPublished" Color="Color.Success" Label="Vin publié sur la vitrine" />
+    </MudPaper>
+
+    <div class="d-flex gap-2 mb-6">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAsync" Disabled="@(_saving || _drafting)">Enregistrer</MudButton>
+        <MudButton Href="/wines" Variant="Variant.Text">Annuler</MudButton>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public int? Id { get; set; }
+
+    private WineForm _form = new();
+    private IReadOnlyList<WineDish> _dishes = [];
+    private string _title = "Nouveau vin";
+    private bool _loading = true;
+    private bool _notFound;
+    private bool _saving;
+    private bool _drafting;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        _notFound = false;
+        try
+        {
+            if (Id is { } id)
+            {
+                if (await WineService.GetAsync(id) is not { } detail)
+                {
+                    _notFound = true;
+                    return;
+                }
+
+                _form = WineForm.From(detail.Wine, detail.PairingRecipeIds);
+                _title = detail.Wine.Name;
+                _dishes = await WineService.ListDishesAsync(detail.PairingRecipeIds);
+            }
+            else
+            {
+                _form = new WineForm();
+                _title = "Nouveau vin";
+                _dishes = await WineService.ListDishesAsync();
+            }
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string DishName(int id) => _dishes.FirstOrDefault(d => d.Id == id)?.Name ?? "";
+
+    private string PairingsText(IReadOnlyList<string> names) => string.Join(", ", names.Where(n => !string.IsNullOrEmpty(n)));
+
+    private void OnPairingsChanged(IEnumerable<int> selected) => _form.PairingRecipeIds = [.. selected];
+
+    private async Task DraftAsync()
+    {
+        if (_drafting || !_form.CanDraft)
+            return;
+
+        _drafting = true;
+        try
+        {
+            var draft = await WineService.DraftDescriptionAsync(_form.Name, _form.Vintage, _form.Producer, _form.Appellation);
+            _form.ApplyDraft(draft);
+            Snackbar.Add("Fiche rédigée : relisez-la avant de publier", Severity.Info);
+        }
+        catch (Exception e) when (e is DomainValidationException or InvalidOperationException)
+        {
+            // Les messages de l'assistant sont déjà rédigés en français pour le chef.
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _drafting = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving)
+            return;
+
+        _saving = true;
+        try
+        {
+            var saved = await WineService.SaveAsync(_form.ToInput());
+            Snackbar.Add("Vin enregistré", Severity.Success);
+
+            if (Id is null)
+            {
+                // Le vin existe : on bascule sur son adresse, et la fiche se recharge depuis la base.
+                Navigation.NavigateTo($"/wines/{saved.Id}");
+                return;
+            }
+
+            if (await WineService.GetAsync(saved.Id) is { } detail)
+            {
+                _form = WineForm.From(detail.Wine, detail.PairingRecipeIds);
+                _title = detail.Wine.Name;
+            }
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

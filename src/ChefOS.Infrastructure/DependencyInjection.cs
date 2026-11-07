@@ -85,14 +85,54 @@ public static class DependencyInjection
             return services;
         }
 
-        var key = apiKey.Trim();
-        // Enregistré par fabrique : le conteneur possède le client et le libère à l'arrêt.
-        // Un seul nouvel essai (2 par défaut) : le SDK relance aussi après un délai dépassé, et chaque essai est facturé. Délai explicite de 5 minutes
-        // par essai (sans lui, celui du SDK se calcule sur la taille de la réponse permise : 480 s pour 16 000 jetons) ; ClaudeReceiptReader traduit
-        // le dépassement en message français.
-        services.AddSingleton(_ => new AnthropicClient { ApiKey = key, MaxRetries = 1, Timeout = TimeSpan.FromMinutes(5) });
+        AddAnthropicClient(services, apiKey.Trim());
         services.AddSingleton<IReceiptReader, ClaudeReceiptReader>();
 
         return services;
     }
+
+    /// <summary>
+    /// Enregistre <see cref="WineService"/> et le <see cref="IWineDescriber"/> choisi par la section <c>Wines</c> (voir <see cref="WineDescriberOptions"/>) :
+    /// <see cref="DemoWineDescriber"/> par défaut ; avec <c>Describer = Claude</c>, <see cref="ClaudeWineDescriber"/> (clé <c>Anthropic:ApiKey</c> ou, à défaut,
+    /// <c>ANTHROPIC_API_KEY</c>), ou un describer qui échoue avec un message explicite quand il n'y a pas de clé. Le client Anthropic est partagé avec le lecteur
+    /// de tickets (un seul enregistrement) ; le describer en prend une copie au délai de 2 minutes. Choix lu à l'enregistrement : redémarrage pour le changer.
+    /// </summary>
+    public static IServiceCollection AddChefOsWineDescriber(this IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(WineDescriberOptions.SectionName);
+        services.Configure<WineDescriberOptions>(section);
+        services.AddScoped<WineService>();
+
+        var options = section.Get<WineDescriberOptions>() ?? new WineDescriberOptions();
+        if (!string.Equals(options.Describer?.Trim(), WineDescriberOptions.ClaudeDescriber, StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton<IWineDescriber, DemoWineDescriber>();
+            return services;
+        }
+
+        var apiKey = configuration["Anthropic:ApiKey"];
+        if (string.IsNullOrWhiteSpace(apiKey))
+            apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            services.AddSingleton<IWineDescriber, MissingKeyWineDescriber>();
+            return services;
+        }
+
+        AddAnthropicClient(services, apiKey.Trim());
+        services.AddSingleton<IWineDescriber>(provider =>
+            new ClaudeWineDescriber(ClaudeWineDescriber.Configure(provider.GetRequiredService<AnthropicClient>())));
+
+        return services;
+    }
+
+    /// <summary>
+    /// Le client Anthropic partagé par les lecteurs et describers IA. Enregistré par fabrique (le conteneur le libère à l'arrêt), une seule fois : le premier
+    /// enregistrement gagne. Un seul nouvel essai (2 par défaut) : le SDK relance aussi après un délai dépassé, et chaque essai est facturé. Délai explicite de
+    /// 5 minutes par essai (sans lui, celui du SDK se calcule sur la taille de la réponse permise : 480 s pour 16 000 jetons) ; chaque consommateur traduit
+    /// le dépassement en message français.
+    /// </summary>
+    private static void AddAnthropicClient(IServiceCollection services, string key) =>
+        services.TryAddSingleton(_ => new AnthropicClient { ApiKey = key, MaxRetries = 1, Timeout = TimeSpan.FromMinutes(5) });
 }

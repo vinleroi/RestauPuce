@@ -4,6 +4,7 @@ using ChefOS.Core.Ingredients;
 using ChefOS.Core.Receipts;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
+using ChefOS.Core.Vitrine;
 
 namespace ChefOS.Tests.Back;
 
@@ -403,6 +404,15 @@ public class UiTests
     [InlineData(ServicePeriod.Soir, "Soir")]
     public void ServiceLabel_IsInFrench(ServicePeriod service, string expected) =>
         Assert.Equal(expected, Ui.ServiceLabel(service));
+
+    [Theory]
+    [InlineData(WineColor.Rouge, "Rouge")]
+    [InlineData(WineColor.Blanc, "Blanc")]
+    [InlineData(WineColor.Rose, "Rosé")]
+    [InlineData(WineColor.Effervescent, "Effervescent")]
+    [InlineData(WineColor.Doux, "Doux")]
+    public void WineColorLabel_IsInFrench(WineColor color, string expected) =>
+        Assert.Equal(expected, Ui.WineColorLabel(color));
 
     private static decimal Invariant(string value) => decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
 }

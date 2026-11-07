@@ -4,6 +4,7 @@ using ChefOS.Core.Ingredients;
 using ChefOS.Core.Receipts;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
+using ChefOS.Core.Vitrine;
 
 namespace ChefOS.Back.Components.Shared;
 
@@ -326,6 +327,16 @@ public static class Ui
         ServicePeriod.Midi => "Midi",
         ServicePeriod.Soir => "Soir",
         _ => throw new ArgumentOutOfRangeException(nameof(service), service, null)
+    };
+
+    public static string WineColorLabel(WineColor color) => color switch
+    {
+        WineColor.Rouge => "Rouge",
+        WineColor.Blanc => "Blanc",
+        WineColor.Rose => "Rosé",
+        WineColor.Effervescent => "Effervescent",
+        WineColor.Doux => "Doux",
+        _ => throw new ArgumentOutOfRangeException(nameof(color), color, null)
     };
 
     /// <summary>Les 14 allergènes réglementaires de l'UE, un par valeur de l'énumération (hors <c>None</c>).</summary>
