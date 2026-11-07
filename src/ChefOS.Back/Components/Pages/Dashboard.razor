@@ -11,6 +11,7 @@
 @inject ReservationService ReservationService
 @inject VitrineService VitrineService
 @inject TimeProvider Clock
+@inject ILogger<Dashboard> Logger
 @inject ITenantContext Tenant
 
 <PageTitle>Tableau de bord — ChefOS</PageTitle>
@@ -143,7 +144,19 @@ else if (_summary is not null)
             _threshold = restaurant?.FoodCostAlertThreshold ?? Defaults.FoodCostAlertThreshold;
 
             if (restaurant is not null)
-                await LoadReservationsAsync(restaurant.TimeZoneId);
+            {
+                // Le bloc des réservations est accessoire : s'il échoue, il disparaît sans emporter le tableau de bord.
+                try
+                {
+                    await LoadReservationsAsync(restaurant.TimeZoneId);
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    Logger.LogWarning(e, "Réservations du jour indisponibles sur le tableau de bord");
+                    _reservations = null;
+                    _nextGroup = null;
+                }
+            }
         }
         finally
         {
@@ -152,7 +165,7 @@ else if (_summary is not null)
     }
 
     // Les couverts du jour par service et le prochain grand groupe, calculés par la même vue que l'écran des réservations.
-    // Un restaurant sans vitrine n'a pas de service : le bloc n'apparaît pas (et aucun profil n'est créé ici).
+    // Un restaurant sans vitrine n'a pas de service : le bloc n'apparaît pas.
     private async Task LoadReservationsAsync(string timeZoneId)
     {
         var now = Clock.GetUtcNow().UtcDateTime;
@@ -160,9 +173,10 @@ else if (_summary is not null)
         if (services.Count == 0)
             return;
 
-        var profile = await VitrineService.GetOrCreateProfileAsync();
-        _reservations = ReservationDayView.From(services, now, profile.FreeCancellationHours);
-        _nextGroup = _reservations.NextGroup(profile.GroupThreshold);
+        var profile = await VitrineService.FindProfileAsync() ?? new VitrineProfile();
+        var view = ReservationDayView.From(services, now, profile.FreeCancellationHours);
+        _nextGroup = view.NextGroup(profile.GroupThreshold);
+        _reservations = view;
     }
 
     private static string WeekCaption(SevenDayFigures week) =>

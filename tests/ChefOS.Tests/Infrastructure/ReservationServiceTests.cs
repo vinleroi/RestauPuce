@@ -13,7 +13,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
 {
     private const string FullMessage = "Ce créneau vient d'être complété, choisissez-en un autre";
 
-    private static async Task<DomainValidationException> RefusedAsync(Task task) => await Assert.ThrowsAsync<DomainValidationException>(() => task);
+    private static async Task<DomainValidationException> RefusedAsync(Task task) => await Assert.ThrowsAnyAsync<DomainValidationException>(() => task);
 
     // ── Création ─────────────────────────────────────────────────────────────
 
@@ -540,6 +540,8 @@ public class ReservationServiceTests(PostgresFixture postgres)
         var refused = await RefusedAsync(h.Reservations.CreateManualAsync(Request(4, name: "Téléphone", email: "", phone: ""), force: false));
         Assert.Contains("Capacité dépassée", refused.Message);
         Assert.Contains("2 couvert(s) restant(s)", refused.Message);
+        var confirmation = Assert.IsType<ConfirmationRequiredException>(refused);
+        Assert.Equal("Capacité dépassée : 2 couvert(s) restant(s) pour 4 demandé(s)", confirmation.Prompt);
 
         var ok = await h.Reservations.CreateManualAsync(Request(2, name: "Dans les clous", email: "", phone: ""), force: false);
         Assert.Null(ok.Warning);
@@ -566,7 +568,9 @@ public class ReservationServiceTests(PostgresFixture postgres)
 
         Assert.Equal("Le nom est obligatoire", (await RefusedAsync(h.Reservations.CreateManualAsync(Request(name: " "), false))).Message);
         Assert.Equal("Ce créneau n'existe pas", (await RefusedAsync(h.Reservations.CreateManualAsync(Request(time: new TimeOnly(15, 0)), true))).Message);
-        await RefusedAsync(h.Reservations.CreateManualAsync(Request(date: new DateOnly(2026, 11, 13)), false));
+        var closed = await RefusedAsync(h.Reservations.CreateManualAsync(Request(date: new DateOnly(2026, 11, 13)), false));
+        Assert.Equal("Le restaurant est fermé ce jour-là", Assert.IsType<ConfirmationRequiredException>(closed).Prompt);
+        Assert.IsNotType<ConfirmationRequiredException>(await RefusedAsync(h.Reservations.CreateManualAsync(Request(name: " "), false)));
         var forced = await h.Reservations.CreateManualAsync(Request(date: new DateOnly(2026, 11, 13)), true);
         Assert.Equal("Le restaurant est fermé ce jour-là", forced.Warning);
     }

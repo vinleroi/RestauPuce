@@ -48,6 +48,14 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory)
         return await RequireProfileAsync(db, track: false);
     }
 
+    /// <summary>Profil du restaurant courant sans le créer : null tant que le chef n'a rien réglé.</summary>
+    public async Task<VitrineProfile?> FindProfileAsync()
+    {
+        await using var db = await factory.CreateDbContextAsync();
+
+        return await db.VitrineProfiles.AsNoTracking().FirstOrDefaultAsync();
+    }
+
     /// <summary>Enregistre les réglages validés ; le fuseau horaire est porté par le restaurant.</summary>
     public async Task SaveProfileAsync(VitrineProfileInput input)
     {

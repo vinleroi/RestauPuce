@@ -17,6 +17,7 @@
 @inject TimeProvider Clock
 @inject IDialogService DialogService
 @inject ISnackbar Snackbar
+@inject ILogger<ReservationDay> Logger
 
 <PageTitle>Réservations — ChefOS</PageTitle>
 
@@ -37,7 +38,7 @@
     @_day.ToString("dddd d MMMM yyyy", Ui.Fr)
     @if (_refreshedAt is { } refreshedAt)
     {
-        <text> · actualisé à @refreshedAt.ToLocalTime().ToString("HH:mm:ss", Ui.Fr) (automatiquement toutes les 60 secondes)</text>
+        <text> · actualisé à @refreshedAt.ToString("HH:mm:ss", Ui.Fr) (automatiquement toutes les 60 secondes)</text>
     }
 </MudText>
 
@@ -81,6 +82,9 @@ else
 }
 
 @code {
+    private const string LoadFailedMessage = "Impossible de charger les réservations";
+    private const string FollowUpMessage = "Action effectuée, rechargez pour voir le détail";
+
     private const string Muted = "color: var(--mud-palette-text-secondary)";
 
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(60);
@@ -93,7 +97,7 @@ else
     private DateOnly _day;
     private string _timeZoneId = "Europe/Brussels";
     private int _freeCancellationHours = 24;
-    private DateTime? _refreshedAt;
+    private TimeOnly? _refreshedAt;
     private bool _loading = true;
     private bool _busy;
     private bool _dialogOpen;
@@ -111,8 +115,14 @@ else
             var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;
             _timeZoneId = restaurant?.TimeZoneId ?? _timeZoneId;
             _day = RestaurantClock.Today(Clock.GetUtcNow().UtcDateTime, _timeZoneId);
-            _freeCancellationHours = (await VitrineService.GetOrCreateProfileAsync()).FreeCancellationHours;
+            // Ouvrir l'écran ne crée pas de profil de vitrine : sans réglages, les valeurs par défaut s'appliquent.
+            _freeCancellationHours = (await VitrineService.FindProfileAsync())?.FreeCancellationHours ?? new VitrineProfile().FreeCancellationHours;
             await LoadAsync();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogError(e, "Chargement des réservations impossible");
+            Snackbar.Add(LoadFailedMessage, Severity.Error);
         }
         finally
         {
@@ -144,7 +154,7 @@ else
 
             _services = services;
             _view = ReservationDayView.From(services, Clock.GetUtcNow().UtcDateTime, _freeCancellationHours);
-            _refreshedAt = DateTime.UtcNow;
+            _refreshedAt = RestaurantClock.ToLocal(Clock.GetUtcNow().UtcDateTime, _timeZoneId).Time;
         }
         finally
         {
@@ -185,7 +195,15 @@ else
             return;
 
         _day = day;
-        await LoadAsync();
+        try
+        {
+            await LoadAsync();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogError(e, "Chargement des réservations impossible");
+            Snackbar.Add(LoadFailedMessage, Severity.Error);
+        }
     }
 
     // Actualisation automatique, tant que la page est ouverte. Elle passe son tour pendant une action ou une boîte de dialogue :
@@ -268,35 +286,63 @@ else
             return;
 
         _busy = true;
+        var seated = false;
         try
         {
             await ReservationService.SeatAsync(card.Id, card.Status);
-            await AnnounceOrderAsync(card);
+            seated = true;
         }
         catch (DomainValidationException e)
         {
             Snackbar.Add(e.Message, Severity.Error);
         }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            ReportUnexpected(e, "Installation impossible");
+        }
         finally
         {
             await ReloadAfterActionAsync();
         }
+
+        if (seated)
+            await AnnounceSeatedAsync(card);
     }
 
-    private async Task AnnounceOrderAsync(ReservationCardView card)
+    // Après l'installation : l'écran vient d'être relu, la réservation porte l'identifiant de la commande de cuisine. Un échec ici ne doit pas
+    // faire tomber la page : l'action a déjà abouti.
+    private async Task AnnounceSeatedAsync(ReservationCardView card)
     {
-        // La commande est créée avec l'installation : on relit la réservation pour connaître son numéro.
-        var services = await ReservationService.ListForDayAsync(_day);
-        var orderId = services.SelectMany(s => s.Reservations).FirstOrDefault(r => r.Id == card.Id)?.OrderId;
-        var order = orderId is { } id ? await OrderService.GetAsync(id) : null;
-        if (order is null)
+        try
         {
-            Snackbar.Add($"{card.Name} installé(s) — pas de pré-commande pour la cuisine", Severity.Success);
-            return;
-        }
+            var orderId = _view?.Services.SelectMany(s => s.Cards).FirstOrDefault(c => c.Id == card.Id)?.Detail.OrderId;
+            if (orderId is null)
+            {
+                Snackbar.Add($"{card.Name} installé(s) — pas de pré-commande pour la cuisine", Severity.Success);
+                return;
+            }
 
-        RenderFragment message = @<span>Commande n° @order.Number envoyée en cuisine · <MudLink Href="/orders">Voir les commandes</MudLink></span>;
-        Snackbar.Add(message, Severity.Success);
+            var order = await OrderService.GetAsync(orderId.Value);
+            if (order is null)
+            {
+                Snackbar.Add(FollowUpMessage, Severity.Info);
+                return;
+            }
+
+            RenderFragment message = @<span>Commande n° @order.Number envoyée en cuisine · <MudLink Href="/orders">Voir les commandes</MudLink></span>;
+            Snackbar.Add(message, Severity.Success);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogError(e, "Annonce de la commande impossible");
+            Snackbar.Add(FollowUpMessage, Severity.Info);
+        }
+    }
+
+    private void ReportUnexpected(Exception e, string context)
+    {
+        Logger.LogError(e, "{Context}", context);
+        Snackbar.Add($"{context} : réessayez dans un instant", Severity.Error);
     }
 
     private async Task NoShowAsync(ReservationCardView card)
@@ -330,6 +376,10 @@ else
         {
             Snackbar.Add(e.Message, Severity.Error);
         }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            ReportUnexpected(e, "Action impossible");
+        }
         finally
         {
             await ReloadAfterActionAsync();
@@ -359,30 +409,34 @@ else
 
         var refund = result.Data is true;
         _busy = true;
+        var cancelled = false;
         try
         {
             await ReservationService.CancelByRestaurantAsync(card.Id, refund);
+            cancelled = true;
             Snackbar.Add($"Réservation de {card.Name} annulée", Severity.Success);
-            await WarnIfRefundPendingAsync(card, refund);
         }
         catch (DomainValidationException e)
         {
             Snackbar.Add(e.Message, Severity.Error);
         }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            ReportUnexpected(e, "Annulation impossible");
+        }
         finally
         {
             await ReloadAfterActionAsync();
         }
+
+        if (cancelled && refund)
+            WarnIfRefundPending(card);
     }
 
-    // Un remboursement refusé par la passerelle laisse le paiement « À rembourser » : le bouton « Rembourser » le relance.
-    private async Task WarnIfRefundPendingAsync(ReservationCardView card, bool refund)
+    // Un remboursement refusé par la passerelle laisse le paiement « À rembourser » : l'écran vient d'être relu, le bouton « Rembourser » le relance.
+    private void WarnIfRefundPending(ReservationCardView card)
     {
-        if (!refund)
-            return;
-
-        var services = await ReservationService.ListForDayAsync(_day);
-        var pending = services.SelectMany(s => s.Reservations).FirstOrDefault(r => r.Id == card.Id)?.Payments.Any(p => p.Status == PaymentStatus.RefundPending) == true;
+        var pending = _view?.Services.SelectMany(s => s.Cards).FirstOrDefault(c => c.Id == card.Id)?.Detail.Payments.Any(p => p.Status == PaymentStatus.RefundPending) == true;
         if (pending)
             Snackbar.Add("Le remboursement n'a pas pu être effectué : relancez-le avec « Rembourser »", Severity.Warning);
     }

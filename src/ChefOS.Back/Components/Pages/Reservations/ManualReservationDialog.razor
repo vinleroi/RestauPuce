@@ -213,10 +213,10 @@
             {
                 result = await ReservationService.CreateManualAsync(request, force: false);
             }
-            catch (DomainValidationException e) when (e.Message.Contains("confirmez", StringComparison.Ordinal))
+            catch (ConfirmationRequiredException e)
             {
-                // Le service demande une confirmation (capacité dépassée, jour de fermeture) : on la demande au chef, puis on force.
-                var confirmed = await DialogService.ShowMessageBoxAsync("Réserver quand même ?", e.Message.Replace(" (confirmez pour forcer)", "").Replace(" (confirmez pour réserver quand même)", ""),
+                // Le service demande une confirmation (ConfirmationRequiredException : capacité dépassée, jour de fermeture) : on la demande au chef, puis on force.
+                var confirmed = await DialogService.ShowMessageBoxAsync("Réserver quand même ?", e.Prompt,
                     yesText: "Réserver quand même", cancelText: "Retour");
                 if (confirmed != true)
                     return;

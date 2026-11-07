@@ -25,6 +25,15 @@ public record ReservationStart(string Token, string? CheckoutUrl, decimal Amount
 
 public record ManualReservationResult(int ReservationId, string? Warning);
 
+/// <summary>
+/// Une réservation manuelle qui dépasse la capacité (ou tombe un jour de fermeture) demande une confirmation : <see cref="Prompt"/> est la question à poser au chef,
+/// et la même demande avec <c>force</c> l'enregistre. Reste une <see cref="DomainValidationException"/> pour qui n'a pas de boîte de confirmation.
+/// </summary>
+public sealed class ConfirmationRequiredException(string prompt, string message) : DomainValidationException(message)
+{
+    public string Prompt { get; } = prompt;
+}
+
 public record PublicReservation(
     string Token, ReservationStatus Status, DateTime StartsAtUtc, DateOnly LocalDate, TimeOnly LocalTime, string ServiceName,
     int PartySize, string CustomerName, string? Note, decimal AmountDue, decimal PreorderTotalInclVat,
@@ -487,7 +496,7 @@ public partial class ReservationService(
         if (closed)
         {
             if (!force)
-                throw new DomainValidationException($"{ClosedDayMessage} (confirmez pour réserver quand même)");
+                throw new ConfirmationRequiredException(ClosedDayMessage, $"{ClosedDayMessage} (confirmez pour réserver quand même)");
             warnings.Add(ClosedDayMessage);
         }
 
@@ -508,7 +517,7 @@ public partial class ReservationService(
         {
             var message = $"Capacité dépassée : {Math.Max(remaining, 0)} couvert(s) restant(s) pour {request.PartySize} demandé(s)";
             if (!force)
-                throw new DomainValidationException($"{message} (confirmez pour forcer)");
+                throw new ConfirmationRequiredException(message, $"{message} (confirmez pour forcer)");
             warnings.Add(message);
         }
 
