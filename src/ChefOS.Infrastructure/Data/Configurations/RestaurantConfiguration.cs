@@ -13,5 +13,6 @@ internal sealed class RestaurantConfiguration : IEntityTypeConfiguration<Restaur
         builder.Property(r => r.DefaultFoodVatRate).HasPrecision(5, 4);
         builder.Property(r => r.DefaultDrinkVatRate).HasPrecision(5, 4);
         builder.Property(r => r.FoodCostAlertThreshold).HasPrecision(5, 4);
+        builder.Property(r => r.TimeZoneId).HasMaxLength(64).HasDefaultValue("Europe/Brussels");
     }
 }

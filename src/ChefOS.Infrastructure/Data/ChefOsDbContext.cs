@@ -3,6 +3,7 @@ using ChefOS.Core.Receipts;
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
 using ChefOS.Core.Sales;
+using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -29,6 +30,18 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
     public DbSet<WasteEntry> WasteEntries => Set<WasteEntry>();
     public DbSet<StockCount> StockCounts => Set<StockCount>();
     public DbSet<StockCountLine> StockCountLines => Set<StockCountLine>();
+    public DbSet<VitrineProfile> VitrineProfiles => Set<VitrineProfile>();
+    public DbSet<VitrineImage> VitrineImages => Set<VitrineImage>();
+    public DbSet<ServiceSchedule> ServiceSchedules => Set<ServiceSchedule>();
+    public DbSet<ClosureDay> ClosureDays => Set<ClosureDay>();
+    public DbSet<Reservation> Reservations => Set<Reservation>();
+    public DbSet<ReservationGuest> ReservationGuests => Set<ReservationGuest>();
+    public DbSet<ReservationGuestDish> ReservationGuestDishes => Set<ReservationGuestDish>();
+    public DbSet<Payment> Payments => Set<Payment>();
+    /// <summary>Bibliothèque de vins partagée entre restaurants : volontairement sans filtre de restaurant.</summary>
+    public DbSet<WineReference> WineReferences => Set<WineReference>();
+    public DbSet<WineListItem> WineListItems => Set<WineListItem>();
+    public DbSet<WineListItemPairing> WineListItemPairings => Set<WineListItemPairing>();
 
     // Propriété d'instance : EF la réévalue à chaque requête, donc chaque contexte filtre sur son propre restaurant.
     private int? CurrentRestaurantId => tenant.CurrentRestaurantId;
@@ -54,6 +67,17 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
         builder.Entity<WasteEntry>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
         builder.Entity<StockCount>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
         builder.Entity<StockCountLine>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<VitrineProfile>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<VitrineImage>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<ServiceSchedule>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<ClosureDay>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<Reservation>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<ReservationGuest>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<ReservationGuestDish>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<Payment>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<WineListItem>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        builder.Entity<WineListItemPairing>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
+        // WineReference : bibliothèque partagée, pas de RestaurantId, donc pas de filtre.
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

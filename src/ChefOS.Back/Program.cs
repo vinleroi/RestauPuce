@@ -7,6 +7,7 @@ using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Identity;
 using ChefOS.Infrastructure.Seeding;
+using ChefOS.Infrastructure.Wines;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Localization;
@@ -104,5 +105,20 @@ app.MapRazorComponents<App>()
 app.MapAdditionalIdentityEndpoints();
 app.MapActiveRestaurantEndpoint();
 app.MapReceiptFileEndpoint();
+
+// Bibliothèque de vins partagée : upsert idempotent à chaque démarrage, quel que soit l'environnement.
+// Une base pas encore migrée ne doit pas empêcher l'hôte de démarrer : l'échec est journalisé.
+{
+    await using var wineScope = app.Services.CreateAsyncScope();
+    try
+    {
+        await wineScope.ServiceProvider.GetRequiredService<WineLibrarySeeder>().SeedAsync();
+    }
+    catch (Exception ex)
+    {
+        wineScope.ServiceProvider.GetRequiredService<ILogger<WineLibrarySeeder>>()
+            .LogError(ex, "Bibliothèque de vins non chargée (base absente ou non migrée ?).");
+    }
+}
 
 app.Run();

@@ -4,9 +4,11 @@ using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Receipts;
 using ChefOS.Infrastructure.Seeding;
 using ChefOS.Infrastructure.Services;
+using ChefOS.Infrastructure.Wines;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace ChefOS.Infrastructure;
 
@@ -20,6 +22,9 @@ public static class DependencyInjection
     public static IServiceCollection AddChefOsInfrastructure(this IServiceCollection services, string connectionString)
     {
         services.AddDbContextFactory<ChefOsDbContext>(options => options.UseNpgsql(connectionString), ServiceLifetime.Scoped);
+
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddScoped<WineLibrarySeeder>();
 
         services.AddScoped<RestaurantService>();
         services.AddScoped<IngredientService>();

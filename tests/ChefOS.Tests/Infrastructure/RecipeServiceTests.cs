@@ -4,6 +4,7 @@ using ChefOS.Core.Ingredients;
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
+using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
@@ -21,6 +22,7 @@ public class RecipeServiceTests(PostgresFixture postgres)
     private const string LineSourceMessage = "Chaque ligne doit contenir un ingrédient ou une préparation";
     private const string QuantityMessage = "La quantité doit être supérieure à 0";
     private const string DishInOrdersMessage = "Ce plat figure dans des commandes : archivez-le";
+    private const string InReservationsMessage = "Cette recette figure dans des réservations : archivez-la";
     private const string InSalesOrWasteMessage = "Cette recette figure dans des ventes ou des pertes : archivez-la";
 
     private static RecipeService CreateService(DbContextOptions<ChefOsDbContext> options, int restaurantId) =>
@@ -613,6 +615,41 @@ public class RecipeServiceTests(PostgresFixture postgres)
         // Une fois la sauce supprimée, le fond n'est plus utilisé par une préparation : il est supprimable.
         Assert.True((await service.DeleteAsync(fond.Id)).Deleted);
         Assert.Equal(1, await db.RecipeLines.CountAsync());
+    }
+
+    [Fact]
+    public async Task DeleteRecipeInPreorders_Refused()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var os = await AddIngredientAsync(options, restaurant, "Os de veau", 0.004m);
+        var dish = await service.SaveAsync(Dish("Carbonnade", [Grams(os, 100m)]));
+        await using (var db = OpenContext(options, restaurant))
+        {
+            var reservation = new Reservation
+            {
+                PublicToken = Guid.NewGuid().ToString("N"),
+                StartsAtUtc = new DateTime(2026, 11, 20, 18, 0, 0, DateTimeKind.Utc),
+                ServiceName = "Dîner",
+                PartySize = 2,
+                CustomerName = "Claire Martin",
+                CustomerEmail = "claire@example.org",
+                CustomerPhone = "+32470000000",
+                Status = ReservationStatus.Confirmed,
+                CreatedAt = new DateTime(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc)
+            };
+            var guest = new ReservationGuest { Position = 1 };
+            guest.Dishes.Add(new ReservationGuestDish { RecipeId = dish.Id, Quantity = 1, UnitPriceInclVat = 22.40m, VatRate = 0.12m });
+            reservation.Guests.Add(guest);
+            db.Reservations.Add(reservation);
+            await db.SaveChangesAsync();
+        }
+
+        var ex = await Assert.ThrowsAsync<DomainValidationException>(() => service.DeleteAsync(dish.Id));
+
+        Assert.Equal(InReservationsMessage, ex.Message);
+        Assert.NotNull(await service.GetAsync(dish.Id));
     }
 
     [Fact]

@@ -5,6 +5,7 @@ using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
+using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -153,6 +154,55 @@ public class TenantModelTests(PostgresFixture postgres)
             BaseQuantity = 2000m
         });
         db.StockCounts.Add(stockCount);
+        await db.SaveChangesAsync();
+
+        // Étape 4 : vitrine, réservations, carte des vins.
+        var image = new VitrineImage { FileName = "salle.jpg", ContentType = "image/jpeg", Data = [1, 2, 3], IsCover = true };
+        db.VitrineImages.Add(image);
+        await db.SaveChangesAsync();
+
+        db.VitrineProfiles.Add(new VitrineProfile { IsPublished = true, CoverImageId = image.Id });
+        db.ServiceSchedules.Add(new ServiceSchedule
+        {
+            DayOfWeek = DayOfWeek.Friday,
+            Name = "Dîner",
+            StartLocal = new TimeOnly(18, 30),
+            EndLocal = new TimeOnly(22, 0),
+            Capacity = 30
+        });
+        db.ClosureDays.Add(new ClosureDay { DateLocal = new DateOnly(2026, 12, 25), Reason = "Noël" });
+
+        var reservation = new Reservation
+        {
+            PublicToken = Guid.NewGuid().ToString("N"),
+            StartsAtUtc = day.AddDays(10).AddHours(18),
+            ServiceName = "Dîner",
+            PartySize = 2,
+            CustomerName = "Claire Martin",
+            CustomerEmail = "claire@example.org",
+            CustomerPhone = "+32470000000",
+            Status = ReservationStatus.Confirmed,
+            CreatedAt = day
+        };
+        var guest = new ReservationGuest { Position = 1, FirstName = "Claire" };
+        guest.Dishes.Add(new ReservationGuestDish { RecipeId = recipe.Id, Quantity = 1, UnitPriceInclVat = 14.5m, VatRate = 0.12m });
+        reservation.Guests.Add(guest);
+        db.Reservations.Add(reservation);
+
+        var wine = new WineListItem { Name = "Chablis", Region = "Bourgogne", Country = "France", Color = WineColor.Blanc, PriceBottle = 42m };
+        db.WineListItems.Add(wine);
+        await db.SaveChangesAsync();
+
+        db.Payments.Add(new Payment
+        {
+            ReservationId = reservation.Id,
+            Kind = PaymentKind.Deposit,
+            Amount = 20m,
+            Status = PaymentStatus.Paid,
+            Gateway = "mollie",
+            CreatedAt = day
+        });
+        db.WineListItemPairings.Add(new WineListItemPairing { WineListItemId = wine.Id, RecipeId = recipe.Id });
         await db.SaveChangesAsync();
     }
 

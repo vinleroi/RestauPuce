@@ -19,6 +19,7 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
     private const string UnknownIngredientMessage = "Ingrédient introuvable";
     private const string UnknownPreparationMessage = "Préparation introuvable";
     private const string DishInOrdersMessage = "Ce plat figure dans des commandes : archivez-le";
+    private const string RecipeInReservationsMessage = "Cette recette figure dans des réservations : archivez-la";
     private const string RecipeInSalesOrWasteMessage = "Cette recette figure dans des ventes ou des pertes : archivez-la";
 
     // Échelles des colonnes numeric : arrondir avant de valider évite qu'une quantité positive soit stockée comme 0.
@@ -143,6 +144,9 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
 
         if (await db.SalesEntries.AnyAsync(e => e.RecipeId == id) || await db.WasteEntries.AnyAsync(e => e.RecipeId == id))
             throw new DomainValidationException(RecipeInSalesOrWasteMessage);
+
+        if (await db.ReservationGuestDishes.AnyAsync(d => d.RecipeId == id))
+            throw new DomainValidationException(RecipeInReservationsMessage);
 
         // Les lignes de la recette suivent par cascade en base.
         db.Recipes.Remove(recipe);

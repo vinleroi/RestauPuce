@@ -15,6 +15,8 @@ internal sealed class RecipeConfiguration : IEntityTypeConfiguration<Recipe>
         builder.Property(r => r.SellingPriceInclVat).HasPrecision(18, 2);
         builder.Property(r => r.VatRate).HasPrecision(5, 4);
         builder.Property(r => r.OutputQuantity).HasPrecision(18, 4);
+        builder.Property(r => r.PublicDescription).HasColumnType("text");
+        builder.Property(r => r.ShowOnVitrine).HasDefaultValue(false);
 
         // Relation propriétaire : les lignes disparaissent avec leur recette.
         builder.HasMany(r => r.Lines)
