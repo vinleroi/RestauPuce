@@ -62,20 +62,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
             await using var db = await factory.CreateDbContextAsync();
             await using var transaction = await db.Database.BeginTransactionAsync();
 
-            var now = DateTime.UtcNow;
-            var number = (await db.Orders.MaxAsync(o => (int?)o.Number) ?? 0) + 1;
-            var order = new Order
-            {
-                Number = number,
-                CreatedAt = now,
-                Source = input.Source,
-                Status = OrderStatus.Nouvelle,
-                StatusChangedAt = now,
-                TableOrCustomer = NullIfBlank(input.TableOrCustomer),
-                Note = NullIfBlank(input.Note),
-                Lines = lines.Select(l => l.ToEntity()).ToList()
-            };
-            db.Orders.Add(order);
+            var order = AddNumberedOrder(db, input.Source, input.TableOrCustomer, input.Note, lines.Select(l => l.ToEntity()).ToList(), await NextNumberAsync(db));
 
             try
             {
@@ -90,6 +77,77 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
         }
 
         throw new DomainValidationException(NumberMessage);
+    }
+
+    /// <summary>
+    /// Crée une commande « Nouvelle » à partir de lignes déjà figées (prix et TVA fournis), sans exiger que les plats soient encore actifs ni vendus :
+    /// utilisé à l'arrivée en salle d'une réservation, dont la pré-commande garde les prix du jour de la réservation même si un plat a été archivé depuis.
+    /// Les plats doivent tout de même appartenir au restaurant courant. Même numérotation que <see cref="CreateAsync"/>.
+    /// Avec <paramref name="db"/>, l'insertion se fait dans le contexte (et la transaction) de l'appelant, sans nouvel essai : un conflit de numéro
+    /// remonte en <see cref="DbUpdateException"/> (voir <see cref="IsOrderNumberConflict"/>) et l'appelant reprend toute sa transaction.
+    /// </summary>
+    internal async Task<int> CreateFromFrozenLinesAsync(OrderSource source, string? tableOrCustomer, string? note,
+        IReadOnlyList<FrozenOrderLine> lines, ChefOsDbContext? db = null)
+    {
+        if (lines.Count == 0)
+            throw new DomainValidationException(NoLineMessage);
+        if (lines.Any(l => l.Quantity < 1))
+            throw new DomainValidationException(QuantityMessage);
+
+        if (db is not null)
+            return await InsertFrozenAsync(db, source, tableOrCustomer, note, lines);
+
+        for (var attempt = 0; attempt <= NumberRetries; attempt++)
+        {
+            await using var own = await factory.CreateDbContextAsync();
+            await using var transaction = await own.Database.BeginTransactionAsync();
+            try
+            {
+                var id = await InsertFrozenAsync(own, source, tableOrCustomer, note, lines);
+                await transaction.CommitAsync();
+                return id;
+            }
+            catch (DbUpdateException ex) when (IsOrderNumberConflict(ex))
+            {
+            }
+        }
+
+        throw new DomainValidationException(NumberMessage);
+    }
+
+    private static async Task<int> InsertFrozenAsync(ChefOsDbContext db, OrderSource source, string? table, string? note, IReadOnlyList<FrozenOrderLine> lines)
+    {
+        var ids = lines.Select(l => l.RecipeId).Distinct().ToList();
+        if (await db.Recipes.CountAsync(r => r.Kind == RecipeKind.Dish && ids.Contains(r.Id)) != ids.Count)
+            throw new DomainValidationException(UnknownDishMessage);
+
+        var entities = lines.Select(l => new OrderLine
+        {
+            RecipeId = l.RecipeId, Quantity = l.Quantity, UnitPriceInclVat = l.UnitPriceInclVat, VatRate = l.VatRate, Note = NullIfBlank(l.Note)
+        }).ToList();
+        var order = AddNumberedOrder(db, source, table, note, entities, await NextNumberAsync(db));
+        await db.SaveChangesAsync();
+        return order.Id;
+    }
+
+    private static async Task<int> NextNumberAsync(ChefOsDbContext db) => (await db.Orders.MaxAsync(o => (int?)o.Number) ?? 0) + 1;
+
+    private static Order AddNumberedOrder(ChefOsDbContext db, OrderSource source, string? table, string? note, List<OrderLine> lines, int number)
+    {
+        var now = DateTime.UtcNow;
+        var order = new Order
+        {
+            Number = number,
+            CreatedAt = now,
+            Source = source,
+            Status = OrderStatus.Nouvelle,
+            StatusChangedAt = now,
+            TableOrCustomer = NullIfBlank(table),
+            Note = NullIfBlank(note),
+            Lines = lines
+        };
+        db.Orders.Add(order);
+        return order;
     }
 
     /// <summary>
@@ -358,9 +416,12 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
         };
     }
 
-    private static bool IsOrderNumberConflict(DbUpdateException ex) =>
+    internal static bool IsOrderNumberConflict(DbUpdateException ex) =>
         ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: OrderNumberIndex };
 
     private static string? NullIfBlank(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
+
+/// <summary>Ligne de commande aux prix déjà figés (pré-commande d'une réservation).</summary>
+internal sealed record FrozenOrderLine(int RecipeId, int Quantity, decimal UnitPriceInclVat, decimal VatRate, string? Note);

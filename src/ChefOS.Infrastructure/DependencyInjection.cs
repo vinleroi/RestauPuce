@@ -1,6 +1,8 @@
 using Anthropic;
 using ChefOS.Core.Receipts;
 using ChefOS.Infrastructure.Data;
+using ChefOS.Infrastructure.Notifications;
+using ChefOS.Infrastructure.Payments;
 using ChefOS.Infrastructure.Receipts;
 using ChefOS.Infrastructure.Seeding;
 using ChefOS.Infrastructure.Services;
@@ -9,6 +11,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace ChefOS.Infrastructure;
 
@@ -50,6 +53,51 @@ public static class DependencyInjection
     {
         services.AddOptions<DemoOptions>().BindConfiguration("Demo");
         services.AddScoped<DemoSeeder>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Enregistre <see cref="PaymentService"/>, <see cref="ReservationService"/>, l'envoi d'e-mails (<see cref="LoggingEmailSender"/>, qui journalise) et la passerelle
+    /// choisie par la section <c>Payments</c> (voir <see cref="PaymentOptions"/>) : <see cref="DemoPaymentGateway"/> par défaut (en mémoire, singleton, aussi disponible
+    /// sous son type pour la page de démonstration) ; avec <c>Gateway = Mollie</c>, <see cref="MolliePaymentGateway"/> (HttpClient typé, clé <c>Mollie:ApiKey</c> ou, à défaut,
+    /// <c>MOLLIE_API_KEY</c>), ou une passerelle qui échoue avec un message explicite sans clé. Choix lu à l'enregistrement : redémarrage pour le changer.
+    /// Suppose <see cref="AddChefOsInfrastructure"/> déjà appelé (fabrique de contextes, <see cref="OrderService"/>, <see cref="TimeProvider"/>).
+    /// </summary>
+    public static IServiceCollection AddChefOsPayments(this IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(PaymentOptions.SectionName);
+        services.Configure<PaymentOptions>(section);
+        services.AddLogging();
+        services.TryAddSingleton<IEmailSender, LoggingEmailSender>();
+        services.AddScoped<PaymentService>();
+        services.AddScoped<ReservationService>();
+
+        var options = section.Get<PaymentOptions>() ?? new PaymentOptions();
+        if (!string.Equals(options.Gateway?.Trim(), PaymentOptions.MollieGateway, StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton(provider => new DemoPaymentGateway(provider.GetRequiredService<IOptions<PaymentOptions>>().Value.BaseUrl));
+            services.AddSingleton<IPaymentGateway>(provider => provider.GetRequiredService<DemoPaymentGateway>());
+            return services;
+        }
+
+        var apiKey = configuration["Mollie:ApiKey"];
+        if (string.IsNullOrWhiteSpace(apiKey))
+            apiKey = Environment.GetEnvironmentVariable("MOLLIE_API_KEY");
+
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            services.AddSingleton<IPaymentGateway, MissingKeyPaymentGateway>();
+            return services;
+        }
+
+        services.AddSingleton(new MollieSettings(apiKey.Trim()));
+        services.AddHttpClient<MolliePaymentGateway>(client =>
+        {
+            client.BaseAddress = new Uri(MolliePaymentGateway.BaseAddress);
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+        services.AddTransient<IPaymentGateway>(provider => provider.GetRequiredService<MolliePaymentGateway>());
 
         return services;
     }
