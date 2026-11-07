@@ -31,6 +31,7 @@ public class InfrastructureRegistrationTests
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<WasteService>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<InventoryService>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<StatsService>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<VitrineService>());
         Assert.Null(scope.ServiceProvider.GetService<DemoSeeder>());
     }
 

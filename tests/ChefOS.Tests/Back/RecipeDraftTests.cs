@@ -120,6 +120,50 @@ public class RecipeDraftTests
     }
 
     [Fact]
+    public void ToInput_Dish_CarriesPublicDescriptionAndVitrineFlag()
+    {
+        var draft = RecipeDraft.New(RecipeKind.Dish, 0.12m);
+        draft.Name = "Carbonnade";
+        draft.PriceInclVat = 22.5m;
+        draft.PublicDescription = "Mijotée à la bière brune";
+        draft.ShowOnVitrine = true;
+
+        var input = draft.ToInput();
+
+        Assert.Equal("Mijotée à la bière brune", input.PublicDescription);
+        Assert.True(input.ShowOnVitrine);
+    }
+
+    [Fact]
+    public void ToInput_Preparation_CarriesNoPublicFields()
+    {
+        var draft = RecipeDraft.New(RecipeKind.Preparation, 0.12m);
+        draft.Name = "Fond";
+        draft.OutputQuantity = 2m;
+        draft.PublicDescription = "Interne";
+        draft.ShowOnVitrine = true;
+
+        var input = draft.ToInput();
+
+        Assert.Null(input.PublicDescription);
+        Assert.False(input.ShowOnVitrine);
+    }
+
+    [Fact]
+    public void From_StoredRecipe_RestoresPublicFields()
+    {
+        var recipe = book.Recipes.Single(r => r.Id == StoredDish);
+        recipe.PublicDescription = "Maison";
+        recipe.ShowOnVitrine = true;
+
+        var draft = RecipeDraft.From(recipe, book);
+
+        Assert.Equal("Maison", draft.PublicDescription);
+        Assert.True(draft.ShowOnVitrine);
+        Assert.True(draft.ToInput().ShowOnVitrine);
+    }
+
+    [Fact]
     public void ToInput_Preparation_CarriesNoPriceNorVat()
     {
         var draft = RecipeDraft.New(RecipeKind.Preparation, 0.12m);

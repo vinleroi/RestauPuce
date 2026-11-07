@@ -101,6 +101,45 @@ public class RecipeServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Save_PersistsPublicDescriptionAndVitrineFlag_ForDishesOnly()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+
+        var dish = await service.SaveAsync(new RecipeInput(
+            null, "Stoemp", RecipeKind.Dish, null, 18m, 0.12m, null, null, null, [], "  Purée de légumes  ", true));
+        var stored = await service.GetAsync(dish.Id);
+        Assert.Equal("Purée de légumes", stored!.PublicDescription);
+        Assert.True(stored.ShowOnVitrine);
+
+        var updated = await service.SaveAsync(new RecipeInput(dish.Id, "Stoemp", RecipeKind.Dish, null, 18m, 0.12m, null, null, null, [], " ", false));
+        stored = await service.GetAsync(updated.Id);
+        Assert.Null(stored!.PublicDescription);
+        Assert.False(stored.ShowOnVitrine);
+
+        var preparation = await service.SaveAsync(new RecipeInput(
+            null, "Fond", RecipeKind.Preparation, null, null, null, 1000m, BaseUnit.Milliliter, null, [], "Interne", true));
+        stored = await service.GetAsync(preparation.Id);
+        Assert.Null(stored!.PublicDescription);
+        Assert.False(stored.ShowOnVitrine);
+    }
+
+    [Fact]
+    public async Task Save_PublicDescriptionOver500Chars_Throws()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+
+        await service.SaveAsync(new RecipeInput(null, "A", RecipeKind.Dish, null, 18m, 0.12m, null, null, null, [], new string('x', 500), true));
+        var ex = await Assert.ThrowsAsync<DomainValidationException>(() => service.SaveAsync(
+            new RecipeInput(null, "B", RecipeKind.Dish, null, 18m, 0.12m, null, null, null, [], new string('x', 501), true)));
+
+        Assert.Equal("La description publique ne peut pas dépasser 500 caractères", ex.Message);
+    }
+
+    [Fact]
     public async Task Save_PersistsFieldsAndKeepsLineOrder()
     {
         var options = await postgres.CreateDatabaseAsync();

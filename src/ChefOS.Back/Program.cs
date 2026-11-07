@@ -3,6 +3,7 @@ using ChefOS.Back.Components;
 using ChefOS.Back.Components.Account;
 using ChefOS.Back.Receipts;
 using ChefOS.Back.Tenancy;
+using ChefOS.Back.Vitrine;
 using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Identity;
@@ -105,6 +106,7 @@ app.MapRazorComponents<App>()
 app.MapAdditionalIdentityEndpoints();
 app.MapActiveRestaurantEndpoint();
 app.MapReceiptFileEndpoint();
+app.MapVitrineImageEndpoint();
 
 // Bibliothèque de vins partagée : upsert idempotent à chaque démarrage, quel que soit l'environnement.
 // Une base pas encore migrée ne doit pas empêcher l'hôte de démarrer : l'échec est journalisé.

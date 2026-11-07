@@ -36,6 +36,7 @@ public static class DependencyInjection
         services.AddScoped<WasteService>();
         services.AddScoped<InventoryService>();
         services.AddScoped<StatsService>();
+        services.AddScoped<VitrineService>();
 
         return services;
     }

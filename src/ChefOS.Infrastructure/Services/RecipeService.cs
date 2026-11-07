@@ -22,6 +22,8 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
     private const string RecipeInReservationsMessage = "Cette recette figure dans des réservations : archivez-la";
     private const string RecipeInSalesOrWasteMessage = "Cette recette figure dans des ventes ou des pertes : archivez-la";
 
+    private const int MaxPublicDescriptionLength = 500;
+
     // Échelles des colonnes numeric : arrondir avant de valider évite qu'une quantité positive soit stockée comme 0.
     private const int QuantityScale = 4;
     private const int PriceScale = 2;
@@ -79,6 +81,9 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
         else
             RequirePreparationOutput(outputQuantity, input.OutputUnit);
         var lines = NormalizeLines(input.Lines);
+        var publicDescription = NullIfBlank(input.PublicDescription);
+        if (publicDescription is { Length: > MaxPublicDescriptionLength })
+            throw new DomainValidationException($"La description publique ne peut pas dépasser {MaxPublicDescriptionLength} caractères");
 
         await using var db = await factory.CreateDbContextAsync();
 
@@ -101,6 +106,9 @@ public class RecipeService(IDbContextFactory<ChefOsDbContext> factory)
         recipe.OutputQuantity = outputQuantity;
         recipe.OutputUnit = input.OutputUnit;
         recipe.Instructions = NullIfBlank(input.Instructions);
+        // Seuls les plats se montrent sur la vitrine.
+        recipe.PublicDescription = input.Kind == RecipeKind.Dish ? publicDescription : null;
+        recipe.ShowOnVitrine = input.Kind == RecipeKind.Dish && input.ShowOnVitrine;
 
         // Les anciennes lignes sont supprimées par orphelinage (clé étrangère obligatoire) ; les nouvelles sont insérées dans le même SaveChanges.
         recipe.Lines.Clear();

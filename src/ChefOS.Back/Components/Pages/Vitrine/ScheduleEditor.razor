@@ -1,0 +1,86 @@
+@using ChefOS.Core.Common
+
+@* Éditeur des services récurrents, jour par jour. Les lignes vivent dans le brouillon du parent ; l'enregistrement lui revient. *@
+
+<MudText Typo="Typo.body2" Class="mb-4" Style="color: var(--mud-palette-text-secondary)">
+    Un service est une plage d'accueil (par exemple « Midi » de 12:00 à 14:00) avec sa capacité en couverts. Les créneaux proposés aux clients
+    suivent le pas choisi. Deux services d'un même jour ne peuvent pas se chevaucher.
+</MudText>
+
+@foreach (var day in ScheduleDraft.Days)
+{
+    var rows = Draft.RowsOf(day).ToList();
+
+    <MudPaper Elevation="1" Class="pa-3 mb-3">
+        <div class="d-flex align-center justify-space-between flex-wrap gap-2 mb-2">
+            <MudText Typo="Typo.subtitle1" HtmlTag="h3"><b>@ScheduleDraft.DayLabel(day)</b></MudText>
+            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => Draft.Add(day))">
+                Ajouter un service
+            </MudButton>
+        </div>
+
+        @if (rows.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Style="color: var(--mud-palette-text-secondary)">Fermé : aucun service.</MudText>
+        }
+
+        @foreach (var row in rows)
+        {
+            <MudGrid Spacing="2" Class="align-center mb-1">
+                <MudItem xs="12" sm="6" md="2">
+                    <MudTextField T="string" @bind-Value="row.Name" Label="Nom" MaxLength="100" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="6" sm="3" md="2">
+                    <MudTimePicker @bind-Time="row.Start" Label="Début" AmPm="false" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="6" sm="3" md="2">
+                    <MudTimePicker @bind-Time="row.End" Label="Fin" AmPm="false" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="6" sm="3" md="2">
+                    <MudNumericField T="int?" @bind-Value="row.Capacity" Culture="Ui.Fr" Format="0" Min="1" Max="500" Label="Couverts" HideSpinButtons="true"
+                                     Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="6" sm="3" md="2">
+                    <MudSelect T="int" @bind-Value="row.SlotMinutes" Label="Pas des créneaux" Variant="Variant.Outlined" Margin="Margin.Dense">
+                        @foreach (var minutes in ScheduleDraft.SlotChoices)
+                        {
+                            <MudSelectItem T="int" Value="@minutes">@minutes min</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="2" Class="d-flex justify-end">
+                    <MudTooltip Text="Dupliquer sur la semaine">
+                        <MudIconButton Icon="@Icons.Material.Filled.CopyAll" Size="Size.Small" aria-label="Dupliquer sur la semaine"
+                                       OnClick="@(() => Duplicate(row))" />
+                    </MudTooltip>
+                    <MudTooltip Text="Supprimer le service">
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" aria-label="Supprimer le service"
+                                       OnClick="@(() => Draft.Remove(row))" />
+                    </MudTooltip>
+                </MudItem>
+            </MudGrid>
+        }
+    </MudPaper>
+}
+
+<MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="OnSave" Disabled="Busy">
+    Enregistrer les services
+</MudButton>
+
+@code {
+    [Inject] private ISnackbar Snackbar { get; set; } = default!;
+
+    [Parameter, EditorRequired] public ScheduleDraft Draft { get; set; } = default!;
+
+    [Parameter] public bool Busy { get; set; }
+
+    [Parameter] public EventCallback OnSave { get; set; }
+
+    private void Duplicate(ScheduleRow row)
+    {
+        var added = Draft.DuplicateToWeek(row);
+        Snackbar.Add(
+            added == 0 ? "Ce service existe déjà tous les jours" : $"Service copié sur {added} jour{(added > 1 ? "s" : "")}",
+            added == 0 ? Severity.Info : Severity.Success);
+    }
+}

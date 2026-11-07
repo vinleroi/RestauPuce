@@ -1,0 +1,616 @@
+@page "/vitrine"
+
+@implements IAsyncDisposable
+
+@using ChefOS.Back.Vitrine
+@using ChefOS.Core.Common
+@using ChefOS.Core.Vitrine
+@using ChefOS.Infrastructure.Data
+@using ChefOS.Infrastructure.Services
+
+@inject VitrineService VitrineService
+@inject RestaurantService RestaurantService
+@inject ITenantContext Tenant
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+
+<PageTitle>Vitrine — ChefOS</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (!_loaded)
+{
+    <MudText Typo="Typo.h4" HtmlTag="h1" GutterBottom="true">Vitrine</MudText>
+    <MudAlert Severity="Severity.Warning">Aucun restaurant actif : choisissez-en un dans le menu en haut à droite.</MudAlert>
+}
+else
+{
+    <div class="d-flex align-center justify-space-between flex-wrap gap-2 mb-4">
+        <MudText Typo="Typo.h4" HtmlTag="h1">Vitrine</MudText>
+        @if (PublicUrl is { } url)
+        {
+            <MudButton Href="@url" Target="_blank" rel="noopener noreferrer" Variant="Variant.Outlined" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.OpenInNew">
+                Voir ma vitrine
+            </MudButton>
+        }
+    </div>
+
+    <MudTabs Elevation="1" Rounded="true" TabPanelsClass="pt-4" KeepPanelsAlive="true">
+        <MudTabPanel Text="Présentation">
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudSwitch T="bool" @bind-Value="_form.IsPublished" Color="Color.Success" Label="Vitrine publiée"
+                           Class="mb-1" />
+                <MudText Typo="Typo.body2" Style="color: var(--mud-palette-text-secondary)">
+                    @(_form.IsPublished ? "Votre vitrine est visible par tout le monde dès l'enregistrement." : "Votre vitrine n'est pas visible du public.")
+                </MudText>
+            </MudPaper>
+
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Présentation</MudText>
+                <MudGrid Spacing="3">
+                    <MudItem xs="12">
+                        <MudTextField T="string" @bind-Value="_form.Tagline" Label="Accroche" MaxLength="200" Counter="200"
+                                      HelperText="Une phrase sous le nom du restaurant" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12">
+                        <MudTextField T="string" @bind-Value="_form.AmbianceText" Label="Ambiance" Lines="4" Sizing="InputSizing.Auto" MaxLines="20"
+                                      HelperText="Présentez votre cuisine, votre salle, votre histoire" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <div class="d-flex align-center gap-3">
+                            <MudTextField T="string" @bind-Value="_form.AccentColor" Immediate="true" Label="Couleur d'accent" Placeholder="#C0392B" MaxLength="7"
+                                          HelperText="Format #RRGGBB" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                            <input type="color" aria-label="Choisir la couleur d'accent" value="@PickerColor" @oninput="OnColorPicked"
+                                   style="width: 48px; height: 40px; border: 0; padding: 0; background: none; cursor: pointer" />
+                        </div>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Coordonnées</MudText>
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" md="6">
+                        <MudTextField T="string" @bind-Value="_form.City" Label="Ville" MaxLength="100" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField T="string" @bind-Value="_form.Phone" Label="Téléphone" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField T="string" @bind-Value="_form.PublicEmail" Label="E-mail public" MaxLength="200" InputType="InputType.Email"
+                                      Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudAutocomplete T="string" Value="_form.TimeZoneId" ValueChanged="SetTimeZone" Label="Fuseau horaire"
+                                         SearchFunc="SearchTimeZonesAsync" CoerceValue="true" MaxItems="null" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                         HelperText="Les horaires de réservation suivent ce fuseau (nom IANA, par exemple Europe/Brussels)" />
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Photos</MudText>
+                <MudText Typo="Typo.body2" Class="mb-3" Style="color: var(--mud-palette-text-secondary)">
+                    Une photo de couverture et jusqu'à 6 photos de galerie (JPEG, PNG ou WebP, 5 Mo au maximum). Les photos sont réduites dans votre navigateur avant l'envoi.
+                </MudText>
+
+                <MudText Typo="Typo.subtitle2" HtmlTag="h3" Class="mb-2">Couverture</MudText>
+                @if (Cover is { } cover)
+                {
+                    <div class="d-flex align-end gap-3 flex-wrap mb-2">
+                        <img src="@VitrineImageEndpoint.RouteFor(cover.Id)" alt="Photo de couverture" style="max-width: 320px; max-height: 180px; border-radius: 8px; object-fit: cover" />
+                        <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" StartIcon="@Icons.Material.Filled.Delete"
+                                   OnClick="@(() => RemoveImageAsync(cover.Id))" Disabled="_busy">Supprimer</MudButton>
+                    </div>
+                }
+                <div class="vitrine-upload mb-4">
+                    <InputFile @ref="_coverInput" id="vitrine-cover-input" class="vitrine-file-input" accept="@Accept" disabled="@_busy"
+                               OnChange="@(e => UploadAsync(e, _coverInput, true))" />
+                    <MudButton HtmlTag="label" for="vitrine-cover-input" Variant="Variant.Filled" Color="Color.Primary" Disabled="_busy"
+                               StartIcon="@Icons.Material.Filled.PhotoCamera">
+                        @(_busy && _activeInput == _coverInput ? "Envoi…" : Cover is null ? "Choisir la couverture" : "Remplacer la couverture")
+                    </MudButton>
+                </div>
+
+                <MudText Typo="Typo.subtitle2" HtmlTag="h3" Class="mb-2">Galerie (@Gallery.Count / 6)</MudText>
+                <div class="d-flex flex-wrap gap-3 mb-2">
+                    @for (var i = 0; i < Gallery.Count; i++)
+                    {
+                        var image = Gallery[i];
+                        var index = i;
+                        <div style="width: 200px">
+                            <img src="@VitrineImageEndpoint.RouteFor(image.Id)" alt="@($"Photo {index + 1} de la galerie")"
+                                 style="width: 200px; height: 130px; border-radius: 8px; object-fit: cover; display: block" />
+                            <div class="d-flex justify-space-between">
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small" aria-label="Avancer"
+                                               Disabled="@(_busy || index == 0)" OnClick="@(() => MoveImageAsync(image.Id, index - 1))" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" aria-label="Supprimer la photo"
+                                               Disabled="_busy" OnClick="@(() => RemoveImageAsync(image.Id))" />
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowForward" Size="Size.Small" aria-label="Reculer"
+                                               Disabled="@(_busy || index == Gallery.Count - 1)" OnClick="@(() => MoveImageAsync(image.Id, index + 1))" />
+                            </div>
+                        </div>
+                    }
+                </div>
+                @if (Gallery.Count < 6)
+                {
+                    <div class="vitrine-upload">
+                        <InputFile @ref="_galleryInput" id="vitrine-gallery-input" class="vitrine-file-input" accept="@Accept" disabled="@_busy"
+                                   OnChange="@(e => UploadAsync(e, _galleryInput, false))" />
+                        <MudButton HtmlTag="label" for="vitrine-gallery-input" Variant="Variant.Filled" Color="Color.Primary" Disabled="_busy"
+                                   StartIcon="@Icons.Material.Filled.AddPhotoAlternate">
+                            @(_busy && _activeInput == _galleryInput ? "Envoi…" : "Ajouter une photo")
+                        </MudButton>
+                    </div>
+                }
+            </MudPaper>
+
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveProfileAsync" Disabled="_busy">
+                Enregistrer
+            </MudButton>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Réservations">
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudSwitch T="bool" @bind-Value="_form.ReservationsOpen" Color="Color.Success" Label="Réservations ouvertes" Class="mb-1" />
+                <MudText Typo="Typo.body2" Style="color: var(--mud-palette-text-secondary)">
+                    Les clients réservent parmi les services de l'onglet « Services », hors jours de fermeture.
+                </MudText>
+            </MudPaper>
+
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Montants</MudText>
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" sm="6" md="4">
+                        <MudNumericField T="int?" @bind-Value="_form.GroupThreshold" Culture="Ui.Fr" Format="0" Min="1" Label="Seuil de groupe" Adornment="Adornment.End"
+                                         AdornmentText="personnes" HelperText="Au-delà, un prépaiement remplace l'acompte" HideSpinButtons="true"
+                                         Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="4">
+                        <MudNumericField T="decimal?" @bind-Value="_form.DepositPerPerson" Culture="Ui.Fr" Format="0.00" Min="0m" InputMode="DecimalInput"
+                                         Label="Acompte par personne" Adornment="Adornment.End" AdornmentText="€" HelperText="Jusqu'au seuil de groupe"
+                                         HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="4">
+                        <MudNumericField T="decimal?" @bind-Value="_form.PrepaymentPercent" Culture="Ui.Fr" Format="0.##" Min="0m" Max="100m" InputMode="DecimalInput"
+                                         Label="Prépaiement d'un groupe" Adornment="Adornment.End" AdornmentText="%" HelperText="Part de la pré-commande, au-delà du seuil"
+                                         HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Règles</MudText>
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" sm="6" md="4">
+                        <MudNumericField T="int?" @bind-Value="_form.MaxPartySize" Culture="Ui.Fr" Format="0" Min="1" Max="100" Label="Taille maximale d'un groupe"
+                                         Adornment="Adornment.End" AdornmentText="personnes" HelperText="Entre le seuil de groupe et 100" HideSpinButtons="true"
+                                         Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="4">
+                        <MudNumericField T="int?" @bind-Value="_form.FreeCancellationHours" Culture="Ui.Fr" Format="0" Min="0" Label="Annulation gratuite"
+                                         Adornment="Adornment.End" AdornmentText="h avant" HelperText="Passé ce délai, l'acompte n'est pas remboursé"
+                                         HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="4">
+                        <MudNumericField T="int?" @bind-Value="_form.MinLeadMinutes" Culture="Ui.Fr" Format="0" Min="0" Label="Délai minimal avant réservation"
+                                         Adornment="Adornment.End" AdornmentText="min" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="4">
+                        <MudNumericField T="int?" @bind-Value="_form.MaxDaysAhead" Culture="Ui.Fr" Format="0" Min="0" Label="Réservable à l'avance"
+                                         Adornment="Adornment.End" AdornmentText="jours" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="4">
+                        <MudNumericField T="int?" @bind-Value="_form.PendingPaymentMinutes" Culture="Ui.Fr" Format="0" Min="0" Label="Délai pour payer"
+                                         Adornment="Adornment.End" AdornmentText="min" HelperText="Passé ce délai, la place est libérée"
+                                         HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveProfileAsync" Disabled="_busy">
+                Enregistrer
+            </MudButton>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Services">
+            <ScheduleEditor Draft="_schedule" Busy="_busy" OnSave="SaveSchedulesAsync" />
+        </MudTabPanel>
+
+        <MudTabPanel Text="Fermetures">
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
+                <MudText Typo="Typo.body2" Class="mb-3" Style="color: var(--mud-palette-text-secondary)">
+                    Jours où le restaurant ne prend aucune réservation (vacances, jour férié, événement privé).
+                </MudText>
+                <MudGrid Spacing="2" Class="align-center">
+                    <MudItem xs="12" sm="4">
+                        <MudDatePicker @bind-Date="_closureDate" Label="Date" Culture="Ui.Fr" DateFormat="dd/MM/yyyy" Editable="true"
+                                       Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="5">
+                        <MudTextField T="string" @bind-Value="_closureReason" Label="Motif (facultatif)" MaxLength="200" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="3">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="AddClosureAsync" Disabled="_busy">
+                            Ajouter
+                        </MudButton>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            @if (_closures.Count == 0)
+            {
+                <MudText Style="color: var(--mud-palette-text-secondary)">Aucune fermeture prévue.</MudText>
+            }
+            else
+            {
+                <MudSimpleTable Dense="true" Hover="true">
+                    <thead>
+                        <tr><th>Date</th><th>Motif</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var closure in _closures)
+                        {
+                            <tr>
+                                <td>@closure.DateLocal.ToString("dddd d MMMM yyyy", Ui.Fr)</td>
+                                <td>@closure.Reason</td>
+                                <td class="text-right">
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" aria-label="Supprimer la fermeture"
+                                                   Disabled="_busy" OnClick="@(() => RemoveClosureAsync(closure.Id))" />
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            }
+        </MudTabPanel>
+    </MudTabs>
+}
+
+@code {
+    private const string Accept = "image/jpeg,image/png,image/webp";
+
+    // Même plafond que VitrineService : le refuser ici évite de transférer une image que le serveur rejetterait.
+    private const long MaxUploadBytes = 5 * 1024 * 1024;
+
+    // Réduire une photo ne prend que quelques secondes ; au-delà d'une minute le navigateur est bloqué : on envoie le fichier d'origine.
+    private static readonly TimeSpan PrepareTimeout = TimeSpan.FromSeconds(60);
+
+    private const string TooLargeMessage = "Image trop volumineuse (5 Mo maximum)";
+    private const string UnreadableMessage = "Impossible de lire le fichier : réessayez ou choisissez-en un autre";
+    private const string TransferTimeoutMessage = "Le fichier n'a pas pu être transféré à temps : réessayez avec une photo plus petite";
+
+    // Clavier à virgule sur mobile (la valeur par défaut de MudNumericField est « numeric », sans séparateur décimal sur iOS).
+    private const InputMode DecimalInput = InputMode.@decimal;
+
+    private readonly CancellationTokenSource _cancellation = new();
+
+    private bool _loading = true;
+    private bool _loaded;
+    private bool _busy;
+    private string? _slug;
+    private VitrineSettingsForm _form = new();
+    private ScheduleDraft _schedule = new();
+    private IReadOnlyList<VitrineImage> _images = [];
+    private IReadOnlyList<ClosureDay> _closures = [];
+    private DateTime? _closureDate;
+    private string? _closureReason;
+    private InputFile? _coverInput;
+    private InputFile? _galleryInput;
+    private InputFile? _activeInput;
+    private IJSObjectReference? _module;
+
+    private VitrineImage? Cover => _images.FirstOrDefault(i => i.IsCover);
+
+    private List<VitrineImage> Gallery => _images.Where(i => !i.IsCover).OrderBy(i => i.Position).ToList();
+
+    private string? PublicUrl => VitrineSettingsForm.PublicUrl(Configuration["Vitrine:BaseUrl"] ?? "http://localhost:5108", _slug);
+
+    // <input type="color"> n'accepte qu'une valeur #rrggbb complète.
+    private string PickerColor => _form.AccentColor is { Length: 7 } color && color[0] == '#' ? color : "#000000";
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            if (Tenant.CurrentRestaurantId is not { } restaurantId)
+                return;
+
+            var restaurant = await RestaurantService.GetAsync(restaurantId);
+            if (restaurant is null)
+                return;
+
+            _slug = restaurant.Slug;
+            var profile = await VitrineService.GetOrCreateProfileAsync();
+            _form = VitrineSettingsForm.From(profile, restaurant.TimeZoneId);
+            _schedule = ScheduleDraft.From(await VitrineService.GetSchedulesAsync());
+            _images = await VitrineService.GetImagesAsync();
+            _closures = await VitrineService.GetClosuresAsync();
+            _loaded = true;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void SetTimeZone(string? value) => _form.TimeZoneId = value?.Trim() ?? "";
+
+    private Task<IEnumerable<string>> SearchTimeZonesAsync(string? text, CancellationToken cancellationToken) =>
+        Task.FromResult(VitrineSettingsForm.SuggestedTimeZones.Where(zone => Ui.ContainsText(zone, text)));
+
+    private void OnColorPicked(ChangeEventArgs e) => _form.AccentColor = e.Value?.ToString()?.ToUpperInvariant();
+
+    // ── Enregistrements ──────────────────────────────────────────────────────
+
+    private async Task SaveProfileAsync()
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await VitrineService.SaveProfileAsync(_form.ToInput());
+            Snackbar.Add("Vitrine enregistrée", Severity.Success);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SaveSchedulesAsync()
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await VitrineService.SaveSchedulesAsync(_schedule.ToInput());
+            _schedule = ScheduleDraft.From(await VitrineService.GetSchedulesAsync());
+            Snackbar.Add("Services enregistrés", Severity.Success);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task AddClosureAsync()
+    {
+        if (_busy)
+            return;
+
+        if (_closureDate is not { } date)
+        {
+            Snackbar.Add("Choisissez la date de fermeture", Severity.Error);
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            await VitrineService.AddClosureAsync(DateOnly.FromDateTime(date), _closureReason);
+            _closures = await VitrineService.GetClosuresAsync();
+            _closureDate = null;
+            _closureReason = null;
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RemoveClosureAsync(int id)
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await VitrineService.RemoveClosureAsync(id);
+            _closures = await VitrineService.GetClosuresAsync();
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+            _closures = await VitrineService.GetClosuresAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // ── Images ───────────────────────────────────────────────────────────────
+
+    private async Task RemoveImageAsync(int id)
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await VitrineService.RemoveImageAsync(id);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _images = await VitrineService.GetImagesAsync();
+            _busy = false;
+        }
+    }
+
+    private async Task MoveImageAsync(int id, int newPosition)
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await VitrineService.MoveImageAsync(id, newPosition);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _images = await VitrineService.GetImagesAsync();
+            _busy = false;
+        }
+    }
+
+    /// <summary>Ce que renvoie <c>prepare</c> du module JavaScript ; <c>Data</c> est un flux, pas un message JSON.</summary>
+    private sealed record PreparedFile(string Name, string ContentType, long Length, IJSStreamReference Data);
+
+    private sealed record Upload(byte[] Content, string FileName, string ContentType);
+
+    private async Task UploadAsync(InputFileChangeEventArgs e, InputFile? input, bool isCover)
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        _activeInput = input;
+        var token = _cancellation.Token;
+
+        try
+        {
+            var upload = await ReadUploadAsync(e.File, input, token);
+            await VitrineService.AddImageAsync(upload.Content, upload.FileName, upload.ContentType, isCover);
+            _images = await VitrineService.GetImagesAsync();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (JSDisconnectedException)
+        {
+            return;
+        }
+        catch (DomainValidationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        catch (OperationCanceledException)
+        {
+            Snackbar.Add(TransferTimeoutMessage, Severity.Error);
+        }
+        catch (Exception ex) when (ex is IOException or JSException)
+        {
+            Snackbar.Add(UnreadableMessage, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+            await ResetInputAsync(input);
+        }
+    }
+
+    // Image : réduite dans le navigateur (voir wwwroot/js/receipt-upload.js, partagé avec les tickets). Si le module JavaScript est
+    // inutilisable ou trop lent, on lit le fichier directement par le canal de InputFile.
+    private async Task<Upload> ReadUploadAsync(IBrowserFile file, InputFile? input, CancellationToken token)
+    {
+        if (input?.Element is { } element && await TryPrepareAsync(element, token) is { } prepared)
+        {
+            await using var data = prepared.Data;
+            if (prepared.Length > MaxUploadBytes)
+                throw new DomainValidationException(TooLargeMessage);
+
+            await using var stream = await data.OpenReadStreamAsync(MaxUploadBytes, token);
+            return new Upload(await ReadAllAsync(stream, token), prepared.Name, prepared.ContentType);
+        }
+
+        if (file.Size > MaxUploadBytes)
+            throw new DomainValidationException(TooLargeMessage);
+
+        await using var original = file.OpenReadStream(MaxUploadBytes, token);
+        return new Upload(await ReadAllAsync(original, token), file.Name, file.ContentType);
+    }
+
+    private async Task<PreparedFile?> TryPrepareAsync(ElementReference element, CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(PrepareTimeout);
+
+        try
+        {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", timeout.Token, "./js/receipt-upload.js");
+            return await _module.InvokeAsync<PreparedFile?>("prepare", timeout.Token, element);
+        }
+        catch (JSException)
+        {
+            return null;
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<byte[]> ReadAllAsync(Stream stream, CancellationToken token)
+    {
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer, token);
+        return buffer.ToArray();
+    }
+
+    // Vide le champ : sans cela, choisir une seconde fois le même fichier ne déclencherait pas d'évènement « change ».
+    private async Task ResetInputAsync(InputFile? input)
+    {
+        if (_module is null || input?.Element is not { } element)
+            return;
+
+        try
+        {
+            await _module.InvokeVoidAsync("reset", element);
+        }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or OperationCanceledException)
+        {
+            // Sans importance : le chef pourra choisir un autre fichier.
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _cancellation.CancelAsync();
+        _cancellation.Dispose();
+
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.DisposeAsync();
+            }
+            catch (Exception ex) when (ex is JSException or JSDisconnectedException or OperationCanceledException)
+            {
+                // Circuit déjà fermé : le module est libéré avec lui.
+            }
+        }
+    }
+}

@@ -95,6 +95,12 @@ public sealed class RecipeDraft
 
     public string? Instructions { get; set; }
 
+    /// <summary>Texte montré sur la vitrine publique (500 caractères au plus) ; plats seulement.</summary>
+    public string? PublicDescription { get; set; }
+
+    /// <summary>Le plat figure sur la carte de la vitrine publique ; plats seulement.</summary>
+    public bool ShowOnVitrine { get; set; }
+
     public List<DraftLine> Lines { get; } = [];
 
     public BaseUnit OutputBaseUnit => OutputUnit switch
@@ -124,7 +130,9 @@ public sealed class RecipeDraft
             Category = recipe.Category,
             PriceInclVat = recipe.SellingPriceInclVat,
             VatRate = recipe.VatRate,
-            Instructions = recipe.Instructions
+            Instructions = recipe.Instructions,
+            PublicDescription = recipe.PublicDescription,
+            ShowOnVitrine = recipe.ShowOnVitrine
         };
 
         if (recipe.OutputQuantity is { } quantity && recipe.OutputUnit is { } unit)
@@ -226,7 +234,9 @@ public sealed class RecipeDraft
             isDish ? null : OutputQuantityInBase,
             isDish ? null : OutputBaseUnit,
             Instructions,
-            lines);
+            lines,
+            isDish ? PublicDescription : null,
+            isDish && ShowOnVitrine);
     }
 
     private static RecipeLine ToEntity(DraftLine line) => new()

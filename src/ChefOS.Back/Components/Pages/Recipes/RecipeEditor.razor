@@ -186,10 +186,21 @@ else
                 <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="AddLine">Ajouter une ligne</MudButton>
             </MudPaper>
 
-            <MudPaper Elevation="1" Class="pa-4">
+            <MudPaper Elevation="1" Class="pa-4 mb-4">
                 <MudTextField T="string" @bind-Value="_draft.Instructions" Label="Instructions" Lines="6" Sizing="InputSizing.Auto" MaxLines="40"
                               Variant="Variant.Outlined" Margin="Margin.Dense" />
             </MudPaper>
+
+            @if (isDish)
+            {
+                <MudPaper Elevation="1" Class="pa-4">
+                    <MudText Typo="Typo.h6" HtmlTag="h2" GutterBottom="true">Vitrine</MudText>
+                    <MudSwitch T="bool" @bind-Value="_draft.ShowOnVitrine" Label="Afficher sur la vitrine" Color="Color.Primary" Class="mb-2" />
+                    <MudTextField T="string" @bind-Value="_draft.PublicDescription" Label="Description publique" Lines="3" Sizing="InputSizing.Auto" MaxLines="8"
+                                  MaxLength="500" Counter="500" HelperText="Texte montré aux clients sur la carte de la vitrine"
+                                  Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudPaper>
+            }
         </MudItem>
 
         <MudItem xs="12" lg="4">

@@ -5,6 +5,7 @@ using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
+using ChefOS.Core.Vitrine;
 
 namespace ChefOS.Infrastructure.Services;
 
@@ -65,7 +66,9 @@ public record RecipeInput(
     decimal? OutputQuantity,
     BaseUnit? OutputUnit,
     string? Instructions,
-    IReadOnlyList<RecipeLineInput> Lines);
+    IReadOnlyList<RecipeLineInput> Lines,
+    string? PublicDescription = null,
+    bool ShowOnVitrine = false);
 
 public record RecipeSummary(
     int Id,
@@ -351,3 +354,53 @@ public record PeriodStats(
     IReadOnlyList<DishProfit> Dishes,
     IReadOnlyList<WasteByReason> Waste,
     VarianceReport? Variance);
+
+// ── Vitrine ──────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Réglages de la vitrine. <paramref name="PrepaymentPercent"/> est une fraction (0,30 = 30 %) ; <paramref name="TimeZoneId"/> est un fuseau IANA
+/// (enregistré sur le restaurant). <paramref name="AccentColor"/> au format #RRGGBB, ou null.
+/// </summary>
+public record VitrineProfileInput(
+    bool IsPublished,
+    string? Tagline,
+    string? AmbianceText,
+    string? AccentColor,
+    string? City,
+    string? Phone,
+    string? PublicEmail,
+    string TimeZoneId,
+    bool ReservationsOpen,
+    int GroupThreshold,
+    decimal DepositPerPerson,
+    decimal PrepaymentPercent,
+    int FreeCancellationHours,
+    int MinLeadMinutes,
+    int MaxDaysAhead,
+    int MaxPartySize,
+    int PendingPaymentMinutes);
+
+public record ServiceScheduleInput(DayOfWeek DayOfWeek, string Name, TimeOnly StartLocal, TimeOnly EndLocal, int Capacity, int SlotMinutes);
+
+/// <summary>Plat de la carte publique : prix TTC, allergènes calculés depuis la recette.</summary>
+public record PublicDish(int Id, string Name, string? Description, decimal PriceInclVat, EuAllergen Allergens);
+
+/// <summary>Catégorie de la carte publique ; « Autres » regroupe les plats sans catégorie.</summary>
+public record PublicMenuCategory(string Name, IReadOnlyList<PublicDish> Dishes);
+
+public record PublicWine(int Id, string Name, int? Vintage, WineColor Color, string Region, decimal PriceBottle, decimal? PriceGlass);
+
+/// <summary>Contenu public d'une vitrine publiée : présentation, images (couverture puis galerie), carte et aperçu de vins (3 au plus).</summary>
+public record PublicVitrine(
+    string RestaurantName,
+    string? Address,
+    string? City,
+    string? Phone,
+    string? PublicEmail,
+    string? Tagline,
+    string? AmbianceText,
+    string? AccentColor,
+    int? CoverImageId,
+    IReadOnlyList<int> GalleryImageIds,
+    IReadOnlyList<PublicMenuCategory> Menu,
+    IReadOnlyList<PublicWine> Wines);
