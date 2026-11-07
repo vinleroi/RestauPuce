@@ -11,6 +11,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace ChefOS.Infrastructure;
@@ -76,6 +78,7 @@ public static class DependencyInjection
         var options = section.Get<PaymentOptions>() ?? new PaymentOptions();
         if (!string.Equals(options.Gateway?.Trim(), PaymentOptions.MollieGateway, StringComparison.OrdinalIgnoreCase))
         {
+            services.AddHostedService<DemoModeWarning>();
             services.AddSingleton(provider => new DemoPaymentGateway(provider.GetRequiredService<IOptions<PaymentOptions>>().Value.BaseUrl));
             services.AddSingleton<IPaymentGateway>(provider => provider.GetRequiredService<DemoPaymentGateway>());
             return services;
@@ -183,4 +186,17 @@ public static class DependencyInjection
     /// </summary>
     private static void AddAnthropicClient(IServiceCollection services, string key) =>
         services.TryAddSingleton(_ => new AnthropicClient { ApiKey = key, MaxRetries = 1, Timeout = TimeSpan.FromMinutes(5) });
+
+    /// <summary>Au démarrage, hors développement, rappelle que les paiements sont simulés.</summary>
+    private sealed class DemoModeWarning(IServiceProvider services, ILogger<DemoModeWarning> logger) : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            if (services.GetService<IHostEnvironment>() is { } environment && !environment.IsDevelopment())
+                logger.LogWarning("Paiements en mode démonstration : aucun encaissement réel");
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
 }

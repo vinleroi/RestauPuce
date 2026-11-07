@@ -14,6 +14,7 @@ public sealed class DemoPaymentGateway(string baseUrl) : IPaymentGateway
         public string RedirectUrl { get; } = redirectUrl;
         public GatewayStatus Status { get; set; } = GatewayStatus.Open;
         public decimal Refunded { get; set; }
+        public HashSet<string> RefundKeys { get; } = [];
     }
 
     private readonly ConcurrentDictionary<string, Entry> _payments = new();
@@ -35,11 +36,15 @@ public sealed class DemoPaymentGateway(string baseUrl) : IPaymentGateway
             return Task.FromResult(entry.Status);
     }
 
-    public Task RefundAsync(string id, decimal amount, CancellationToken ct)
+    public Task<decimal> GetRefundedAmountAsync(string id, CancellationToken ct) => Task.FromResult(RefundedAmount(id));
+
+    public Task RefundAsync(string id, decimal amount, string idempotencyKey, CancellationToken ct)
     {
         var entry = Require(id);
         lock (entry)
         {
+            if (!entry.RefundKeys.Add(idempotencyKey))
+                return Task.CompletedTask; // même clé : déjà exécuté
             if (entry.Status != GatewayStatus.Paid)
                 throw new InvalidOperationException("Remboursement impossible : le paiement n'a pas été réglé");
             if (amount <= 0 || entry.Refunded + amount > entry.Amount)

@@ -39,9 +39,10 @@ public sealed class MolliePaymentGateway : IPaymentGateway
             ["amount"] = Amount(amount),
             ["description"] = description,
             ["redirectUrl"] = redirectUrl,
-            ["webhookUrl"] = webhookUrl,
             ["metadata"] = metadata
         };
+        if (!string.IsNullOrWhiteSpace(webhookUrl)) // absent en développement (adresse locale inaccessible à Mollie)
+            body["webhookUrl"] = webhookUrl;
 
         using var json = await SendAsync(HttpMethod.Post, "payments", body, ct);
         var root = json.RootElement;
@@ -74,8 +75,8 @@ public sealed class MolliePaymentGateway : IPaymentGateway
 
         return status switch
         {
-            "open" or "pending" => GatewayStatus.Open,
-            "paid" or "authorized" => GatewayStatus.Paid,
+            "open" or "pending" or "authorized" => GatewayStatus.Open,
+            "paid" => GatewayStatus.Paid,
             "failed" => GatewayStatus.Failed,
             "expired" => GatewayStatus.Expired,
             "canceled" => GatewayStatus.Canceled,
@@ -83,9 +84,25 @@ public sealed class MolliePaymentGateway : IPaymentGateway
         };
     }
 
-    public async Task RefundAsync(string id, decimal amount, CancellationToken ct)
+    public async Task RefundAsync(string id, decimal amount, string idempotencyKey, CancellationToken ct)
     {
-        using var _ = await SendAsync(HttpMethod.Post, $"payments/{Uri.EscapeDataString(id)}/refunds", new Dictionary<string, object?> { ["amount"] = Amount(amount) }, ct);
+        using var _ = await SendAsync(HttpMethod.Post, $"payments/{Uri.EscapeDataString(id)}/refunds",
+            new Dictionary<string, object?> { ["amount"] = Amount(amount) }, ct, idempotencyKey);
+    }
+
+    public async Task<decimal> GetRefundedAmountAsync(string id, CancellationToken ct)
+    {
+        using var json = await SendAsync(HttpMethod.Get, $"payments/{Uri.EscapeDataString(id)}", null, ct);
+        if (!json.RootElement.TryGetProperty("amountRefunded", out var refunded) || refunded.ValueKind != JsonValueKind.Object)
+            return 0m;
+        try
+        {
+            return decimal.Parse(refunded.GetProperty("value").GetString()!, CultureInfo.InvariantCulture);
+        }
+        catch (Exception ex) when (ex is KeyNotFoundException or FormatException or NullReferenceException or InvalidOperationException)
+        {
+            throw new InvalidOperationException(UnexpectedResponse);
+        }
     }
 
     private const string UnexpectedResponse = "Réponse inattendue de Mollie, réessayez";
@@ -96,9 +113,11 @@ public sealed class MolliePaymentGateway : IPaymentGateway
         ["value"] = amount.ToString("0.00", CultureInfo.InvariantCulture)
     };
 
-    private async Task<JsonDocument> SendAsync(HttpMethod method, string path, object? body, CancellationToken ct)
+    private async Task<JsonDocument> SendAsync(HttpMethod method, string path, object? body, CancellationToken ct, string? idempotencyKey = null)
     {
         using var request = new HttpRequestMessage(method, path);
+        if (idempotencyKey is not null)
+            request.Headers.Add("Idempotency-Key", idempotencyKey);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         if (body is not null)
@@ -157,5 +176,7 @@ public sealed class MissingKeyPaymentGateway : IPaymentGateway
 
     public Task<GatewayStatus> GetStatusAsync(string id, CancellationToken ct) => throw new InvalidOperationException(Message);
 
-    public Task RefundAsync(string id, decimal amount, CancellationToken ct) => throw new InvalidOperationException(Message);
+    public Task RefundAsync(string id, decimal amount, string idempotencyKey, CancellationToken ct) => throw new InvalidOperationException(Message);
+
+    public Task<decimal> GetRefundedAmountAsync(string id, CancellationToken ct) => throw new InvalidOperationException(Message);
 }

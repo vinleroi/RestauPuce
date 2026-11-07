@@ -132,4 +132,103 @@ public class PaymentServiceTests(PostgresFixture postgres)
         Assert.Equal(1, h.Gateway.RefundCalls);
         Assert.Equal(PaymentStatus.Refunded, (await h.PaymentsOfAsync(payment.ReservationId)).Single().Status);
     }
+
+    [Theory]
+    [InlineData(ReservationStatus.Expired, "Paiement reçu après expiration : remboursé")]
+    [InlineData(ReservationStatus.Cancelled, "Paiement reçu après annulation : remboursé")]
+    public async Task Payment_StatusFlipsBetweenReadAndConfirm_IsRefundedNeverLeftPaid(ReservationStatus flip, string note)
+    {
+        var h = await ReservationHarness.CreateAsync(postgres, capacity: 4);
+        var start = await h.CreateAsync(Request(4));
+        var reservation = await h.LoadAsync(start.Token);
+        var payment = (await h.PaymentsOfAsync(reservation.Id)).Single();
+        h.Demo.SetStatus(payment.GatewayPaymentId!, GatewayStatus.Paid);
+
+        // Une autre transaction (expiration paresseuse, annulation du client) change le statut, non validée, pendant la synchronisation.
+        await using var other = h.Open();
+        await using var transaction = await other.Database.BeginTransactionAsync();
+        await other.Reservations.Where(r => r.Id == reservation.Id).ExecuteUpdateAsync(set => set.SetProperty(r => r.Status, flip));
+        if (flip == ReservationStatus.Expired)
+        {
+            // la place libérée est aussitôt reprise par un autre client
+            other.Reservations.Add(new Reservation
+            {
+                PublicToken = "autre-client-" + Guid.NewGuid().ToString("N"), StartsAtUtc = reservation.StartsAtUtc, ServiceName = reservation.ServiceName,
+                PartySize = 4, CustomerName = "Autre", CustomerEmail = "a@b.be", CustomerPhone = "123456", Status = ReservationStatus.Confirmed,
+                CreatedAt = h.Clock.GetUtcNow().UtcDateTime, IsManual = true
+            });
+            await other.SaveChangesAsync();
+        }
+
+        var sync = Task.Run(() => h.Payments.SyncAsync(payment.GatewayPaymentId!));
+        await Task.Delay(1000);
+        Assert.False(sync.IsCompleted); // attend le verrou de ligne de la réservation
+        await transaction.CommitAsync();
+        await sync;
+
+        var after = await h.LoadAsync(start.Token);
+        Assert.Equal(flip, after.Status);
+        Assert.Equal(note, after.Note);
+        var refunded = (await h.PaymentsOfAsync(reservation.Id)).Single();
+        Assert.Equal(PaymentStatus.Refunded, refunded.Status);
+        Assert.Equal(1, h.Gateway.RefundCalls);
+    }
+
+    [Fact]
+    public async Task Refund_UsesIdempotencyKey_AndSecondCallWhileInProgressBacksOff()
+    {
+        var h = await ReservationHarness.CreateAsync(postgres);
+        var start = await h.CreateAsync(Request(2));
+        await h.PayAsync(start.Token);
+        var payment = (await h.PaymentsOfAsync((await h.LoadAsync(start.Token)).Id)).Single();
+        var release = new TaskCompletionSource();
+        h.Gateway.RefundBlock = release.Task;
+
+        var first = Task.Run(() => h.Payments.RefundAsync(payment.Id));
+        while (h.Gateway.RefundCalls == 0)
+            await Task.Delay(20);
+        await h.Payments.RefundAsync(payment.Id); // paiement RefundPending, remboursement en cours ailleurs
+        Assert.Equal(1, h.Gateway.RefundCalls);
+        release.SetResult();
+        await first;
+
+        Assert.Equal(PaymentStatus.Refunded, (await h.PaymentsOfAsync(payment.ReservationId)).Single().Status);
+        Assert.Equal([$"refund-{payment.Id}"], h.Gateway.RefundKeys);
+    }
+
+    [Fact]
+    public async Task Refund_GatewaySucceededButCallFailed_RetryReconcilesWithoutRefundingAgain()
+    {
+        var h = await ReservationHarness.CreateAsync(postgres);
+        var start = await h.CreateAsync(Request(2));
+        await h.PayAsync(start.Token);
+        var payment = (await h.PaymentsOfAsync((await h.LoadAsync(start.Token)).Id)).Single();
+        h.Gateway.FailAfterRefund = true;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Payments.RefundAsync(payment.Id));
+        Assert.Equal(PaymentStatus.RefundPending, (await h.PaymentsOfAsync(payment.ReservationId)).Single().Status);
+
+        h.Gateway.FailAfterRefund = false;
+        await h.Payments.RefundAsync(payment.Id);
+
+        var after = (await h.PaymentsOfAsync(payment.ReservationId)).Single();
+        Assert.Equal(PaymentStatus.Refunded, after.Status);
+        Assert.Equal(1, h.Gateway.RefundCalls);
+        Assert.Equal(20m, h.Demo.RefundedAmount(payment.GatewayPaymentId!));
+    }
+
+    [Fact]
+    public async Task Payment_Confirmation_LogsConfirmationEmail()
+    {
+        var h = await ReservationHarness.CreateAsync(postgres);
+        var start = await h.CreateAsync(Request(2));
+        Assert.Empty(h.Email.Sent);
+
+        await h.PayAsync(start.Token);
+        await h.Payments.SyncAsync((await h.PaymentsOfAsync((await h.LoadAsync(start.Token)).Id)).Single().GatewayPaymentId!); // rejeu
+
+        var sent = Assert.Single(h.Email.Sent);
+        Assert.Equal("dupont@example.com", sent.To);
+        Assert.Contains("confirmée", sent.Subject);
+    }
 }

@@ -70,6 +70,7 @@ public partial class ReservationService(
     private const string CannotCancelMessage = "Cette réservation ne peut plus être annulée";
     private const int OrderNumberRetries = 5;
     private const int MaxDishQuantity = 50;
+    private const int MaxDishLinesPerGuest = 10;
 
     private readonly OrderService _orders = orders ?? new OrderService(factory);
 
@@ -163,8 +164,7 @@ public partial class ReservationService(
             throw new DomainValidationException(EmailMessage);
         if (phone.Replace(" ", "").Length < 6)
             throw new DomainValidationException(PhoneMessage);
-        if (name.Length > 200 || mail.Length > 200 || phone.Length > 50)
-            throw new DomainValidationException(TooLongMessage);
+        RequireLengths(name, mail, phone, request.Note);
 
         var restaurant = await db.Restaurants.AsNoTracking().FirstAsync(r => r.Id == profile.RestaurantId);
         var startsAtUtc = await ValidateSlotAsync(db, request.Date, request.Time, request.ServiceName, restaurant.TimeZoneId, now, profile, enforceLead: true);
@@ -256,6 +256,8 @@ public partial class ReservationService(
             throw new DomainValidationException($"Indiquez les {request.PartySize} convives et leurs plats");
         if (inputs.Any(g => g.Dishes is null || g.Dishes.Count == 0))
             throw new DomainValidationException("Chaque convive doit choisir au moins un plat");
+        if (inputs.Any(g => g.Dishes.Count > MaxDishLinesPerGuest))
+            throw new DomainValidationException($"Un convive ne peut pas choisir plus de {MaxDishLinesPerGuest} plats");
         if (inputs.SelectMany(g => g.Dishes).Any(d => d.Quantity < 1 || d.Quantity > MaxDishQuantity))
             throw new DomainValidationException("La quantité d'un plat est invalide");
         if (inputs.Any(g => (g.FirstName?.Trim().Length ?? 0) > 100 || (g.LastName?.Trim().Length ?? 0) > 100))
@@ -366,21 +368,37 @@ public partial class ReservationService(
         await CancelAsync(db, reservation.Id, refund: free, now);
     }
 
+    /// <summary>
+    /// Passe la réservation en <c>Cancelled</c> et, avec <paramref name="refund"/>, les paiements réglés en <c>RefundPending</c> dans la même transaction ;
+    /// la passerelle n'est appelée qu'après le commit. Un échec laisse le paiement <c>RefundPending</c>, que le back relance.
+    /// </summary>
     private async Task CancelAsync(ChefOsDbContext db, int reservationId, bool refund, DateTime now)
     {
-        var claimed = await db.Reservations
-            .Where(r => r.Id == reservationId && (r.Status == ReservationStatus.PendingPayment || r.Status == ReservationStatus.Confirmed))
-            .ExecuteUpdateAsync(set => set.SetProperty(r => r.Status, ReservationStatus.Cancelled).SetProperty(r => r.CancelledAt, now));
-        if (claimed != 1)
-            throw new DomainValidationException(CannotCancelMessage);
+        await using (var transaction = await db.Database.BeginTransactionAsync())
+        {
+            var claimed = await db.Reservations
+                .Where(r => r.Id == reservationId && (r.Status == ReservationStatus.PendingPayment || r.Status == ReservationStatus.Confirmed))
+                .ExecuteUpdateAsync(set => set.SetProperty(r => r.Status, ReservationStatus.Cancelled).SetProperty(r => r.CancelledAt, now));
+            if (claimed != 1)
+                throw new DomainValidationException(CannotCancelMessage);
+
+            if (refund)
+            {
+                await db.Payments
+                    .Where(p => p.ReservationId == reservationId && p.Status == PaymentStatus.Paid)
+                    .ExecuteUpdateAsync(set => set.SetProperty(p => p.Status, PaymentStatus.RefundPending).SetProperty(p => p.RefundAmount, p => p.Amount));
+            }
+
+            await transaction.CommitAsync();
+        }
 
         if (!refund)
             return;
 
-        var paid = await db.Payments.AsNoTracking()
-            .Where(p => p.ReservationId == reservationId && p.Status == PaymentStatus.Paid)
+        var pending = await db.Payments.AsNoTracking()
+            .Where(p => p.ReservationId == reservationId && p.Status == PaymentStatus.RefundPending)
             .Select(p => p.Id).ToListAsync();
-        foreach (var paymentId in paid)
+        foreach (var paymentId in pending)
         {
             try
             {
@@ -388,7 +406,6 @@ public partial class ReservationService(
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Le paiement est passé en RefundPending avant l'appel à la passerelle : le back relance avec PaymentService.RefundAsync.
                 logger?.LogWarning("Remboursement du paiement {PaymentId} impossible, à relancer : {Reason}", paymentId, ex.Message);
             }
         }
@@ -463,8 +480,7 @@ public partial class ReservationService(
             throw new DomainValidationException(NameMessage);
         if (mail.Length > 0 && !EmailPattern().IsMatch(mail))
             throw new DomainValidationException(EmailMessage);
-        if (name.Length > 200 || mail.Length > 200 || phone.Length > 50)
-            throw new DomainValidationException(TooLongMessage);
+        RequireLengths(name, mail, phone, request.Note);
 
         var warnings = new List<string>();
         var closed = await db.ClosureDays.AnyAsync(c => c.DateLocal == request.Date);
@@ -543,7 +559,7 @@ public partial class ReservationService(
                            + (string.IsNullOrWhiteSpace(reservation.Note) ? "" : $" · {reservation.Note.Trim()}");
                 try
                 {
-                    orderId = await _orders.CreateFromFrozenLinesAsync(OrderSource.Vitrine, reservation.CustomerName, note, lines, db);
+                    orderId = await _orders.CreateFromFrozenLinesAsync(OrderSource.Vitrine, reservation.CustomerName, note, lines, db, Now);
                 }
                 catch (DbUpdateException ex) when (OrderService.IsOrderNumberConflict(ex))
                 {
@@ -603,6 +619,19 @@ public partial class ReservationService(
         {
             logger?.LogWarning("Envoi de l'e-mail impossible : {Reason}", ex.Message);
         }
+    }
+
+    /// <summary>Plafonds des saisies publiques.</summary>
+    private static void RequireLengths(string name, string mail, string phone, string? note)
+    {
+        if (name.Length > 120)
+            throw new DomainValidationException("Le nom ne peut pas dépasser 120 caractères");
+        if (mail.Length > 200)
+            throw new DomainValidationException("L'adresse e-mail ne peut pas dépasser 200 caractères");
+        if (phone.Length > 40)
+            throw new DomainValidationException("Le numéro de téléphone ne peut pas dépasser 40 caractères");
+        if ((note?.Trim().Length ?? 0) > 1000)
+            throw new DomainValidationException("La note ne peut pas dépasser 1000 caractères");
     }
 
     private static string NewToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');

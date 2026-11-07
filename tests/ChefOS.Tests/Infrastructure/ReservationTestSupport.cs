@@ -15,7 +15,12 @@ public sealed class FaultyGateway(DemoPaymentGateway inner) : IPaymentGateway
 {
     public bool FailCreate { get; set; }
     public bool FailRefund { get; set; }
+    /// <summary>Le remboursement réussit chez la passerelle, puis l'appel échoue (réponse perdue, enregistrement impossible).</summary>
+    public bool FailAfterRefund { get; set; }
+    /// <summary>Si défini, le remboursement attend cette tâche (pour tester deux appels simultanés).</summary>
+    public Task? RefundBlock { get; set; }
     public int RefundCalls;
+    public List<string> RefundKeys { get; } = [];
     public string Name => inner.Name;
 
     public Task<GatewayPayment> CreateAsync(decimal amount, string description, string redirectUrl, string webhookUrl,
@@ -24,10 +29,20 @@ public sealed class FaultyGateway(DemoPaymentGateway inner) : IPaymentGateway
 
     public Task<GatewayStatus> GetStatusAsync(string id, CancellationToken ct) => inner.GetStatusAsync(id, ct);
 
-    public Task RefundAsync(string id, decimal amount, CancellationToken ct)
+    public Task<decimal> GetRefundedAmountAsync(string id, CancellationToken ct) => inner.GetRefundedAmountAsync(id, ct);
+
+    public async Task RefundAsync(string id, decimal amount, string idempotencyKey, CancellationToken ct)
     {
         Interlocked.Increment(ref RefundCalls);
-        return FailRefund ? throw new InvalidOperationException("Remboursement refusé") : inner.RefundAsync(id, amount, ct);
+        lock (RefundKeys)
+            RefundKeys.Add(idempotencyKey);
+        if (RefundBlock is { } block)
+            await block;
+        if (FailRefund)
+            throw new InvalidOperationException("Remboursement refusé");
+        await inner.RefundAsync(id, amount, idempotencyKey, ct);
+        if (FailAfterRefund)
+            throw new InvalidOperationException("Réponse perdue");
     }
 }
 
@@ -97,7 +112,7 @@ public sealed class ReservationHarness
         TimeProvider clock, IPaymentGateway gateway, IEmailSender email)
     {
         var factory = new TestContextFactory(options, restaurantId);
-        var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance);
+        var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance, email);
         return (payments, new ReservationService(factory, clock, payments, email));
     }
 

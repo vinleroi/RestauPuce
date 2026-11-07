@@ -15,5 +15,9 @@ public interface IPaymentGateway
 
     Task<GatewayStatus> GetStatusAsync(string id, CancellationToken ct);
 
-    Task RefundAsync(string id, decimal amount, CancellationToken ct);
+    /// <summary>Rembourse <paramref name="amount"/>. <paramref name="idempotencyKey"/> identifie ce remboursement : le rejouer avec la même clé ne le crée pas deux fois.</summary>
+    Task RefundAsync(string id, decimal amount, string idempotencyKey, CancellationToken ct);
+
+    /// <summary>Montant déjà remboursé chez la passerelle (sert à rattraper un remboursement réussi dont l'enregistrement a échoué).</summary>
+    Task<decimal> GetRefundedAmountAsync(string id, CancellationToken ct);
 }

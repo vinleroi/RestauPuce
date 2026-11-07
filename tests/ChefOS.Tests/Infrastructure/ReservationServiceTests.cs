@@ -639,4 +639,62 @@ public class ReservationServiceTests(PostgresFixture postgres)
         Assert.Equal(ReservationStatus.PendingPayment, (await h.LoadAsync(start.Token)).Status);
         Assert.NotEqual(0, steak);
     }
+
+    [Fact]
+    public async Task Cancel_ClaimsRefundInTheSameTransaction_GatewayCalledAfterCommit()
+    {
+        var h = await CreateAsync(postgres);
+        var start = await h.CreateAsync(Request(2));
+        await h.PayAsync(start.Token);
+        var release = new TaskCompletionSource();
+        h.Gateway.RefundBlock = release.Task;
+
+        var cancel = Task.Run(() => h.Reservations.CancelByCustomerAsync(start.Token));
+        while (h.Gateway.RefundCalls == 0)
+            await Task.Delay(20);
+
+        // la passerelle est en cours d'appel : réservation annulée et paiement RefundPending sont déjà validés ensemble
+        var reservation = await h.LoadAsync(start.Token);
+        Assert.Equal(ReservationStatus.Cancelled, reservation.Status);
+        Assert.Equal(PaymentStatus.RefundPending, (await h.PaymentsOfAsync(reservation.Id)).Single().Status);
+        release.SetResult();
+        await cancel;
+        Assert.Equal(PaymentStatus.Refunded, (await h.PaymentsOfAsync(reservation.Id)).Single().Status);
+    }
+
+    [Fact]
+    public async Task Seat_OrderTimestampsUseTheInjectedClock()
+    {
+        var h = await CreateAsync(postgres, profile: p => p.PrepaymentPercent = 0m);
+        var steak = await h.AddDishAsync("Steak");
+        var start = await h.CreateAsync(Request(6, guests: Enumerable.Range(0, 6).Select(i => Guest($"G{i}", "X", steak)).ToList()));
+        h.Clock.Advance(TimeSpan.FromHours(3));
+
+        await h.Reservations.SeatAsync((await h.LoadAsync(start.Token)).Id, ReservationStatus.Confirmed);
+
+        await using var db = h.Open();
+        var order = await db.Orders.SingleAsync();
+        var expected = h.Clock.GetUtcNow().UtcDateTime;
+        Assert.Equal(expected, order.CreatedAt);
+        Assert.Equal(expected, order.StatusChangedAt);
+    }
+
+    [Fact]
+    public async Task Create_InputCaps_RefusedInFrench()
+    {
+        var h = await CreateAsync(postgres);
+        var steak = await h.AddDishAsync("Steak");
+        string Long(int n) => new('x', n);
+
+        Assert.Equal("Le nom ne peut pas dépasser 120 caractères", (await RefusedAsync(h.CreateAsync(Request(name: Long(121))))).Message);
+        Assert.Equal("L'adresse e-mail ne peut pas dépasser 200 caractères", (await RefusedAsync(h.CreateAsync(Request(email: Long(196) + "@b.be")))).Message);
+        Assert.Equal("Le numéro de téléphone ne peut pas dépasser 40 caractères", (await RefusedAsync(h.CreateAsync(Request(phone: Long(41))))).Message);
+        Assert.Equal("La note ne peut pas dépasser 1000 caractères", (await RefusedAsync(h.CreateAsync(Request(note: Long(1001))))).Message);
+        var tooMany = Enumerable.Range(0, 6).Select(i => Guest("A", "B", Enumerable.Repeat(steak, i == 0 ? 11 : 1).ToArray())).ToList();
+        Assert.Equal("Un convive ne peut pas choisir plus de 10 plats", (await RefusedAsync(h.CreateAsync(Request(6, guests: tooMany)))).Message);
+
+        var ok = await h.CreateAsync(Request(name: Long(120), note: Long(1000), phone: Long(40), email: Long(194) + "@b.be"));
+        Assert.Equal(ReservationStatus.PendingPayment, ok.Status);
+        await RefusedAsync(h.Reservations.CreateManualAsync(Request(note: Long(1001)), true));
+    }
 }

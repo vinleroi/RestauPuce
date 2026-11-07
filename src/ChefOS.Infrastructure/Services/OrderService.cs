@@ -87,7 +87,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
     /// remonte en <see cref="DbUpdateException"/> (voir <see cref="IsOrderNumberConflict"/>) et l'appelant reprend toute sa transaction.
     /// </summary>
     internal async Task<int> CreateFromFrozenLinesAsync(OrderSource source, string? tableOrCustomer, string? note,
-        IReadOnlyList<FrozenOrderLine> lines, ChefOsDbContext? db = null)
+        IReadOnlyList<FrozenOrderLine> lines, ChefOsDbContext? db = null, DateTime? now = null)
     {
         if (lines.Count == 0)
             throw new DomainValidationException(NoLineMessage);
@@ -95,7 +95,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
             throw new DomainValidationException(QuantityMessage);
 
         if (db is not null)
-            return await InsertFrozenAsync(db, source, tableOrCustomer, note, lines);
+            return await InsertFrozenAsync(db, source, tableOrCustomer, note, lines, now);
 
         for (var attempt = 0; attempt <= NumberRetries; attempt++)
         {
@@ -103,7 +103,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
             await using var transaction = await own.Database.BeginTransactionAsync();
             try
             {
-                var id = await InsertFrozenAsync(own, source, tableOrCustomer, note, lines);
+                var id = await InsertFrozenAsync(own, source, tableOrCustomer, note, lines, now);
                 await transaction.CommitAsync();
                 return id;
             }
@@ -115,7 +115,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
         throw new DomainValidationException(NumberMessage);
     }
 
-    private static async Task<int> InsertFrozenAsync(ChefOsDbContext db, OrderSource source, string? table, string? note, IReadOnlyList<FrozenOrderLine> lines)
+    private static async Task<int> InsertFrozenAsync(ChefOsDbContext db, OrderSource source, string? table, string? note, IReadOnlyList<FrozenOrderLine> lines, DateTime? now)
     {
         var ids = lines.Select(l => l.RecipeId).Distinct().ToList();
         if (await db.Recipes.CountAsync(r => r.Kind == RecipeKind.Dish && ids.Contains(r.Id)) != ids.Count)
@@ -125,16 +125,16 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
         {
             RecipeId = l.RecipeId, Quantity = l.Quantity, UnitPriceInclVat = l.UnitPriceInclVat, VatRate = l.VatRate, Note = NullIfBlank(l.Note)
         }).ToList();
-        var order = AddNumberedOrder(db, source, table, note, entities, await NextNumberAsync(db));
+        var order = AddNumberedOrder(db, source, table, note, entities, await NextNumberAsync(db), now);
         await db.SaveChangesAsync();
         return order.Id;
     }
 
     private static async Task<int> NextNumberAsync(ChefOsDbContext db) => (await db.Orders.MaxAsync(o => (int?)o.Number) ?? 0) + 1;
 
-    private static Order AddNumberedOrder(ChefOsDbContext db, OrderSource source, string? table, string? note, List<OrderLine> lines, int number)
+    private static Order AddNumberedOrder(ChefOsDbContext db, OrderSource source, string? table, string? note, List<OrderLine> lines, int number, DateTime? at = null)
     {
-        var now = DateTime.UtcNow;
+        var now = at ?? DateTime.UtcNow;
         var order = new Order
         {
             Number = number,

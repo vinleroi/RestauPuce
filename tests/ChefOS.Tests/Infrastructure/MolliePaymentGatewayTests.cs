@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Text.Json;
 using ChefOS.Infrastructure;
@@ -62,6 +63,39 @@ public sealed class MolliePaymentGatewayTests
     }
 
     [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    public async Task Create_OmitsBlankWebhookUrl(string? webhook)
+    {
+        var (gateway, handler) = Create((_, _) => Json("""{"id":"tr_1","_links":{"checkout":{"href":"https://pay.test/1"}}}"""));
+
+        await gateway.CreateAsync(10m, "d", "https://r", webhook!, new Dictionary<string, string>(), default);
+
+        using var json = JsonDocument.Parse(handler.Calls[0].Body!);
+        Assert.False(json.RootElement.TryGetProperty("webhookUrl", out _));
+        Assert.Equal("https://r", json.RootElement.GetProperty("redirectUrl").GetString());
+    }
+
+    [Fact]
+    public async Task GetRefundedAmount_ReadsAmountRefunded()
+    {
+        var (gateway, _) = Create((_, _) => Json("""{"status":"paid","amountRefunded":{"currency":"EUR","value":"12.50"}}"""));
+        var (none, _) = Create((_, _) => Json("""{"status":"paid"}"""));
+
+        Assert.Equal(12.5m, await gateway.GetRefundedAmountAsync("tr_1", default));
+        Assert.Equal(0m, await none.GetRefundedAmountAsync("tr_1", default));
+    }
+
+    [Theory]
+    [InlineData("jean@dupont.be", "j***@d***.be")]
+    [InlineData("a@b.co.uk", "a***@b***.uk")]
+    [InlineData("pas-un-mail", "***")]
+    [InlineData("", "***")]
+    public void EmailSender_MasksRecipient(string address, string expected) =>
+        Assert.Equal(expected, ChefOS.Infrastructure.Notifications.LoggingEmailSender.Mask(address));
+
+    [Theory]
     [InlineData(49.5, "49.50")]
     [InlineData(7, "7.00")]
     [InlineData(1234.56, "1234.56")]
@@ -86,7 +120,7 @@ public sealed class MolliePaymentGatewayTests
     [InlineData("open", GatewayStatus.Open)]
     [InlineData("pending", GatewayStatus.Open)]
     [InlineData("paid", GatewayStatus.Paid)]
-    [InlineData("authorized", GatewayStatus.Paid)]
+    [InlineData("authorized", GatewayStatus.Open)]
     [InlineData("failed", GatewayStatus.Failed)]
     [InlineData("expired", GatewayStatus.Expired)]
     [InlineData("canceled", GatewayStatus.Canceled)]
@@ -116,10 +150,11 @@ public sealed class MolliePaymentGatewayTests
     {
         var (gateway, handler) = Create((_, _) => Json("""{"id":"re_1","status":"queued"}""", HttpStatusCode.Created));
 
-        await gateway.RefundAsync("tr_9", 36.5m, default);
+        await gateway.RefundAsync("tr_9", 36.5m, "refund-42", default);
 
         var (request, body) = Assert.Single(handler.Calls);
         Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal("refund-42", Assert.Single(request.Headers.GetValues("Idempotency-Key")));
         Assert.Equal("https://api.mollie.com/v2/payments/tr_9/refunds", request.RequestUri!.ToString());
         using var json = JsonDocument.Parse(body!);
         Assert.Equal("36.50", json.RootElement.GetProperty("amount").GetProperty("value").GetString());
@@ -182,10 +217,11 @@ public sealed class MolliePaymentGatewayTests
         Assert.StartsWith("https://vitrine.test/paiement-demo/demo_", created.CheckoutUrl);
         Assert.EndsWith(created.Id, created.CheckoutUrl);
         Assert.Equal(GatewayStatus.Open, await gateway.GetStatusAsync(created.Id, default));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => gateway.RefundAsync(created.Id, 10m, default));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => gateway.RefundAsync(created.Id, 10m, "k0", default));
         gateway.SetStatus(created.Id, GatewayStatus.Paid);
-        await gateway.RefundAsync(created.Id, 10m, default);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => gateway.RefundAsync(created.Id, 25m, default));
+        await gateway.RefundAsync(created.Id, 10m, "k1", default);
+        await gateway.RefundAsync(created.Id, 10m, "k1", default); // même clé : sans effet
+        await Assert.ThrowsAsync<InvalidOperationException>(() => gateway.RefundAsync(created.Id, 25m, "k2", default));
         Assert.Equal(10m, gateway.RefundedAmount(created.Id));
         await Assert.ThrowsAsync<InvalidOperationException>(() => gateway.GetStatusAsync("inconnu", default));
     }
@@ -260,5 +296,47 @@ public sealed class MolliePaymentGatewayTests
         {
             Environment.SetEnvironmentVariable("MOLLIE_API_KEY", previous);
         }
+    }
+
+    private sealed class Capture : Microsoft.Extensions.Logging.ILoggerProvider, Microsoft.Extensions.Logging.ILogger
+    {
+        public List<string> Warnings { get; } = [];
+        public Microsoft.Extensions.Logging.ILogger CreateLogger(string categoryName) => this;
+        public void Dispose() { }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == Microsoft.Extensions.Logging.LogLevel.Warning)
+                Warnings.Add(formatter(state, exception));
+        }
+    }
+
+    private sealed class FakeEnvironment(string name) : Microsoft.Extensions.Hosting.IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = name;
+        public string ApplicationName { get; set; } = "test";
+        public string ContentRootPath { get; set; } = "/";
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = null!;
+    }
+
+    [Theory]
+    [InlineData("Production", true)]
+    [InlineData("Development", false)]
+    public async Task Registration_DemoGateway_WarnsAtStartupOutsideDevelopment(string environment, bool warns)
+    {
+        var capture = new Capture();
+        var services = new ServiceCollection();
+        services.AddLogging(b => b.AddProvider(capture));
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostEnvironment>(new FakeEnvironment(environment));
+        services.AddSingleton<ChefOS.Infrastructure.Data.ITenantContext>(new ChefOS.Infrastructure.Data.FixedTenantContext(null));
+        services.AddChefOsInfrastructure("Host=localhost;Port=1;Database=chefos_unused;Username=u;Password=p");
+        services.AddChefOsPayments(new ConfigurationBuilder().Build());
+        using var provider = services.BuildServiceProvider();
+
+        foreach (var hosted in provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>())
+            await hosted.StartAsync(default);
+
+        Assert.Equal(warns, capture.Warnings.Contains("Paiements en mode démonstration : aucun encaissement réel"));
     }
 }

@@ -2,6 +2,7 @@ using ChefOS.Core.Common;
 using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Payments;
+using ChefOS.Infrastructure.Notifications;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -17,7 +18,8 @@ public record PaymentStart(int PaymentId, string CheckoutUrl);
 /// simultanés ne peuvent ni confirmer deux fois ni rembourser deux fois. Statuts d'un paiement : <c>Open → Paid → RefundPending → Refunded</c>,
 /// ou <c>Open → Failed | Expired | Canceled</c>.
 /// </summary>
-public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPaymentGateway gateway, TimeProvider clock, ILogger<PaymentService> logger)
+public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPaymentGateway gateway, TimeProvider clock, ILogger<PaymentService> logger,
+    IEmailSender? email = null)
 {
     private const string InitFailedMessage = "Le paiement n'a pas pu être initialisé, réessayez";
     private const string UnknownReservationMessage = "Réservation introuvable";
@@ -142,6 +144,7 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
         var localDate = RestaurantClock.ToLocal(reservation.StartsAtUtc, timeZone).Date;
 
         var refund = false;
+        var confirmed = false;
         await using (var transaction = await db.Database.BeginTransactionAsync(ct))
         {
             // Le verrou du service sérialise cette confirmation avec toute autre prise de places du même service et du même jour.
@@ -154,6 +157,10 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
             if (claimed != 1)
                 return await CurrentStatusAsync(db, payment.Id, ct);
 
+            // Verrou de ligne de la réservation (mise à jour sans effet) : l'expiration paresseuse et l'annulation du client, qui ne prennent pas le verrou du
+            // service, attendent la fin de cette transaction, et la lecture qui suit voit leur résultat. Le statut lu ne peut plus changer avant le commit.
+            await db.Reservations.Where(r => r.Id == reservation.Id)
+                .ExecuteUpdateAsync(set => set.SetProperty(r => r.Note, r => r.Note), ct);
             var current = await db.Reservations.Where(r => r.Id == reservation.Id)
                 .Select(r => new { r.Status, r.CreatedAt }).FirstAsync(ct);
             var fresh = current.Status == ReservationStatus.PendingPayment && now - current.CreatedAt < TimeSpan.FromMinutes(pendingMinutes);
@@ -161,41 +168,45 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
             string? note = null;
             if (fresh)
             {
-                await ConfirmAsync(db, reservation.Id, ReservationStatus.PendingPayment, now, ct);
+                confirmed = await ConfirmAsync(db, reservation.Id, ReservationStatus.PendingPayment, now, ct) == 1;
+                note = PaidAfterExpiryNote; // n'est utilisée que si la confirmation n'a touché aucune ligne
             }
             else if (current.Status is ReservationStatus.PendingPayment or ReservationStatus.Expired)
             {
                 var remaining = await ReservationCapacity.RemainingAsync(db, reservation.ServiceName, localDate, timeZone, now, pendingMinutes, reservation.Id, ct);
                 if (remaining >= reservation.PartySize)
-                {
-                    await ConfirmAsync(db, reservation.Id, current.Status, now, ct);
-                }
-                else
-                {
-                    refund = true;
-                    note = PaidAfterExpiryNote;
-                }
+                    confirmed = await ConfirmAsync(db, reservation.Id, current.Status, now, ct) == 1;
+                note = PaidAfterExpiryNote;
             }
             else if (current.Status == ReservationStatus.Cancelled)
             {
                 // Annulée entre-temps : la place a été rendue, elle n'est pas reprise silencieusement.
-                refund = true;
                 note = PaidAfterCancellationNote;
             }
+            else
+            {
+                note = string.Empty; // installée ou absente : le paiement est enregistré, rien à faire
+            }
 
+            // Ni confirmée ni simplement enregistrée : le paiement ne doit jamais rester réglé sans place, on le rembourse.
+            refund = !confirmed && note is { Length: > 0 };
             if (refund)
             {
                 await db.Payments.Where(p => p.Id == payment.Id && p.Status == PaymentStatus.Paid)
                     .ExecuteUpdateAsync(set => set.SetProperty(p => p.Status, PaymentStatus.RefundPending).SetProperty(p => p.RefundAmount, payment.Amount), ct);
                 var from = current.Status;
+                var keep = from == ReservationStatus.Cancelled ? ReservationStatus.Cancelled : ReservationStatus.Expired;
                 await db.Reservations.Where(r => r.Id == reservation.Id && r.Status == from)
                     .ExecuteUpdateAsync(set => set
-                        .SetProperty(r => r.Status, from == ReservationStatus.Cancelled ? ReservationStatus.Cancelled : ReservationStatus.Expired)
+                        .SetProperty(r => r.Status, keep)
                         .SetProperty(r => r.Note, r => r.Note == null ? note : r.Note + "\n" + note), ct);
             }
 
             await transaction.CommitAsync(ct);
         }
+
+        if (confirmed)
+            await TrySendConfirmationAsync(db, reservation, timeZone, localDate);
 
         if (refund)
         {
@@ -213,7 +224,24 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
         return await CurrentStatusAsync(db, payment.Id, ct);
     }
 
-    private static Task ConfirmAsync(ChefOsDbContext db, int reservationId, ReservationStatus from, DateTime now, CancellationToken ct) =>
+    private async Task TrySendConfirmationAsync(ChefOsDbContext db, Reservation reservation, string timeZone, DateOnly localDate)
+    {
+        if (email is null || string.IsNullOrWhiteSpace(reservation.CustomerEmail))
+            return;
+        try
+        {
+            var name = await db.Restaurants.Where(r => r.Id == reservation.RestaurantId).Select(r => r.Name).FirstAsync();
+            var time = RestaurantClock.ToLocal(reservation.StartsAtUtc, timeZone).Time;
+            await email.SendAsync(reservation.CustomerEmail, $"Votre réservation chez {name} est confirmée",
+                $"Bonjour {reservation.CustomerName}, votre paiement est reçu : votre table pour {reservation.PartySize} personne(s) le {localDate:dd/MM/yyyy} à {time:HH\\:mm} est confirmée.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning("Envoi de l'e-mail de confirmation impossible : {Reason}", ex.Message);
+        }
+    }
+
+    private static Task<int> ConfirmAsync(ChefOsDbContext db, int reservationId, ReservationStatus from, DateTime now, CancellationToken ct) =>
         db.Reservations.Where(r => r.Id == reservationId && r.Status == from)
             .ExecuteUpdateAsync(set => set.SetProperty(r => r.Status, ReservationStatus.Confirmed).SetProperty(r => r.ConfirmedAt, now), ct);
 
@@ -221,9 +249,11 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
         db.Payments.AsNoTracking().Where(p => p.Id == paymentId).Select(p => p.Status).FirstAsync(ct);
 
     /// <summary>
-    /// Rembourse intégralement un paiement réglé, une seule fois : <c>Paid → RefundPending</c> est une mise à jour conditionnelle (l'appel qui la gagne appelle
-    /// la passerelle, les autres s'effacent), puis <c>RefundPending → Refunded</c>. Un paiement déjà <c>Refunded</c> est ignoré. Si la passerelle échoue, le
-    /// paiement reste <c>RefundPending</c> et l'erreur remonte : relancer l'appel réessaie le remboursement.
+    /// Rembourse intégralement un paiement réglé, une seule fois. <c>Paid → RefundPending</c> est une mise à jour conditionnelle (l'appel qui la gagne continue,
+    /// les autres s'effacent). L'appel à la passerelle se fait ensuite sous un verrou consultatif de transaction propre au paiement : une relance simultanée d'un
+    /// paiement déjà <c>RefundPending</c> s'efface si un autre appel est en cours. La clé d'idempotence <c>refund-{id}</c> rend un rejeu inoffensif chez la passerelle, et
+    /// avant de rembourser on relit le montant déjà remboursé : si la passerelle a réussi mais que l'enregistrement a échoué, la relance rattrape (<c>Refunded</c>)
+    /// au lieu d'échouer indéfiniment. Si la passerelle échoue, le paiement reste <c>RefundPending</c> et l'erreur remonte.
     /// </summary>
     /// <exception cref="DomainValidationException">Paiement inconnu ou non remboursable (jamais réglé).</exception>
     public async Task RefundAsync(int paymentId, CancellationToken ct = default)
@@ -247,11 +277,23 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
             throw new DomainValidationException(NotRefundableMessage);
         }
 
-        await gateway.RefundAsync(payment.GatewayPaymentId!, payment.Amount, ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var lockKey = RefundLockBase + paymentId;
+        var acquired = await db.Database.SqlQuery<bool>($"SELECT pg_try_advisory_xact_lock({lockKey}) AS \"Value\"").SingleAsync(ct);
+        if (!acquired)
+            return; // un autre appel rembourse en ce moment
+
+        var gatewayId = payment.GatewayPaymentId!;
+        if (await gateway.GetRefundedAmountAsync(gatewayId, ct) < payment.Amount)
+            await gateway.RefundAsync(gatewayId, payment.Amount, $"refund-{paymentId}", ct);
 
         var refundedAt = Now;
         await db.Payments
             .Where(p => p.Id == paymentId && p.Status == PaymentStatus.RefundPending)
             .ExecuteUpdateAsync(set => set.SetProperty(p => p.Status, PaymentStatus.Refunded).SetProperty(p => p.RefundedAt, refundedAt), ct);
+        await transaction.CommitAsync(ct);
     }
+
+    /// <summary>Espace de clés des verrous de remboursement (verrou à un seul bigint, distinct de celui des services à deux entiers).</summary>
+    private const long RefundLockBase = 1L << 40;
 }
