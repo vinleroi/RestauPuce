@@ -15,6 +15,8 @@ public class Recipe : ITenantScoped
     public decimal? OutputQuantity { get; set; }
     public BaseUnit? OutputUnit { get; set; }
     public string? Instructions { get; set; }
+    public string? PublicDescription { get; set; }
+    public bool ShowOnVitrine { get; set; }
     public bool IsArchived { get; set; }
     public List<RecipeLine> Lines { get; set; } = new();
 }

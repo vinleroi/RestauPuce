@@ -10,5 +10,7 @@ public class Restaurant
     public decimal DefaultFoodVatRate { get; set; } = 0.12m;
     public decimal DefaultDrinkVatRate { get; set; } = 0.21m;
     public decimal FoodCostAlertThreshold { get; set; } = 0.35m;
+    /// <summary>Fuseau IANA du restaurant, utilisé pour les horaires de réservation.</summary>
+    public string TimeZoneId { get; set; } = "Europe/Brussels";
     public DateTime CreatedAt { get; set; }
 }
