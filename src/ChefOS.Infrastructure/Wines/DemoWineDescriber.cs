@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using ChefOS.Core.Vitrine;
 
 namespace ChefOS.Infrastructure.Wines;
@@ -26,7 +27,7 @@ public sealed class DemoWineDescriber : IWineDescriber
             return WineColor.Effervescent;
         if (ContainsAny(lower, "sauternes", "moelleux", "liquoreux", "muscat", "porto", "late harvest", "vendanges tardives"))
             return WineColor.Doux;
-        if (ContainsAny(lower, "rosé", "rose", "rosado"))
+        if (Regex.IsMatch(lower, @"\b(rosé|rose|rosado)\b"))
             return WineColor.Rose;
         if (ContainsAny(lower, "blanc", "chardonnay", "sauvignon", "riesling", "chablis", "muscadet", "viognier", "chenin", "albariño"))
             return WineColor.Blanc;

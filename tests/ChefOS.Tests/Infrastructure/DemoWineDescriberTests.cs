@@ -9,6 +9,16 @@ public class DemoWineDescriberTests
         new DemoWineDescriber().DescribeAsync(new WineDescribeRequest(name, 2020, "Domaine", appellation, dishes));
 
     [Theory]
+    [InlineData("Riesling Rosenberg", WineColor.Blanc)]
+    [InlineData("Rosenberg", WineColor.Rouge)]
+    [InlineData("Domaine de la Rose", WineColor.Rose)]
+    [InlineData("Tavel Rosé", WineColor.Rose)]
+    public async Task Describe_RoseIsMatchedOnWordBoundariesOnly(string name, WineColor expected)
+    {
+        Assert.Equal(expected, (await Describe(name)).Color);
+    }
+
+    [Theory]
     [InlineData("Chardonnay du coin", WineColor.Blanc)]
     [InlineData("Côtes de Provence rosé", WineColor.Rose)]
     [InlineData("Crémant brut", WineColor.Effervescent)]

@@ -12,7 +12,7 @@ namespace ChefOS.Infrastructure.Services;
 /// Carte des vins du restaurant courant : recherche dans la bibliothèque partagée, copie d'une fiche, vins manuels, accords avec les plats,
 /// ordre par couleur, fiche rédigée par l'assistant (<see cref="IWineDescriber"/>) et lecture publique des vins publiés.
 /// Une fiche rédigée par l'assistant est un brouillon (<see cref="WineListItem.DescriptionIsAiDraft"/>) : seule la confirmation explicite du chef
-/// l'efface, et la publication l'exige. Les écritures sont tout ou rien.
+/// l'efface, et la publication l'exige. Chaque écriture s'applique dans une seule transaction : tout ou rien.
 /// </summary>
 public class WineService(IDbContextFactory<ChefOsDbContext> factory, IWineDescriber describer, TimeProvider? timeProvider = null)
 {
@@ -151,6 +151,8 @@ public class WineService(IDbContextFactory<ChefOsDbContext> factory, IWineDescri
         var recipeIds = input.PairingRecipeIds.Distinct().ToList();
 
         await using var db = await factory.CreateDbContextAsync();
+        // Une seule transaction : le vin, ses accords et le compactage de l'ancienne couleur s'appliquent ensemble ou pas du tout.
+        await using var transaction = await db.Database.BeginTransactionAsync();
 
         WineListItem wine;
         var oldColor = (WineColor?)null;
@@ -203,6 +205,8 @@ public class WineService(IDbContextFactory<ChefOsDbContext> factory, IWineDescri
         if (oldColor is { } previous && previous != input.Color)
             await CompactAsync(db, previous);
 
+        await transaction.CommitAsync();
+
         return wine;
     }
 
@@ -224,6 +228,7 @@ public class WineService(IDbContextFactory<ChefOsDbContext> factory, IWineDescri
     public async Task DeleteAsync(int id)
     {
         await using var db = await factory.CreateDbContextAsync();
+        await using var transaction = await db.Database.BeginTransactionAsync();
 
         var wine = await db.WineListItems.FirstOrDefaultAsync(w => w.Id == id)
             ?? throw new DomainValidationException(UnknownWineMessage);
@@ -231,6 +236,7 @@ public class WineService(IDbContextFactory<ChefOsDbContext> factory, IWineDescri
         db.WineListItems.Remove(wine);
         await db.SaveChangesAsync();
         await CompactAsync(db, wine.Color);
+        await transaction.CommitAsync();
     }
 
     /// <summary>Place le vin à <paramref name="newPosition"/> (à partir de 0) parmi les vins de sa couleur ; les positions de la couleur sont renumérotées sans trou.</summary>

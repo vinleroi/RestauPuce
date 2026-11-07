@@ -5,6 +5,7 @@ using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Services;
 using ChefOS.Infrastructure.Wines;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ChefOS.Tests.Infrastructure;
@@ -291,6 +292,73 @@ public class WineServiceTests(PostgresFixture postgres)
         Assert.Equal(["R2", "R3", "W1", "R1"], list.Select(w => w.Name));
         Assert.Equal([0, 1], list.Where(w => w.Color == WineColor.Rouge).Select(w => w.Position));
         Assert.Equal([0, 1], list.Where(w => w.Color == WineColor.Blanc).Select(w => w.Position));
+    }
+
+    // ── Tout ou rien ─────────────────────────────────────────────────────────
+
+    /// <summary>Laisse passer failOn - 1 enregistrements, puis échoue au suivant (étape tardive d'une opération).</summary>
+    private sealed class FailingSaveInterceptor(int failOn) : SaveChangesInterceptor
+    {
+        private int _count;
+        public bool Armed { get; set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (Armed && ++_count == failOn)
+                throw new InvalidOperationException("échec simulé");
+
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private static WineService CreateInterceptedService(DbContextOptions<ChefOsDbContext> options, int restaurantId, FailingSaveInterceptor interceptor) =>
+        CreateService(new DbContextOptionsBuilder<ChefOsDbContext>(options).AddInterceptors(interceptor).Options, restaurantId);
+
+    [Fact]
+    public async Task Save_FailureInThePairingStep_PersistsNothing()
+    {
+        var (options, restaurant, _) = await SetUpAsync();
+        var steak = await AddDishAsync(options, restaurant, "Entrecôte");
+        var interceptor = new FailingSaveInterceptor(failOn: 2) { Armed = true };
+        var service = CreateInterceptedService(options, restaurant, interceptor);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.SaveAsync(Input(pairings: [steak])));
+
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurant));
+        Assert.Empty(await db.WineListItems.ToListAsync());
+        Assert.Empty(await db.WineListItemPairings.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Save_FailureInTheCompactionStep_KeepsTheWineInItsOldColourGroup()
+    {
+        var (options, restaurant, plain) = await SetUpAsync();
+        var r1 = await plain.SaveAsync(Input("R1"));
+        await plain.SaveAsync(Input("R2"));
+        // Changer de couleur : enregistrement du vin (1), accords (2), compactage de l'ancienne couleur (3).
+        var interceptor = new FailingSaveInterceptor(failOn: 3) { Armed = true };
+        var service = CreateInterceptedService(options, restaurant, interceptor);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.SaveAsync(Input("R1", WineColor.Blanc, id: r1.Id)));
+
+        var list = await plain.ListAsync();
+        Assert.Equal([WineColor.Rouge, WineColor.Rouge], list.Select(w => w.Color));
+        Assert.Equal(["R1", "R2"], list.Select(w => w.Name));
+    }
+
+    [Fact]
+    public async Task Delete_FailureInTheCompactionStep_KeepsTheWine()
+    {
+        var (options, restaurant, plain) = await SetUpAsync();
+        var a = await plain.SaveAsync(Input("A"));
+        await plain.SaveAsync(Input("B"));
+        var interceptor = new FailingSaveInterceptor(failOn: 2) { Armed = true };
+        var service = CreateInterceptedService(options, restaurant, interceptor);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.DeleteAsync(a.Id));
+
+        Assert.Equal(["A", "B"], (await plain.ListAsync()).Select(w => w.Name));
     }
 
     // ── Brouillon de l'assistant ─────────────────────────────────────────────

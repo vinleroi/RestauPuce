@@ -1,6 +1,8 @@
 @page "/wines/new"
 @page "/wines/{Id:int}"
 
+@implements IDisposable
+
 @using ChefOS.Core.Common
 @using ChefOS.Core.Vitrine
 @using ChefOS.Infrastructure.Services
@@ -172,6 +174,13 @@ else
     private bool _notFound;
     private bool _saving;
     private bool _drafting;
+    private readonly CancellationTokenSource _cts = new();
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+    }
 
     protected override async Task OnParametersSetAsync()
     {
@@ -218,9 +227,13 @@ else
         _drafting = true;
         try
         {
-            var draft = await WineService.DraftDescriptionAsync(_form.Name, _form.Vintage, _form.Producer, _form.Appellation);
+            var draft = await WineService.DraftDescriptionAsync(_form.Name, _form.Vintage, _form.Producer, _form.Appellation, _cts.Token);
             _form.ApplyDraft(draft);
             Snackbar.Add("Fiche rédigée : relisez-la avant de publier", Severity.Info);
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+        {
+            // La page a été quittée : plus personne n'attend la fiche.
         }
         catch (Exception e) when (e is DomainValidationException or InvalidOperationException)
         {
