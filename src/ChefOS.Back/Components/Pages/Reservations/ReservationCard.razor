@@ -1,0 +1,121 @@
+@using ChefOS.Infrastructure.Services
+
+@* Une réservation du jour : heure locale du restaurant, couverts, statut, contact, paiement, convives et plats, et les actions que son statut permet. *@
+<MudPaper Elevation="1" Class="pa-3 mb-3">
+    <div class="d-flex align-center gap-2 mb-1">
+        <MudText Typo="Typo.subtitle1"><strong>@Card.TimeText</strong></MudText>
+        <MudText Typo="Typo.subtitle1">@Card.Name</MudText>
+        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@Card.PartySize couvert@(Card.PartySize > 1 ? "s" : "")</MudChip>
+        <MudSpacer />
+        <MudChip T="string" Size="Size.Small" Color="StatusColor" Variant="Variant.Filled">@Card.StatusLabel</MudChip>
+    </div>
+
+    <MudText Typo="Typo.body2" Style="@Muted">
+        @if (!string.IsNullOrWhiteSpace(Card.Detail.CustomerPhone))
+        {
+            <span>@Card.Detail.CustomerPhone</span>
+        }
+        @if (!string.IsNullOrWhiteSpace(Card.Detail.CustomerEmail))
+        {
+            <span> · @Card.Detail.CustomerEmail</span>
+        }
+        @if (Card.Detail.IsManual)
+        {
+            <span> · prise par le restaurant</span>
+        }
+    </MudText>
+
+    @if (!string.IsNullOrWhiteSpace(Card.Detail.Note))
+    {
+        <MudAlert Severity="Severity.Warning" Dense="true" Icon="@Icons.Material.Filled.ReportProblem" Class="my-2">
+            <strong>Note :</strong> @Card.Detail.Note
+        </MudAlert>
+    }
+
+    @if (Card.PaymentSummary is { } summary)
+    {
+        <MudText Typo="Typo.subtitle2" Class="mt-1">@summary</MudText>
+    }
+    @foreach (var payment in Card.Payments)
+    {
+        <MudText Typo="Typo.caption" Style="@Muted" Class="d-block">@payment.KindLabel : @payment.AmountText — @payment.StatusLabel</MudText>
+    }
+
+    @if (Card.Guests.Count > 0)
+    {
+        <MudButton Size="Size.Small" Variant="Variant.Text" Class="mt-1 px-0" OnClick="@(() => _guestsOpen = !_guestsOpen)"
+                   EndIcon="@(_guestsOpen ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)">
+            Convives et plats (@Card.Guests.Count)
+        </MudButton>
+        <MudCollapse Expanded="_guestsOpen">
+            <ul class="my-1 pl-4">
+                @foreach (var guest in Card.Guests)
+                {
+                    <li>@guest</li>
+                }
+            </ul>
+        </MudCollapse>
+    }
+
+    @if (Card.Detail.OrderId is not null)
+    {
+        <MudText Typo="Typo.caption" Class="d-block mt-1"><MudLink Href="/orders">Commande envoyée en cuisine</MudLink></MudText>
+    }
+
+    <div class="d-flex flex-wrap gap-2 mt-2">
+        @if (Card.CanSeat)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" Disabled="Busy" OnClick="@(() => OnSeat.InvokeAsync(Card))">Arrivé</MudButton>
+        }
+        @if (Card.CanNoShow)
+        {
+            <MudButton Variant="Variant.Outlined" Color="Color.Warning" Size="Size.Small" Disabled="Busy" OnClick="@(() => OnNoShow.InvokeAsync(Card))">No-show</MudButton>
+        }
+        @if (Card.CanCancel)
+        {
+            <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" Disabled="Busy" OnClick="@(() => OnCancel.InvokeAsync(Card))">Annuler</MudButton>
+        }
+        @foreach (var payment in Card.RefundablePayments)
+        {
+            <MudButton Variant="Variant.Outlined" Color="Color.Secondary" Size="Size.Small" Disabled="Busy"
+                       OnClick="@(() => OnRefund.InvokeAsync((Card, payment)))">
+                Rembourser @payment.AmountText
+            </MudButton>
+        }
+    </div>
+</MudPaper>
+
+@code {
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    private bool _guestsOpen;
+
+    [Parameter, EditorRequired]
+    public ReservationCardView Card { get; set; } = default!;
+
+    [Parameter]
+    public bool Busy { get; set; }
+
+    [Parameter]
+    public EventCallback<ReservationCardView> OnSeat { get; set; }
+
+    [Parameter]
+    public EventCallback<ReservationCardView> OnNoShow { get; set; }
+
+    [Parameter]
+    public EventCallback<ReservationCardView> OnCancel { get; set; }
+
+    [Parameter]
+    public EventCallback<(ReservationCardView Card, PaymentLine Payment)> OnRefund { get; set; }
+
+    // Les grands groupes (plus de 4 convives) s'ouvrent à la demande ; l'état choisi survit aux rafraîchissements (la carte est identifiée par @key).
+    protected override void OnInitialized() => _guestsOpen = !Card.GuestsCollapsedByDefault;
+
+    private Color StatusColor => Card.Status switch
+    {
+        ChefOS.Core.Vitrine.ReservationStatus.Confirmed => Color.Success,
+        ChefOS.Core.Vitrine.ReservationStatus.Seated => Color.Info,
+        ChefOS.Core.Vitrine.ReservationStatus.PendingPayment => Color.Warning,
+        _ => Color.Default
+    };
+}

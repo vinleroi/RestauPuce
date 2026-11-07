@@ -51,6 +51,8 @@ if (string.IsNullOrWhiteSpace(connectionString))
 
 builder.Services.AddChefOsInfrastructure(connectionString);
 builder.Services.AddChefOsDemoSeeder();
+// Réservations et paiements : le back installe, annule et rembourse (passerelle choisie par la section « Payments », Demo par défaut).
+builder.Services.AddChefOsPayments(builder.Configuration);
 // Lecteur de tickets : Claude (clé « Anthropic:ApiKey » ou ANTHROPIC_API_KEY) ou démonstration (« Receipts:Reader » = « Demo »).
 builder.Services.AddChefOsReceiptReader(builder.Configuration);
 // Assistant de rédaction des fiches de vin : démonstration par défaut, Claude avec « Wines:Describer » = « Claude » (même clé que les tickets).

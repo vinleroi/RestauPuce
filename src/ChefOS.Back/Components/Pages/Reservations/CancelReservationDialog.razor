@@ -1,0 +1,29 @@
+@* Annulation par le restaurant ; propose le remboursement quand un paiement a été réglé. Se ferme avec DialogResult.Ok(rembourser). *@
+<MudDialog>
+    <DialogContent>
+        <MudText>Annuler la réservation de <strong>@Card.Name</strong> (@Card.PartySize couvert@(Card.PartySize > 1 ? "s" : "") à @Card.TimeText) ? Les places sont libérées.</MudText>
+        @if (Card.CanOfferRefundOnCancel)
+        {
+            <MudCheckBox T="bool" @bind-Value="_refund" Label="@Card.RefundOnCancelLabel" Color="Color.Primary" Class="mt-2" />
+            <MudText Typo="Typo.caption" Style="color: var(--mud-palette-text-secondary)">
+                @(Card.RefundOnCancelByDefault ? "Le client annule dans le délai d'annulation gratuite." : "Hors du délai d'annulation gratuite : le remboursement est facultatif.")
+            </MudText>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())">Garder</MudButton>
+        <MudButton Color="Color.Error" Variant="Variant.Filled" OnClick="@(() => MudDialog.Close(DialogResult.Ok(_refund)))">Annuler la réservation</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private bool _refund;
+
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter, EditorRequired]
+    public ReservationCardView Card { get; set; } = default!;
+
+    protected override void OnInitialized() => _refund = Card.RefundOnCancelByDefault;
+}

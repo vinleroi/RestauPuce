@@ -1,0 +1,456 @@
+@page "/reservations"
+
+@implements IAsyncDisposable
+
+@using ChefOS.Core.Common
+@using ChefOS.Core.Restaurants
+@using ChefOS.Core.Vitrine
+@using ChefOS.Infrastructure.Data
+@using ChefOS.Infrastructure.Services
+
+@inject ReservationService ReservationService
+@inject PaymentService PaymentService
+@inject OrderService OrderService
+@inject RestaurantService RestaurantService
+@inject VitrineService VitrineService
+@inject ITenantContext Tenant
+@inject TimeProvider Clock
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<PageTitle>Réservations — ChefOS</PageTitle>
+
+<div class="d-flex align-center flex-wrap gap-2 mb-1">
+    <MudText Typo="Typo.h4" HtmlTag="h1" Class="flex-grow-1">Réservations</MudText>
+    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="RefreshAsync" Disabled="_busy || _loading">Actualiser</MudButton>
+    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="NewReservationAsync" Disabled="_busy || _loading">Nouvelle réservation</MudButton>
+</div>
+
+<div class="d-flex align-center flex-wrap gap-2 mb-1">
+    <MudIconButton Icon="@Icons.Material.Filled.ChevronLeft" aria-label="Jour précédent" OnClick="@(() => MoveDayAsync(-1))" Disabled="_busy" />
+    <MudDatePicker Date="_day.ToDateTime(TimeOnly.MinValue)" DateChanged="OnDayPicked" Label="Jour" Culture="Ui.Fr" Variant="Variant.Outlined" Margin="Margin.Dense"
+                   Editable="true" Style="max-width: 220px" Disabled="_busy" />
+    <MudIconButton Icon="@Icons.Material.Filled.ChevronRight" aria-label="Jour suivant" OnClick="@(() => MoveDayAsync(1))" Disabled="_busy" />
+    <MudButton Variant="Variant.Text" OnClick="TodayAsync" Disabled="_busy">Aujourd'hui</MudButton>
+</div>
+<MudText Typo="Typo.caption" Style="@Muted" Class="d-block mb-4">
+    @_day.ToString("dddd d MMMM yyyy", Ui.Fr)
+    @if (_refreshedAt is { } refreshedAt)
+    {
+        <text> · actualisé à @refreshedAt.ToLocalTime().ToString("HH:mm:ss", Ui.Fr) (automatiquement toutes les 60 secondes)</text>
+    }
+</MudText>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_view is null || _view.Services.Count == 0)
+{
+    <MudAlert Severity="Severity.Info">Aucun service ni réservation ce jour-là. Configurez vos services dans les réglages de la vitrine.</MudAlert>
+}
+else
+{
+    <MudGrid Spacing="3">
+        @foreach (var service in _view.Services)
+        {
+            <MudItem xs="12" md="@(_view.Services.Count > 1 ? 6 : 12)" @key="service.Name">
+                <div class="d-flex align-center gap-2 mb-1">
+                    <MudText Typo="Typo.h6" HtmlTag="h2">@service.Name</MudText>
+                    <MudSpacer />
+                    <MudText Typo="Typo.subtitle2" Color="@(service.IsOverCapacity ? Color.Error : Color.Default)">@service.CoversText</MudText>
+                </div>
+                <MudProgressLinear Value="service.FillPercent" Min="0" Max="100" Rounded="true" Class="mb-3"
+                                   Color="@(service.IsOverCapacity ? Color.Error : service.FillPercent >= 90 ? Color.Warning : Color.Primary)"
+                                   aria-label="@($"Remplissage du service {service.Name}")" />
+
+                @if (service.Cards.Count == 0)
+                {
+                    <MudText Style="@Muted">Aucune réservation</MudText>
+                }
+
+                @foreach (var card in service.Cards)
+                {
+                    <div @key="card.Id">
+                        <ReservationCard Card="card" Busy="_busy" OnSeat="SeatAsync" OnNoShow="NoShowAsync" OnCancel="CancelAsync" OnRefund="RefundAsync" />
+                    </div>
+                }
+            </MudItem>
+        }
+    </MudGrid>
+}
+
+@code {
+    private const string Muted = "color: var(--mud-palette-text-secondary)";
+
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(60);
+
+    private readonly CancellationTokenSource _cancellation = new();
+
+    private Task? _refreshLoop;
+    private ReservationDayView? _view;
+    private IReadOnlyList<ServiceDayView> _services = [];
+    private DateOnly _day;
+    private string _timeZoneId = "Europe/Brussels";
+    private int _freeCancellationHours = 24;
+    private DateTime? _refreshedAt;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _dialogOpen;
+
+    // L'actualisation automatique a son propre drapeau : elle ne désactive pas les boutons d'action (_busy ne sert qu'aux actions du chef).
+    private bool _refreshing;
+
+    // Numéro du dernier chargement démarré : un chargement plus ancien qui se termine après lui ne remplace pas ses données.
+    private int _loadVersion;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;
+            _timeZoneId = restaurant?.TimeZoneId ?? _timeZoneId;
+            _day = RestaurantClock.Today(Clock.GetUtcNow().UtcDateTime, _timeZoneId);
+            _freeCancellationHours = (await VitrineService.GetOrCreateProfileAsync()).FreeCancellationHours;
+            await LoadAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // Seulement une fois le circuit interactif : le prérendu n'a pas à lancer de minuterie.
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+            _refreshLoop = RefreshLoopAsync(_cancellation.Token);
+    }
+
+    private async Task LoadAsync(bool showLoading = true)
+    {
+        if (showLoading)
+            _loading = true;
+
+        var version = ++_loadVersion;
+        try
+        {
+            var day = _day;
+            var services = await ReservationService.ListForDayAsync(day);
+
+            // Un chargement plus récent a démarré entre-temps (action, changement de jour) : le sien est plus frais.
+            if (version != _loadVersion || day != _day)
+                return;
+
+            _services = services;
+            _view = ReservationDayView.From(services, Clock.GetUtcNow().UtcDateTime, _freeCancellationHours);
+            _refreshedAt = DateTime.UtcNow;
+        }
+        finally
+        {
+            if (version == _loadVersion)
+                _loading = false;
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await LoadAsync(showLoading: false);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task OnDayPicked(DateTime? date)
+    {
+        if (date is { } picked && DateOnly.FromDateTime(picked) != _day)
+            await GoToAsync(DateOnly.FromDateTime(picked));
+    }
+
+    private Task MoveDayAsync(int days) => GoToAsync(_day.AddDays(days));
+
+    private Task TodayAsync() => GoToAsync(RestaurantClock.Today(Clock.GetUtcNow().UtcDateTime, _timeZoneId));
+
+    private async Task GoToAsync(DateOnly day)
+    {
+        if (_busy)
+            return;
+
+        _day = day;
+        await LoadAsync();
+    }
+
+    // Actualisation automatique, tant que la page est ouverte. Elle passe son tour pendant une action ou une boîte de dialogue :
+    // elle ne doit pas changer l'écran sous les doigts du chef. Elle ne bloque pas les boutons.
+    private async Task RefreshLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(RefreshInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+                await InvokeAsync(() => RefreshSilentlyAsync(cancellationToken));
+        }
+        catch (OperationCanceledException)
+        {
+            // Page quittée.
+        }
+        catch (ObjectDisposedException)
+        {
+            // Circuit fermé.
+        }
+    }
+
+    private async Task RefreshSilentlyAsync(CancellationToken cancellationToken)
+    {
+        if (_refreshing || _busy || _loading || _dialogOpen || cancellationToken.IsCancellationRequested)
+            return;
+
+        _refreshing = true;
+        try
+        {
+            await LoadAsync(showLoading: false);
+        }
+        catch (Exception)
+        {
+            // Un accès à la base qui échoue ne doit pas arrêter la page : l'écran garde ses dernières données et le prochain passage réessaie.
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+
+        if (!cancellationToken.IsCancellationRequested)
+            StateHasChanged();
+    }
+
+    private async Task NewReservationAsync()
+    {
+        if (_busy)
+            return;
+
+        _dialogOpen = true;
+        DialogResult? result;
+        try
+        {
+            var parameters = new DialogParameters<ManualReservationDialog>
+            {
+                { x => x.Date, _day },
+                { x => x.ServiceNames, _services.Select(s => s.ServiceName).ToList() }
+            };
+            var dialog = await DialogService.ShowAsync<ManualReservationDialog>("Nouvelle réservation", parameters, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+            result = await dialog.Result;
+        }
+        finally
+        {
+            _dialogOpen = false;
+        }
+
+        if (result is { Canceled: false, Data: ManualReservationResult created })
+        {
+            Snackbar.Add(created.Warning is null ? "Réservation enregistrée" : $"Réservation enregistrée — {created.Warning}", created.Warning is null ? Severity.Success : Severity.Warning);
+            await ReloadAfterActionAsync();
+        }
+    }
+
+    // La carte donne au service le statut qu'elle affiche : si la réservation en a changé depuis (l'écran peut avoir jusqu'à 60 s de retard), le service
+    // refuse (« La réservation a déjà changé de statut ») au lieu d'agir sur un autre statut. Le refus s'affiche tel quel, puis l'écran est relu.
+    private async Task SeatAsync(ReservationCardView card)
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await ReservationService.SeatAsync(card.Id, card.Status);
+            await AnnounceOrderAsync(card);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAfterActionAsync();
+        }
+    }
+
+    private async Task AnnounceOrderAsync(ReservationCardView card)
+    {
+        // La commande est créée avec l'installation : on relit la réservation pour connaître son numéro.
+        var services = await ReservationService.ListForDayAsync(_day);
+        var orderId = services.SelectMany(s => s.Reservations).FirstOrDefault(r => r.Id == card.Id)?.OrderId;
+        var order = orderId is { } id ? await OrderService.GetAsync(id) : null;
+        if (order is null)
+        {
+            Snackbar.Add($"{card.Name} installé(s) — pas de pré-commande pour la cuisine", Severity.Success);
+            return;
+        }
+
+        RenderFragment message = @<span>Commande n° @order.Number envoyée en cuisine · <MudLink Href="/orders">Voir les commandes</MudLink></span>;
+        Snackbar.Add(message, Severity.Success);
+    }
+
+    private async Task NoShowAsync(ReservationCardView card)
+    {
+        if (_busy)
+            return;
+
+        _dialogOpen = true;
+        bool? confirmed;
+        try
+        {
+            confirmed = await DialogService.ShowMessageBoxAsync("Marquer no-show",
+                $"{card.Name} ({card.PartySize} couvert{(card.PartySize > 1 ? "s" : "")} à {card.TimeText}) ne s'est pas présenté ? Les places sont libérées.",
+                yesText: "No-show", cancelText: "Retour");
+        }
+        finally
+        {
+            _dialogOpen = false;
+        }
+
+        if (confirmed != true || _busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await ReservationService.MarkNoShowAsync(card.Id, card.Status);
+            Snackbar.Add($"Réservation de {card.Name} marquée no-show", Severity.Success);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAfterActionAsync();
+        }
+    }
+
+    private async Task CancelAsync(ReservationCardView card)
+    {
+        if (_busy)
+            return;
+
+        _dialogOpen = true;
+        DialogResult? result;
+        try
+        {
+            var parameters = new DialogParameters<CancelReservationDialog> { { x => x.Card, card } };
+            var dialog = await DialogService.ShowAsync<CancelReservationDialog>("Annuler la réservation", parameters, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+            result = await dialog.Result;
+        }
+        finally
+        {
+            _dialogOpen = false;
+        }
+
+        if (result is not { Canceled: false } || _busy)
+            return;
+
+        var refund = result.Data is true;
+        _busy = true;
+        try
+        {
+            await ReservationService.CancelByRestaurantAsync(card.Id, refund);
+            Snackbar.Add($"Réservation de {card.Name} annulée", Severity.Success);
+            await WarnIfRefundPendingAsync(card, refund);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAfterActionAsync();
+        }
+    }
+
+    // Un remboursement refusé par la passerelle laisse le paiement « À rembourser » : le bouton « Rembourser » le relance.
+    private async Task WarnIfRefundPendingAsync(ReservationCardView card, bool refund)
+    {
+        if (!refund)
+            return;
+
+        var services = await ReservationService.ListForDayAsync(_day);
+        var pending = services.SelectMany(s => s.Reservations).FirstOrDefault(r => r.Id == card.Id)?.Payments.Any(p => p.Status == PaymentStatus.RefundPending) == true;
+        if (pending)
+            Snackbar.Add("Le remboursement n'a pas pu être effectué : relancez-le avec « Rembourser »", Severity.Warning);
+    }
+
+    private async Task RefundAsync((ReservationCardView Card, PaymentLine Payment) item)
+    {
+        if (_busy)
+            return;
+
+        _dialogOpen = true;
+        bool? confirmed;
+        try
+        {
+            confirmed = await DialogService.ShowMessageBoxAsync("Rembourser",
+                $"Rembourser {item.Payment.AmountText} ({item.Payment.KindLabel.ToLower(Ui.Fr)}) à {item.Card.Name} ?",
+                yesText: "Rembourser", cancelText: "Retour");
+        }
+        finally
+        {
+            _dialogOpen = false;
+        }
+
+        if (confirmed != true || _busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            await PaymentService.RefundAsync(item.Payment.Id);
+            Snackbar.Add($"{item.Payment.AmountText} remboursé à {item.Card.Name}", Severity.Success);
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // Passerelle de paiement injoignable ou qui refuse : le paiement reste « À rembourser », on pourra réessayer.
+            Snackbar.Add($"Remboursement impossible : {e.Message}", Severity.Error);
+        }
+        finally
+        {
+            await ReloadAfterActionAsync();
+        }
+    }
+
+    private async Task ReloadAfterActionAsync()
+    {
+        try
+        {
+            await LoadAsync(showLoading: false);
+        }
+        catch (Exception)
+        {
+            // L'action a abouti ou été refusée : si la relecture échoue, la prochaine actualisation automatique reprendra.
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _cancellation.CancelAsync();
+        if (_refreshLoop is not null)
+            await _refreshLoop;
+
+        _cancellation.Dispose();
+    }
+}

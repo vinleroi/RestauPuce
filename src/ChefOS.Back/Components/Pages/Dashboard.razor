@@ -1,11 +1,16 @@
 @page "/"
 
+@using ChefOS.Back.Components.Pages.Reservations
 @using ChefOS.Core.Restaurants
+@using ChefOS.Core.Vitrine
 @using ChefOS.Infrastructure.Data
 @using ChefOS.Infrastructure.Services
 
 @inject DashboardService DashboardService
 @inject RestaurantService RestaurantService
+@inject ReservationService ReservationService
+@inject VitrineService VitrineService
+@inject TimeProvider Clock
 @inject ITenantContext Tenant
 
 <PageTitle>Tableau de bord — ChefOS</PageTitle>
@@ -34,6 +39,32 @@ else if (_summary is not null)
                 @Kpi("Marge brute (7 jours)", Ui.Money(week.GrossMargin), incomplete: week.CostIncomplete, caption: WeekCaption(week))
             </MudItem>
         </MudGrid>
+    }
+
+    @if (_reservations is { Services.Count: > 0 } reservations)
+    {
+        <MudPaper Elevation="1" Class="pa-4 mb-4">
+            <div class="d-flex align-center mb-2">
+                <MudText Typo="Typo.h6" HtmlTag="h2" Class="flex-grow-1">Réservations du jour</MudText>
+                <MudLink Href="/reservations">Voir les réservations</MudLink>
+            </div>
+            @foreach (var service in reservations.Services)
+            {
+                <div class="d-flex align-center gap-2 mb-1">
+                    <MudText>@service.Name</MudText>
+                    <MudSpacer />
+                    <MudText Typo="Typo.subtitle2" Color="@(service.IsOverCapacity ? Color.Error : Color.Default)">@service.CoversText</MudText>
+                </div>
+                <MudProgressLinear Value="service.FillPercent" Min="0" Max="100" Rounded="true" Class="mb-2"
+                                   Color="@(service.IsOverCapacity ? Color.Error : Color.Primary)" aria-label="@($"Remplissage du service {service.Name}")" />
+            }
+            @if (_nextGroup is { } group)
+            {
+                <MudText Typo="Typo.body2" Class="mt-2">
+                    Prochain groupe : <strong>@group.Name</strong>, @group.PartySize couverts à @group.TimeText (@group.ServiceName)
+                </MudText>
+            }
+        </MudPaper>
     }
 
     <MudPaper Elevation="1" Class="pa-4">
@@ -94,6 +125,8 @@ else if (_summary is not null)
     private DashboardSummary? _summary;
     private SevenDayFigures? _week;
     private IReadOnlyList<PriceChange> _priceChanges = [];
+    private ReservationDayView? _reservations;
+    private NextGroupView? _nextGroup;
     private decimal _threshold = Defaults.FoodCostAlertThreshold;
     private bool _loading = true;
 
@@ -108,11 +141,28 @@ else if (_summary is not null)
             // Le seuil sert à l'infobulle de la pastille rouge (« Au-dessus du seuil d'alerte (35 %) »).
             var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;
             _threshold = restaurant?.FoodCostAlertThreshold ?? Defaults.FoodCostAlertThreshold;
+
+            if (restaurant is not null)
+                await LoadReservationsAsync(restaurant.TimeZoneId);
         }
         finally
         {
             _loading = false;
         }
+    }
+
+    // Les couverts du jour par service et le prochain grand groupe, calculés par la même vue que l'écran des réservations.
+    // Un restaurant sans vitrine n'a pas de service : le bloc n'apparaît pas (et aucun profil n'est créé ici).
+    private async Task LoadReservationsAsync(string timeZoneId)
+    {
+        var now = Clock.GetUtcNow().UtcDateTime;
+        var services = await ReservationService.ListForDayAsync(RestaurantClock.Today(now, timeZoneId));
+        if (services.Count == 0)
+            return;
+
+        var profile = await VitrineService.GetOrCreateProfileAsync();
+        _reservations = ReservationDayView.From(services, now, profile.FreeCancellationHours);
+        _nextGroup = _reservations.NextGroup(profile.GroupThreshold);
     }
 
     private static string WeekCaption(SevenDayFigures week) =>

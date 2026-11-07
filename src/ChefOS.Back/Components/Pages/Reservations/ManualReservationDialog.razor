@@ -1,0 +1,238 @@
+@using ChefOS.Core.Common
+@using ChefOS.Core.Vitrine
+@using ChefOS.Infrastructure.Services
+
+@inject ReservationService ReservationService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+@* Réservation prise par téléphone ou au comptoir : confirmée tout de suite, sans paiement. Se ferme avec DialogResult.Ok(ManualReservationResult). *@
+<MudDialog>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12" sm="6">
+                <MudDatePicker Date="_date" DateChanged="OnDateChanged" Label="Date" Culture="Ui.Fr" Variant="Variant.Outlined" Margin="Margin.Dense" Editable="true" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudNumericField T="int?" Value="_partySize" ValueChanged="OnPartySizeChanged" Label="Couverts" Min="1" Max="500" Culture="Ui.Fr" Format="0"
+                                 Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+
+            <MudItem xs="12">
+                <MudSwitch T="bool" Value="_free" ValueChanged="OnFreeChanged" Label="Autre heure (service complet ou hors créneaux proposés)" Color="Color.Primary" />
+            </MudItem>
+
+            @if (!_free)
+            {
+                <MudItem xs="12">
+                    @if (_loadingSlots)
+                    {
+                        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+                    }
+                    else if (_slots.Count == 0)
+                    {
+                        <MudAlert Severity="Severity.Info" Dense="true">Aucun créneau disponible ce jour-là pour @(_partySize ?? 0) couvert(s). Choisissez « Autre heure » pour réserver quand même.</MudAlert>
+                    }
+                    else
+                    {
+                        <MudSelect T="Slot" @bind-Value="_slot" Label="Créneau" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                   ToStringFunc="@(slot => slot is null ? "" : $"{slot.Time.ToString("HH:mm", Ui.Fr)} · {slot.ServiceName} ({slot.RemainingCovers} places restantes)")">
+                            @foreach (var slot in _slots)
+                            {
+                                <MudSelectItem T="Slot" Value="slot">@slot.Time.ToString("HH:mm", Ui.Fr) · @slot.ServiceName (@slot.RemainingCovers places restantes)</MudSelectItem>
+                            }
+                        </MudSelect>
+                    }
+                </MudItem>
+            }
+            else
+            {
+                <MudItem xs="12" sm="6">
+                    <MudSelect T="string" @bind-Value="_serviceName" Label="Service" Variant="Variant.Outlined" Margin="Margin.Dense">
+                        @foreach (var service in ServiceNames)
+                        {
+                            <MudSelectItem T="string" Value="service">@service</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudTimePicker @bind-Time="_time" Label="Heure" Variant="Variant.Outlined" Margin="Margin.Dense" Editable="true" />
+                </MudItem>
+            }
+
+            <MudItem xs="12" sm="6">
+                <MudTextField T="string" @bind-Value="_name" Label="Nom" Required="true" MaxLength="120" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudTextField T="string" @bind-Value="_phone" Label="Téléphone" MaxLength="40" InputType="InputType.Telephone" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_email" Label="E-mail (facultatif)" MaxLength="200" InputType="InputType.Email" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_note" Label="Note (allergie, occasion…)" MaxLength="1000" Lines="2" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Disabled="_saving">Annuler</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" Disabled="_saving">Réserver</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private DateTime? _date;
+    private int? _partySize = 2;
+    private bool _free;
+    private bool _loadingSlots = true;
+    private bool _saving;
+    private IReadOnlyList<Slot> _slots = [];
+    private Slot? _slot;
+    private string? _serviceName;
+    private TimeSpan? _time;
+    private string? _name;
+    private string? _phone;
+    private string? _email;
+    private string? _note;
+
+    // Numéro du dernier chargement des créneaux : une réponse plus ancienne n'écrase pas la plus récente.
+    private int _slotsVersion;
+
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    /// <summary>Jour affiché sur l'écran, proposé d'office.</summary>
+    [Parameter]
+    public DateOnly Date { get; set; }
+
+    /// <summary>Services du jour, pour réserver une heure hors des créneaux proposés.</summary>
+    [Parameter]
+    public IReadOnlyList<string> ServiceNames { get; set; } = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _date = Date.ToDateTime(TimeOnly.MinValue);
+        _serviceName = ServiceNames.FirstOrDefault();
+        await LoadSlotsAsync();
+    }
+
+    private Task OnDateChanged(DateTime? date)
+    {
+        _date = date;
+        return LoadSlotsAsync();
+    }
+
+    private Task OnPartySizeChanged(int? size)
+    {
+        _partySize = size;
+        return LoadSlotsAsync();
+    }
+
+    private void OnFreeChanged(bool free) => _free = free;
+
+    private async Task LoadSlotsAsync()
+    {
+        var version = ++_slotsVersion;
+        if (_date is not { } date || _partySize is not > 0)
+        {
+            _slots = [];
+            _slot = null;
+            _loadingSlots = false;
+            return;
+        }
+
+        _loadingSlots = true;
+        try
+        {
+            var slots = await ReservationService.GetSlotsAsync(DateOnly.FromDateTime(date), _partySize.Value);
+            if (version != _slotsVersion)
+                return;
+
+            _slots = slots;
+            _slot = _slot is null ? null : slots.FirstOrDefault(s => s == _slot);
+        }
+        catch (DomainValidationException e)
+        {
+            if (version == _slotsVersion)
+            {
+                _slots = [];
+                Snackbar.Add(e.Message, Severity.Error);
+            }
+        }
+        finally
+        {
+            if (version == _slotsVersion)
+                _loadingSlots = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving)
+            return;
+
+        if (_date is not { } date || _partySize is not > 0)
+        {
+            Snackbar.Add("Indiquez la date et le nombre de couverts", Severity.Warning);
+            return;
+        }
+
+        DateOnly day = DateOnly.FromDateTime(date);
+        TimeOnly time;
+        string service;
+        if (_free)
+        {
+            if (string.IsNullOrWhiteSpace(_serviceName) || _time is null)
+            {
+                Snackbar.Add("Choisissez le service et l'heure", Severity.Warning);
+                return;
+            }
+
+            service = _serviceName;
+            time = TimeOnly.FromTimeSpan(_time.Value);
+        }
+        else
+        {
+            if (_slot is null)
+            {
+                Snackbar.Add("Choisissez un créneau", Severity.Warning);
+                return;
+            }
+
+            service = _slot.ServiceName;
+            time = _slot.Time;
+        }
+
+        var request = new ReservationRequest(day, time, service, _partySize.Value, _name ?? "", _email ?? "", _phone ?? "", _note, []);
+
+        _saving = true;
+        try
+        {
+            ManualReservationResult result;
+            try
+            {
+                result = await ReservationService.CreateManualAsync(request, force: false);
+            }
+            catch (DomainValidationException e) when (e.Message.Contains("confirmez", StringComparison.Ordinal))
+            {
+                // Le service demande une confirmation (capacité dépassée, jour de fermeture) : on la demande au chef, puis on force.
+                var confirmed = await DialogService.ShowMessageBoxAsync("Réserver quand même ?", e.Message.Replace(" (confirmez pour forcer)", "").Replace(" (confirmez pour réserver quand même)", ""),
+                    yesText: "Réserver quand même", cancelText: "Retour");
+                if (confirmed != true)
+                    return;
+
+                result = await ReservationService.CreateManualAsync(request, force: true);
+            }
+
+            MudDialog.Close(DialogResult.Ok(result));
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}
