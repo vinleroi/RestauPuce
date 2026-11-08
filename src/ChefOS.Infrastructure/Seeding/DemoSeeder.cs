@@ -16,7 +16,7 @@ namespace ChefOS.Infrastructure.Seeding;
 /// et son compte de démonstration, pour que l'outil du chef paraisse vivant dès le premier lancement.
 /// Les données sont écrites directement dans le contexte (pas via les services) mais respectent leurs règles :
 /// rendement de 1 à 100, plats avec prix et TVA, préparations avec quantité produite, une seule source par ligne, aucune boucle,
-/// prix figés des ventes, commandes numérotées, tickets appliqués avec le prix de chaque ligne.
+/// prix figés des ventes, commandes numérotées, tickets appliqués avec le prix de chaque ligne ; vitrine publiée, carte des vins et réservations (voir <see cref="DemoVitrine"/>).
 /// </summary>
 public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<ChefOsDbContext> options, IOptions<DemoOptions> demo)
 {
@@ -47,7 +47,7 @@ public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<Che
         {
             Name = BistroName,
             Slug = BistroSlug,
-            Address = "Rue du Marché aux Herbes 24, 1000 Bruxelles",
+            Address = "Rue Hors-Château 24, 4000 Liège",
             VatNumber = "BE0123.456.789",
             CreatedAt = DateTime.UtcNow
         };
@@ -107,6 +107,8 @@ public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<Che
 
         // L'activité repose sur les plats et les prix qui viennent d'être écrits ; elle fait partie du même seed, donc de la même compensation en cas d'échec.
         await DemoActivity.AddAsync(db, now, ct);
+        // La vitrine, la carte des vins et les réservations reposent sur les plats : même seed, même compensation.
+        await DemoVitrine.AddAsync(db, now, ct);
     }
 
     // ── Fournisseurs ─────────────────────────────────────────────────────────

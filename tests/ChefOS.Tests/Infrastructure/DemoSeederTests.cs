@@ -4,15 +4,18 @@ using ChefOS.Core.Recipes;
 using ChefOS.Core.Restaurants;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
+using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Identity;
+using ChefOS.Infrastructure.Payments;
 using ChefOS.Infrastructure.Seeding;
 using ChefOS.Infrastructure.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ChefOS.Tests.Infrastructure;
 
@@ -193,6 +196,161 @@ public class DemoSeederTests(PostgresFixture postgres)
         Assert.Equal(before, await CountRowsAsync(options, restaurantId));
     }
 
+    [Fact]
+    public async Task Seed_EmptyDatabase_PublishesTheVitrineWithServicesAndPublicDishes()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        await using var provider = BuildHost(options);
+
+        await SeedAsync(provider);
+
+        var restaurantId = await GetBistroIdAsync(options);
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        var profile = await db.VitrineProfiles.SingleAsync();
+        Assert.True(profile.IsPublished);
+        Assert.True(profile.ReservationsOpen);
+        Assert.Equal("Liège", profile.City);
+        Assert.Null(profile.CoverImageId);
+        Assert.Empty(await db.VitrineImages.ToListAsync());
+
+        var schedules = await db.ServiceSchedules.ToListAsync();
+        Assert.Equal(10, schedules.Count);
+        Assert.DoesNotContain(schedules, s => s.DayOfWeek is DayOfWeek.Sunday or DayOfWeek.Monday);
+        Assert.Equal(5, schedules.Count(s => s is { Name: "Midi", Capacity: 40, SlotMinutes: 30 }));
+        Assert.Equal(5, schedules.Count(s => s is { Name: "Soir", Capacity: 50, SlotMinutes: 30 }));
+        Assert.Single(await db.ClosureDays.ToListAsync());
+
+        var dishes = await db.Recipes.Where(r => r.Kind == RecipeKind.Dish).ToListAsync();
+        Assert.Equal(12, dishes.Count);
+        Assert.All(dishes, d =>
+        {
+            Assert.True(d.ShowOnVitrine, d.Name);
+            Assert.False(string.IsNullOrWhiteSpace(d.PublicDescription), d.Name);
+        });
+    }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_LoadsTheWineLibraryAndTheWineListWithPairingsAndOneAiDraft()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        await using var provider = BuildHost(options);
+
+        await SeedAsync(provider);
+
+        var restaurantId = await GetBistroIdAsync(options);
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        Assert.True(await db.WineReferences.CountAsync() >= 60);
+
+        var wines = await db.WineListItems.ToListAsync();
+        Assert.Equal(15, wines.Count(w => w.IsPublished));
+        var draft = Assert.Single(wines, w => !w.IsPublished);
+        Assert.True(draft.DescriptionIsAiDraft);
+        Assert.Single(wines, w => w.DescriptionIsAiDraft);
+        Assert.True(wines.Count(w => w.IsPublished && w.PriceGlass is not null) >= 2);
+        Assert.Contains(wines, w => w.IsPublished && w.Color == WineColor.Effervescent && w.Country == "Belgique");
+        Assert.All(wines.Where(w => w.IsPublished), w =>
+        {
+            Assert.NotNull(w.WineReferenceId);
+            Assert.True(w.PriceBottle > 0m);
+        });
+        Assert.All(wines.GroupBy(w => w.Color), g => Assert.Equal(g.Count(), g.Select(w => w.Position).Distinct().Count()));
+
+        var pairings = await db.WineListItemPairings.ToListAsync();
+        Assert.All(wines.Where(w => w.IsPublished), w => Assert.InRange(pairings.Count(p => p.WineListItemId == w.Id), 1, 2));
+    }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_SeedsUpcomingReservations_WithAGroupOfEightWhoseDishesAreFrozen()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        await using var provider = BuildHost(options);
+
+        await SeedAsync(provider);
+
+        var restaurantId = await GetBistroIdAsync(options);
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        var reservations = await db.Reservations.Include(r => r.Guests).ThenInclude(g => g.Dishes).ToListAsync();
+        var dishPrices = await db.Recipes.Where(r => r.Kind == RecipeKind.Dish).ToDictionaryAsync(r => r.Id);
+
+        Assert.Equal(6, reservations.Count(r => r.Status == ReservationStatus.Confirmed && r.PartySize is >= 2 and <= 4));
+        Assert.Single(reservations, r => r.Status == ReservationStatus.PendingPayment);
+        Assert.Single(reservations, r => r.Status == ReservationStatus.Cancelled);
+        Assert.Equal(9, reservations.Count);
+        Assert.All(reservations, r => Assert.Equal(43, r.PublicToken.Length));
+        Assert.Equal(9, reservations.Select(r => r.PublicToken).Distinct().Count());
+
+        var group = Assert.Single(reservations, r => r.PartySize == 8);
+        Assert.Equal(ReservationStatus.Confirmed, group.Status);
+        Assert.Equal(8, group.Guests.Count);
+        Assert.All(group.Guests, g =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(g.FirstName));
+            Assert.False(string.IsNullOrWhiteSpace(g.LastName));
+            Assert.NotEmpty(g.Dishes);
+            Assert.All(g.Dishes, d =>
+            {
+                Assert.Equal(dishPrices[d.RecipeId].SellingPriceInclVat, d.UnitPriceInclVat);
+                Assert.Equal(dishPrices[d.RecipeId].VatRate, d.VatRate);
+            });
+        });
+        var total = group.Guests.SelectMany(g => g.Dishes).Sum(d => d.UnitPriceInclVat * d.Quantity);
+        Assert.Equal(total, group.PreorderTotalInclVat);
+        Assert.Equal(Math.Round(total * 0.30m, 2, MidpointRounding.AwayFromZero), group.AmountDue);
+
+        // Paiements : tous en démo, avec la ligne de passerelle qui correspond (le remboursement marche depuis le back).
+        var payments = await db.Payments.ToListAsync();
+        Assert.All(payments, p => Assert.Equal("Demo", p.Gateway));
+        var gateway = await db.DemoGatewayPayments.ToDictionaryAsync(p => p.Id);
+        Assert.All(payments, p => Assert.True(gateway.ContainsKey(p.GatewayPaymentId!)));
+        Assert.All(payments.Where(p => p.Status is PaymentStatus.Paid or PaymentStatus.Refunded),
+            p => Assert.Equal(GatewayStatus.Paid, gateway[p.GatewayPaymentId!].Status));
+        var cancelled = Assert.Single(reservations, r => r.Status == ReservationStatus.Cancelled);
+        var refund = Assert.Single(payments, p => p.ReservationId == cancelled.Id);
+        Assert.Equal(PaymentStatus.Refunded, refund.Status);
+        Assert.Equal(refund.Amount, gateway[refund.GatewayPaymentId!].RefundedAmount);
+        Assert.All(reservations.Where(r => r.Status == ReservationStatus.Confirmed), r =>
+        {
+            var paid = Assert.Single(payments, p => p.ReservationId == r.Id);
+            Assert.Equal(PaymentStatus.Paid, paid.Status);
+            Assert.Equal(r.AmountDue, paid.Amount);
+            Assert.Equal(r.PartySize > 5 ? PaymentKind.Prepayment : PaymentKind.Deposit, paid.Kind);
+        });
+
+        // Le paiement en attente est plus vieux que le délai : il expirera à la première lecture.
+        var pending = Assert.Single(reservations, r => r.Status == ReservationStatus.PendingPayment);
+        Assert.True(DateTime.UtcNow - pending.CreatedAt > TimeSpan.FromMinutes(30));
+        Assert.True(pending.StartsAtUtc > DateTime.UtcNow);
+
+        Assert.All(reservations.Where(r => r.Status != ReservationStatus.Cancelled).GroupBy(r => (r.ServiceName, r.StartsAtUtc.Date)),
+            g => Assert.True(g.Sum(r => r.PartySize) < 40, $"{g.Key} : {g.Sum(r => r.PartySize)} couverts"));
+    }
+
+    [Fact]
+    public async Task Seed_EmptyDatabase_LeavesSlotsAvailableInTheComingWeek_AndExpiresTheStalePendingPayment()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        await using var provider = BuildHost(options);
+        await SeedAsync(provider);
+        var restaurantId = await GetBistroIdAsync(options);
+
+        var factory = new TestContextFactory(options, restaurantId);
+        var clock = TimeProvider.System;
+        var gateway = new DemoPaymentGateway("https://vitrine.test", factory, clock);
+        var email = new RecordingEmailSender();
+        var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance, email);
+        var service = new ReservationService(factory, clock, payments, email);
+
+        var today = RestaurantClock.Today(DateTime.UtcNow, "Europe/Brussels");
+        var daysWithSlots = 0;
+        for (var i = 0; i <= 8; i++)
+            if ((await service.GetSlotsAsync(today.AddDays(i), 2)).Count > 0)
+                daysWithSlots++;
+        Assert.True(daysWithSlots >= 1, "aucun créneau cette semaine");
+
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        Assert.Single(await db.Reservations.Where(r => r.Status == ReservationStatus.Expired).ToListAsync());
+    }
+
     private static async Task<int[]> CountRowsAsync(DbContextOptions<ChefOsDbContext> options, int restaurantId)
     {
         await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
@@ -203,7 +361,11 @@ public class DemoSeederTests(PostgresFixture postgres)
             await db.Recipes.CountAsync(), await db.RecipeLines.CountAsync(),
             await db.SalesEntries.CountAsync(), await db.Orders.CountAsync(), await db.OrderLines.CountAsync(),
             await db.WasteEntries.CountAsync(), await db.StockCounts.CountAsync(), await db.StockCountLines.CountAsync(),
-            await db.Receipts.CountAsync(), await db.ReceiptLines.CountAsync()
+            await db.Receipts.CountAsync(), await db.ReceiptLines.CountAsync(),
+            await db.ServiceSchedules.CountAsync(), await db.ClosureDays.CountAsync(), await db.WineListItems.CountAsync(),
+            await db.WineListItemPairings.CountAsync(), await db.Reservations.CountAsync(), await db.ReservationGuests.CountAsync(),
+            await db.ReservationGuestDishes.CountAsync(), await db.Payments.CountAsync(), await db.DemoGatewayPayments.CountAsync(),
+            await db.VitrineProfiles.CountAsync(), await db.WineReferences.CountAsync()
         ];
     }
 

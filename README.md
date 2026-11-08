@@ -5,7 +5,7 @@ SaaS multi-restaurants qui aide les chefs à connaître le vrai coût de leurs p
 Le produit comprend deux sites qui partagent une même base PostgreSQL :
 
 - **ChefOS.Back** : l'outil du chef. Ingrédients (rendement, historique des prix), fournisseurs, recettes et sous-préparations, coût de revient et food cost recalculés en direct, scan des tickets fournisseurs, ventes, commandes, pertes, inventaires et statistiques, tableau de bord, réglages du restaurant.
-- **ChefOS.Vitrine** : le site public de chaque restaurant. Pour l'instant un squelette (« bientôt disponible »), branché sur la base.
+- **ChefOS.Vitrine** : le site public de chaque restaurant. Ambiance, menu, carte des vins et réservation en ligne avec acompte ou prépaiement (voir [Vitrine et réservations](#vitrine-et-réservations)).
 
 Cette première étape pose les fondations et le back du chef. La conception est dans [`docs/superpowers/specs`](docs/superpowers/specs/2026-11-02-fondations-back-chef-design.md), le plan d'implémentation dans [`docs/superpowers/plans`](docs/superpowers/plans/2026-11-02-fondations-back-chef.md).
 
@@ -51,6 +51,60 @@ dotnet run --project src/ChefOS.Vitrine
 ```
 
 La vitrine écoute sur <http://localhost:5108> et partage la base du back (même chaîne de connexion de développement).
+
+## Vitrine et réservations
+
+Chaque restaurant a un site public, à l'adresse `/<slug>` de la vitrine : le chef y publie son ambiance, son menu (avec descriptions et allergènes), sa carte des vins et ses créneaux, et les clients réservent en ligne. Le chef règle tout depuis le back (vitrine, services, fermetures, carte des vins, réservations).
+
+| Application | Adresse |
+|-------------|---------|
+| Back (le chef) | <http://localhost:5268> |
+| Vitrine (le public) | <http://localhost:5108> |
+| Le Petit Bistro | <http://localhost:5108/le-petit-bistro> |
+
+### Lancer les deux sites
+
+```bash
+docker compose up -d
+dotnet run --project src/ChefOS.Back      # en premier : migrations, données de démo, bibliothèque de vins
+dotnet run --project src/ChefOS.Vitrine   # dans un second terminal
+```
+
+Démarrez le back en premier : il applique les migrations et crée la démo. Dans une base vide, « Le Petit Bistro » est livré avec une vitrine **publiée** (ambiance, couleur, ville de Liège, sans image : un dégradé sert de couverture), des services du mardi au samedi (Midi 12:00-14:00 pour 40 couverts, Soir 19:00-22:00 pour 50, fermé le dimanche et le lundi, un congé annuel dans trois semaines), une phrase publique sur chacun des 12 plats, 15 vins de la bibliothèque avec prix et accords (plus un vin dont la fiche IA est « à relire », non publié), et 9 réservations sur les 7 prochains jours ouverts : 6 petites tables confirmées, un groupe de 8 avec convives nommés et plats pré-commandés, une demande en attente de paiement déjà périmée (elle passe en « Expirée » à la première lecture) et une annulation remboursée. Tous les paiements de ces réservations sont des paiements de démonstration.
+
+Règles par défaut : acompte de 10 € par personne jusqu'à 5 couverts ; au-delà, les convives choisissent leurs plats et le prépaiement est de 30 % de la pré-commande ; annulation gratuite jusqu'à 24 h avant ; une demande non payée expire après 30 minutes.
+
+### Paiements
+
+La section `Payments` choisit la passerelle, au démarrage (redémarrez pour en changer) :
+
+- **`Payments:Gateway=Demo`** (par défaut) : paiements simulés, stockés en base. Le bouton « Payer » de la page `/paiement-demo/...` de la vitrine règle le paiement, sans argent réel ni compte ; le back, qui partage la base, peut rembourser. `Payments:BaseUrl` est l'adresse publique de la vitrine (<http://localhost:5108> par défaut), utilisée pour les pages de paiement.
+- **`Payments:Gateway=Mollie`** : paiements réels (ou de test) via [Mollie](https://www.mollie.com/). Rangez la clé de test dans les secrets utilisateur de la vitrine, et du back pour que les annulations remboursent :
+
+```bash
+dotnet user-secrets set Mollie:ApiKey test_... --project src/ChefOS.Vitrine
+dotnet user-secrets set Mollie:ApiKey test_... --project src/ChefOS.Back
+Payments__Gateway=Mollie dotnet run --project src/ChefOS.Vitrine
+```
+
+  (La variable d'environnement `MOLLIE_API_KEY` sert de repli.) Sans clé, la passerelle refuse chaque paiement avec un message explicite.
+
+En local, Mollie ne peut pas joindre le webhook (`localhost` n'est pas public) : c'est la page de retour du client qui relit le statut du paiement auprès de la passerelle et confirme la réservation. Il suffit donc de revenir sur le site après avoir payé ; le webhook ne sert que si le client ferme l'onglet avant le retour.
+
+### Fiches de vins par l'IA
+
+`Wines:Describer=Demo` (par défaut) rédige des fiches factices sans réseau. Avec `Wines:Describer=Claude`, la fiche d'un vin saisi à la main est rédigée par Claude avec la clé Anthropic du back (`dotnet user-secrets set Anthropic:ApiKey <clé> --project src/ChefOS.Back`, ou `ANTHROPIC_API_KEY`). Une fiche écrite par l'IA porte le badge « Fiche IA à relire » et n'est publiée que lorsque le chef la valide.
+
+### E-mails
+
+**Aucun e-mail n'est envoyé** : les confirmations et annulations sont écrites dans les journaux de l'application. Le lien de suivi (`/<slug>/reservation/<jeton>`) reste la référence du client pour consulter ou annuler sa réservation.
+
+### En production
+
+- Hors `Development`, définissez `Payments:Gateway` explicitement : la passerelle `Demo` prévient par un avertissement dans les journaux qu'aucun encaissement réel n'a lieu.
+- Derrière un proxy ou un répartiteur de charge, configurez les `ForwardedHeaders` : sans eux, la limitation de débit de la vitrine voit l'adresse du proxy et non celle du client.
+- L'URL du webhook Mollie doit être publique et en HTTPS (`Payments:BaseUrl` : adresse publique de la vitrine).
+- Pas de données de démo : le seed ne s'exécute qu'en `Development`.
 
 ## Scan des tickets
 
