@@ -17,7 +17,7 @@ public class PaymentServiceTests(PostgresFixture postgres)
         var payment = (await h.PaymentsOfAsync((await h.LoadAsync(start.Token)).Id)).Single();
 
         Assert.Equal(PaymentStatus.Open, await h.Payments.SyncAsync(payment.GatewayPaymentId!)); // rien n'a changé chez la passerelle
-        h.Demo.SetStatus(payment.GatewayPaymentId!, GatewayStatus.Paid);
+        await h.Demo.SetStatusAsync(payment.GatewayPaymentId!, GatewayStatus.Paid);
         var results = await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => h.Payments.SyncAsync(payment.GatewayPaymentId!)));
         await h.Payments.SyncAsync(payment.GatewayPaymentId!);
 
@@ -57,7 +57,7 @@ public class PaymentServiceTests(PostgresFixture postgres)
         Assert.Equal(ReservationStatus.Confirmed, (await h.LoadAsync(second.Token)).Status);
 
         // le premier client paie quand même : webhook et retour du client en même temps
-        h.Demo.SetStatus(firstPayment.GatewayPaymentId!, GatewayStatus.Paid);
+        await h.Demo.SetStatusAsync(firstPayment.GatewayPaymentId!, GatewayStatus.Paid);
         await Task.WhenAll(Enumerable.Range(0, 5).Select(_ => h.Payments.SyncAsync(firstPayment.GatewayPaymentId!)));
 
         var reservation = await h.LoadAsync(first.Token);
@@ -67,7 +67,7 @@ public class PaymentServiceTests(PostgresFixture postgres)
         Assert.Equal(PaymentStatus.Refunded, payment.Status);
         Assert.Equal(40m, payment.RefundAmount);
         Assert.NotNull(payment.RefundedAt);
-        Assert.Equal(40m, h.Demo.RefundedAmount(firstPayment.GatewayPaymentId!));
+        Assert.Equal(40m, await h.Demo.RefundedAmountAsync(firstPayment.GatewayPaymentId!));
         Assert.Equal(1, h.Gateway.RefundCalls);
         Assert.Equal(ReservationStatus.Confirmed, (await h.LoadAsync(second.Token)).Status);
         await using var db = h.Open();
@@ -83,7 +83,7 @@ public class PaymentServiceTests(PostgresFixture postgres)
         h.Clock.Advance(TimeSpan.FromMinutes(31));
         await h.CreateAsync(Request(4, name: "Second", email: "s@example.com"));
         h.Gateway.FailRefund = true;
-        h.Demo.SetStatus(payment.GatewayPaymentId!, GatewayStatus.Paid);
+        await h.Demo.SetStatusAsync(payment.GatewayPaymentId!, GatewayStatus.Paid);
 
         await h.Payments.SyncAsync(payment.GatewayPaymentId!);
 
@@ -142,7 +142,7 @@ public class PaymentServiceTests(PostgresFixture postgres)
         var start = await h.CreateAsync(Request(4));
         var reservation = await h.LoadAsync(start.Token);
         var payment = (await h.PaymentsOfAsync(reservation.Id)).Single();
-        h.Demo.SetStatus(payment.GatewayPaymentId!, GatewayStatus.Paid);
+        await h.Demo.SetStatusAsync(payment.GatewayPaymentId!, GatewayStatus.Paid);
 
         // Une autre transaction (expiration paresseuse, annulation du client) change le statut, non validée, pendant la synchronisation.
         await using var other = h.Open();
@@ -214,7 +214,7 @@ public class PaymentServiceTests(PostgresFixture postgres)
         var after = (await h.PaymentsOfAsync(payment.ReservationId)).Single();
         Assert.Equal(PaymentStatus.Refunded, after.Status);
         Assert.Equal(1, h.Gateway.RefundCalls);
-        Assert.Equal(20m, h.Demo.RefundedAmount(payment.GatewayPaymentId!));
+        Assert.Equal(20m, await h.Demo.RefundedAmountAsync(payment.GatewayPaymentId!));
     }
 
     [Fact]

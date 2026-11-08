@@ -61,7 +61,7 @@ public static class DependencyInjection
 
     /// <summary>
     /// Enregistre <see cref="PaymentService"/>, <see cref="ReservationService"/>, l'envoi d'e-mails (<see cref="LoggingEmailSender"/>, qui journalise) et la passerelle
-    /// choisie par la section <c>Payments</c> (voir <see cref="PaymentOptions"/>) : <see cref="DemoPaymentGateway"/> par défaut (en mémoire, singleton, aussi disponible
+    /// choisie par la section <c>Payments</c> (voir <see cref="PaymentOptions"/>) : <see cref="DemoPaymentGateway"/> par défaut (en base, table globale partagée entre le back et la vitrine ; scoped, aussi disponible
     /// sous son type pour la page de démonstration) ; avec <c>Gateway = Mollie</c>, <see cref="MolliePaymentGateway"/> (HttpClient typé, clé <c>Mollie:ApiKey</c> ou, à défaut,
     /// <c>MOLLIE_API_KEY</c>), ou une passerelle qui échoue avec un message explicite sans clé. Choix lu à l'enregistrement : redémarrage pour le changer.
     /// Suppose <see cref="AddChefOsInfrastructure"/> déjà appelé (fabrique de contextes, <see cref="OrderService"/>, <see cref="TimeProvider"/>).
@@ -79,8 +79,9 @@ public static class DependencyInjection
         if (!string.Equals(options.Gateway?.Trim(), PaymentOptions.MollieGateway, StringComparison.OrdinalIgnoreCase))
         {
             services.AddHostedService<DemoModeWarning>();
-            services.AddSingleton(provider => new DemoPaymentGateway(provider.GetRequiredService<IOptions<PaymentOptions>>().Value.BaseUrl));
-            services.AddSingleton<IPaymentGateway>(provider => provider.GetRequiredService<DemoPaymentGateway>());
+            services.AddScoped(provider => new DemoPaymentGateway(provider.GetRequiredService<IOptions<PaymentOptions>>().Value.BaseUrl,
+                provider.GetRequiredService<IDbContextFactory<ChefOsDbContext>>()));
+            services.AddScoped<IPaymentGateway>(provider => provider.GetRequiredService<DemoPaymentGateway>());
             return services;
         }
 

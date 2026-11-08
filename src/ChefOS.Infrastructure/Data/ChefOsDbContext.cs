@@ -5,6 +5,7 @@ using ChefOS.Core.Restaurants;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Identity;
+using ChefOS.Infrastructure.Payments;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 
@@ -40,6 +41,8 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
     public DbSet<Payment> Payments => Set<Payment>();
     /// <summary>Bibliothèque de vins partagée entre restaurants : volontairement sans filtre de restaurant.</summary>
     public DbSet<WineReference> WineReferences => Set<WineReference>();
+    /// <summary>Paiements de la passerelle de démonstration : table globale, sans filtre de restaurant.</summary>
+    public DbSet<DemoGatewayPayment> DemoGatewayPayments => Set<DemoGatewayPayment>();
     public DbSet<WineListItem> WineListItems => Set<WineListItem>();
     public DbSet<WineListItemPairing> WineListItemPairings => Set<WineListItemPairing>();
 

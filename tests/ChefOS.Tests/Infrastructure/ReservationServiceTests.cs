@@ -34,7 +34,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         Assert.Equal(PaymentStatus.Open, payment.Status);
         Assert.Equal(40m, payment.Amount);
         Assert.Equal("Demo", payment.Gateway);
-        Assert.Equal($"{ReturnBase}/{start.Token}", h.Demo.GetRedirectUrl(payment.GatewayPaymentId!));
+        Assert.Equal($"{ReturnBase}/{start.Token}", await h.Demo.GetRedirectUrlAsync(payment.GatewayPaymentId!));
         Assert.Equal(ReservationStatus.PendingPayment, (await h.Reservations.GetByTokenAsync(start.Token))!.Status);
 
         await h.PayAsync(start.Token);
@@ -52,7 +52,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         var start = await h.CreateAsync(Request(partySize: 2));
         var payment = (await h.PaymentsOfAsync((await h.LoadAsync(start.Token)).Id)).Single();
 
-        h.Demo.SetStatus(payment.GatewayPaymentId!, GatewayStatus.Paid); // retour du client avant le webhook
+        await h.Demo.SetStatusAsync(payment.GatewayPaymentId!, GatewayStatus.Paid); // retour du client avant le webhook
 
         var view = await h.Reservations.GetByTokenAsync(start.Token);
         Assert.Equal(ReservationStatus.Confirmed, view!.Status);
@@ -283,7 +283,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         Assert.Empty(await h.Reservations.GetSlotsAsync(Friday, 1));
         var payment = (await h.PaymentsOfAsync((await h.LoadAsync(start.Token)).Id)).Single();
 
-        h.Demo.SetStatus(payment.GatewayPaymentId!, gatewayStatus);
+        await h.Demo.SetStatusAsync(payment.GatewayPaymentId!, gatewayStatus);
         Assert.Equal(expected, await h.Payments.SyncAsync(payment.GatewayPaymentId!));
 
         Assert.Equal(ReservationStatus.Expired, (await h.LoadAsync(start.Token)).Status);
@@ -326,7 +326,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         var refunded = (await h.PaymentsOfAsync(cancelled.Id)).Single();
         Assert.Equal(PaymentStatus.Refunded, refunded.Status);
         Assert.Equal(20m, refunded.RefundAmount);
-        Assert.Equal(20m, h.Demo.RefundedAmount(earlyPayment.GatewayPaymentId!));
+        Assert.Equal(20m, await h.Demo.RefundedAmountAsync(earlyPayment.GatewayPaymentId!));
 
         // jeudi 18:30 UTC : 23 h 30 avant le repas de 18:00 UTC le vendredi
         h.Clock.SetUtcNow(new DateTimeOffset(2026, 11, 5, 18, 30, 0, TimeSpan.Zero));
@@ -335,7 +335,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         var lateCancelled = await h.LoadAsync(late.Token);
         Assert.Equal(ReservationStatus.Cancelled, lateCancelled.Status);
         Assert.Equal(PaymentStatus.Paid, (await h.PaymentsOfAsync(lateCancelled.Id)).Single().Status);
-        Assert.Equal(0m, h.Demo.RefundedAmount(latePayment.GatewayPaymentId!));
+        Assert.Equal(0m, await h.Demo.RefundedAmountAsync(latePayment.GatewayPaymentId!));
 
         await h.Reservations.CancelByCustomerAsync(early.Token); // déjà annulée : sans effet
         Assert.Equal(1, h.Gateway.RefundCalls);
@@ -374,7 +374,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         await h.Payments.RefundAsync(payment.Id); // idempotent
 
         Assert.Equal(PaymentStatus.Refunded, (await h.PaymentsOfAsync(reservation.Id)).Single().Status);
-        Assert.Equal(20m, h.Demo.RefundedAmount(payment.GatewayPaymentId!));
+        Assert.Equal(20m, await h.Demo.RefundedAmountAsync(payment.GatewayPaymentId!));
     }
 
     [Fact]
@@ -585,7 +585,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         var pending = await h.CreateAsync(Request(2, name: "Attente", email: "w@example.com", time: new TimeOnly(20, 0)));
         var failed = await h.CreateAsync(Request(3, name: "Raté", email: "f@example.com"));
         var failedPayment = (await h.PaymentsOfAsync((await h.LoadAsync(failed.Token)).Id)).Single();
-        h.Demo.SetStatus(failedPayment.GatewayPaymentId!, GatewayStatus.Failed);
+        await h.Demo.SetStatusAsync(failedPayment.GatewayPaymentId!, GatewayStatus.Failed);
         await h.Payments.SyncAsync(failedPayment.GatewayPaymentId!);
 
         var days = await h.Reservations.ListForDayAsync(Friday);
@@ -638,7 +638,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         await RefusedAsync(other.CancelByRestaurantAsync(id, true));
         Assert.Empty(await other.ListForDayAsync(Friday));
         var payment = (await h.PaymentsOfAsync(id)).Single();
-        h.Demo.SetStatus(payment.GatewayPaymentId!, GatewayStatus.Paid);
+        await h.Demo.SetStatusAsync(payment.GatewayPaymentId!, GatewayStatus.Paid);
         Assert.Null(await otherPayments.SyncAsync(payment.GatewayPaymentId!));
         Assert.Equal(ReservationStatus.PendingPayment, (await h.LoadAsync(start.Token)).Status);
         Assert.NotEqual(0, steak);

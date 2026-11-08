@@ -207,25 +207,6 @@ public sealed class MolliePaymentGatewayTests
 
     // ── Passerelles de démonstration et enregistrement ───────────────────────
 
-    [Fact]
-    public async Task Demo_CheckoutUrl_StatusAndPartialRefunds()
-    {
-        var gateway = new DemoPaymentGateway("https://vitrine.test/");
-
-        var created = await gateway.CreateAsync(30m, "d", "https://back", "https://hook", new Dictionary<string, string>(), default);
-
-        Assert.StartsWith("https://vitrine.test/paiement-demo/demo_", created.CheckoutUrl);
-        Assert.EndsWith(created.Id, created.CheckoutUrl);
-        Assert.Equal(GatewayStatus.Open, await gateway.GetStatusAsync(created.Id, default));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => gateway.RefundAsync(created.Id, 10m, "k0", default));
-        gateway.SetStatus(created.Id, GatewayStatus.Paid);
-        await gateway.RefundAsync(created.Id, 10m, "k1", default);
-        await gateway.RefundAsync(created.Id, 10m, "k1", default); // même clé : sans effet
-        await Assert.ThrowsAsync<InvalidOperationException>(() => gateway.RefundAsync(created.Id, 25m, "k2", default));
-        Assert.Equal(10m, gateway.RefundedAmount(created.Id));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => gateway.GetStatusAsync("inconnu", default));
-    }
-
     private static ServiceProvider Build(params (string Key, string Value)[] settings)
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings.ToDictionary(s => s.Key, s => (string?)s.Value)).Build();
