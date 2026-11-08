@@ -80,7 +80,7 @@ public static class DependencyInjection
         {
             services.AddHostedService<DemoModeWarning>();
             services.AddScoped(provider => new DemoPaymentGateway(provider.GetRequiredService<IOptions<PaymentOptions>>().Value.BaseUrl,
-                provider.GetRequiredService<IDbContextFactory<ChefOsDbContext>>()));
+                provider.GetRequiredService<IDbContextFactory<ChefOsDbContext>>(), provider.GetRequiredService<TimeProvider>()));
             services.AddScoped<IPaymentGateway>(provider => provider.GetRequiredService<DemoPaymentGateway>());
             return services;
         }

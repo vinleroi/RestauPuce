@@ -1,3 +1,4 @@
+using ChefOS.Core.Common;
 using ChefOS.Core.Ingredients;
 using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Services;
@@ -623,23 +624,35 @@ public class ReserveFormTests
     // ── Erreurs du serveur ───────────────────────────────────────────────────
 
     [Theory]
-    [InlineData("Ce créneau vient d'être complété, choisissez-en un autre", ReserveStep.When)]
-    [InlineData("Ce créneau est déjà passé", ReserveStep.When)]
-    [InlineData("Le restaurant est fermé ce jour-là", ReserveStep.When)]
-    [InlineData("Ce créneau est trop proche : réservez au moins 120 minutes à l'avance", ReserveStep.When)]
-    [InlineData("Les réservations en ligne sont fermées", ReserveStep.When)]
-    [InlineData("Le nombre de couverts est limité à 20", ReserveStep.When)]
-    [InlineData("Un des plats choisis n'est pas disponible", ReserveStep.Guests)]
-    [InlineData("Chaque convive doit choisir au moins un plat", ReserveStep.Guests)]
-    [InlineData("Indiquez les 6 convives et leurs plats", ReserveStep.Guests)]
-    [InlineData("La quantité d'un plat est invalide", ReserveStep.Guests)]
-    [InlineData("L'adresse e-mail est invalide", ReserveStep.Contact)]
-    [InlineData("Le nom est obligatoire", ReserveStep.Contact)]
-    [InlineData("Le numéro de téléphone est invalide (6 caractères minimum)", ReserveStep.Contact)]
-    [InlineData("Le paiement n'a pas pu être initialisé, réessayez", ReserveStep.Contact)]
-    public void ServerErrors_SendTheCustomerBackToTheRelevantStep(string message, ReserveStep expected)
+    [InlineData(ValidationFields.Slot, ReserveStep.When)]
+    [InlineData(ValidationFields.Guests, ReserveStep.Guests)]
+    [InlineData(ValidationFields.Contact, ReserveStep.Contact)]
+    [InlineData(ValidationFields.Payment, ReserveStep.Contact)]
+    [InlineData(ValidationFields.Amount, ReserveStep.Contact)]
+    public void ServerErrors_SendTheCustomerBackToTheZoneTheServiceNames(string field, ReserveStep expected)
     {
-        Assert.Equal(expected, ReserveForm.StepFor(message));
+        Assert.Equal(expected, ReserveForm.StepFor(field));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("autre")]
+    public void ErrorWithoutAKnownZone_HasNoStep_WhateverItsWording(string? field)
+    {
+        Assert.Null(ReserveForm.StepFor(field));
+    }
+
+    [Fact]
+    public void RoutingIgnoresTheWording()
+    {
+        var form = FormWithSlot(party: 2);
+        form.TryAdvance();
+
+        // Un message qui parle de créneau mais classé « contact » : seul le champ compte.
+        form.HandleServerError("Ce créneau est étrange", ValidationFields.Contact);
+
+        Assert.Equal(ReserveStep.Contact, form.Step);
     }
 
     [Fact]
@@ -648,11 +661,11 @@ public class ReserveFormTests
         var form = FormWithSlot(party: 2);
         form.TryAdvance();
 
-        var refresh = form.HandleServerError("Ce créneau vient d'être complété, choisissez-en un autre");
+        var refresh = form.HandleServerError("Complet", ValidationFields.Slot);
 
         Assert.True(refresh);
         Assert.Equal(ReserveStep.When, form.Step);
-        Assert.Equal("Ce créneau vient d'être complété, choisissez-en un autre", form.Error);
+        Assert.Equal("Complet", form.Error);
         Assert.Null(form.SelectedSlot);
         Assert.False(form.IsBusy);
         Assert.False(form.Accepted);
@@ -664,7 +677,7 @@ public class ReserveFormTests
         var form = FormWithSlot(party: 2);
         form.TryAdvance();
 
-        var refresh = form.HandleServerError("L'adresse e-mail est invalide");
+        var refresh = form.HandleServerError("Invalide", ValidationFields.Contact);
 
         Assert.False(refresh);
         Assert.Equal(ReserveStep.Contact, form.Step);
@@ -672,7 +685,7 @@ public class ReserveFormTests
     }
 
     [Fact]
-    public void ServerError_AboutDishes_GoesToTheGuestStep_OnlyForAGroup()
+    public void ServerError_AboutGuests_GoesToTheGuestStep_OnlyForAGroup()
     {
         var group = FormWithSlot(party: 6);
         group.TryAdvance();
@@ -680,17 +693,17 @@ public class ReserveFormTests
             group.AddDish(i, 1);
         group.TryAdvance();
 
-        group.HandleServerError("Un des plats choisis n'est pas disponible");
+        group.HandleServerError("Plat indisponible", ValidationFields.Guests);
         Assert.Equal(ReserveStep.Guests, group.Step);
 
         var small = FormWithSlot(party: 2);
         small.TryAdvance();
-        small.HandleServerError("Un des plats choisis n'est pas disponible");
+        small.HandleServerError("Plat indisponible", ValidationFields.Guests);
         Assert.Equal(ReserveStep.Contact, small.Step);
     }
 
     [Fact]
-    public void UnknownServerMessage_StaysOnTheCurrentStep()
+    public void UnknownServerError_StaysOnTheCurrentStep()
     {
         var form = FormWithSlot(party: 2);
         form.TryAdvance();
@@ -699,5 +712,61 @@ public class ReserveFormTests
 
         Assert.Equal(ReserveStep.Contact, form.Step);
         Assert.Equal("Quelque chose d'inattendu", form.Error);
+    }
+
+    // ── Montant attendu, nom, rafraîchissement ───────────────────────────────
+
+    [Fact]
+    public void Request_CarriesTheAmountTheCustomerSaw()
+    {
+        var form = FormWithSlot(party: 2);
+        form.TryAdvance();
+        form.Name = "Dupont";
+        form.Email = "dupont@example.com";
+        form.Phone = "0470 12 34 56";
+
+        Assert.Equal(20m, form.ToRequest().ExpectedAmount);
+    }
+
+    [Fact]
+    public void Refresh_RecomputesTheAmountWithNewRules_KeepsTheEntries_AndAsksToAcceptAgain()
+    {
+        var form = FormWithSlot(party: 2);
+        form.TryAdvance();
+        form.Name = "Dupont";
+        form.Accepted = true;
+        Assert.Equal(20m, form.AmountDue);
+
+        form.Refresh(Rules(r => r.DepositPerPerson = 15m), Menu);
+
+        Assert.Equal(30m, form.AmountDue);
+        Assert.Equal("Dupont", form.Name);
+        Assert.False(form.Accepted);
+        Assert.Equal(ReserveStep.Contact, form.Step);
+    }
+
+    [Fact]
+    public void Refresh_UsesNewDishPrices_ForAGroupPrepayment()
+    {
+        var form = FormWithSlot(party: 6);
+        form.AddDish(0, 1); // 24 → 7,20
+
+        var cheaper = new[] { new PublicMenuCategory("Plats", [new PublicDish(1, "Waterzooi", null, 30m, EuAllergen.Fish)]) };
+        form.Refresh(Rules(), cheaper);
+
+        Assert.Equal(9m, form.AmountDue);
+    }
+
+    [Fact]
+    public void Name_IsLimitedTo120Characters_LikeTheService()
+    {
+        var form = FormWithSlot(party: 2);
+        form.Name = new string('a', 121);
+        form.Email = "dupont@example.com";
+        form.Phone = "0470 12 34 56";
+
+        Assert.Equal("Le nom ne peut pas dépasser 120 caractères", form.ContactError());
+        form.Name = new string('a', 120);
+        Assert.Null(form.ContactError());
     }
 }

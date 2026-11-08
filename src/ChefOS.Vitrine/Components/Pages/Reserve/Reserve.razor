@@ -250,7 +250,7 @@
                                 <div class="row">
                                     <div class="field">
                                         <label for="nom">Nom</label>
-                                        <input id="nom" type="text" autocomplete="name" maxlength="200" required @bind="_form.Name" @bind:event="oninput" />
+                                        <input id="nom" type="text" autocomplete="name" maxlength="120" required @bind="_form.Name" @bind:event="oninput" />
                                     </div>
                                     <div class="field">
                                         <label for="email">Adresse e-mail</label>
@@ -324,6 +324,7 @@
     [PersistentState] public string? ClientIp { get; set; }
 
     private ReserveForm? _form;
+    private int _formRestaurantId;
     private DateOnly _month;
     private bool _loadingSlots;
     private ElementReference _heading;
@@ -333,8 +334,18 @@
     protected override async Task LoadAsync()
     {
         ClientIp ??= HttpAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString();
+        // Même instance, autre restaurant (navigation entre deux slugs) : tout ce qui vient du restaurant (règles, carte, fermetures) est rechargé.
+        if (_form is not null && _formRestaurantId != Restaurant!.Id)
+        {
+            _form = null;
+            _picks.Clear();
+            _loadingSlots = false;
+        }
+
         if (_form is not null || Profile is not { ReservationsOpen: true })
             return;
+
+        _formRestaurantId = Restaurant!.Id;
 
         var closures = await VitrineService.GetClosuresAsync();
         var schedules = await VitrineService.GetSchedulesAsync();
@@ -421,14 +432,32 @@
         }
         catch (DomainValidationException ex)
         {
-            if (form.HandleServerError(ex.Message))
+            if (form.HandleServerError(ex.Message, ex.Field))
                 await LoadSlotsAsync();
+            if (ex.Field == ValidationFields.Amount)
+                await RefreshRulesAsync(form);
             _focusHeading = true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             Logger.LogError(ex, "Réservation impossible pour {Slug}", Slug);
             form.HandleServerError("Une erreur est survenue, réessayez dans un instant");
+        }
+    }
+
+    /// <summary>Le montant affiché était périmé : on relit les règles et les prix de la carte pour que le récapitulatif montre le montant du serveur.</summary>
+    private async Task RefreshRulesAsync(ReserveForm form)
+    {
+        try
+        {
+            var profile = await VitrineService.FindProfileAsync();
+            var current = await VitrineService.GetPublicAsync();
+            if (profile is not null && current is not null)
+                form.Refresh(profile, current.Menu);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Logger.LogWarning("Règles de réservation non rechargées : {Reason}", ex.Message);
         }
     }
 

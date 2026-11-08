@@ -68,7 +68,7 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
             await db.SaveChangesAsync(CancellationToken.None);
             await transaction.CommitAsync(CancellationToken.None);
 
-            throw new DomainValidationException(InitFailedMessage);
+            throw new DomainValidationException(InitFailedMessage, ValidationFields.Payment);
         }
 
         var payment = new Payment

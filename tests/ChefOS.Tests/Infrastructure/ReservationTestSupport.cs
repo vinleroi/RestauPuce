@@ -97,7 +97,7 @@ public sealed class ReservationHarness
         }
 
         var clock = new FakeTimeProvider(new DateTimeOffset(2026, 11, 2, 9, 0, 0, TimeSpan.Zero));
-        var demo = new DemoPaymentGateway("https://vitrine.test", new TestContextFactory(options, null));
+        var demo = new DemoPaymentGateway("https://vitrine.test", new TestContextFactory(options, null), clock);
         var gateway = new FaultyGateway(demo);
         var email = new RecordingEmailSender();
         var (payments, reservations) = Services(options, restaurantId, clock, gateway, email);

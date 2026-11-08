@@ -14,11 +14,16 @@ public class AccentThemeTests
     [InlineData("#FFFFFF")]
     [InlineData("#000000")]
     [InlineData("#E8A3A8")]
+    [InlineData("#FF0000")]
+    [InlineData("#2E8B57")]
+    [InlineData("#808080")]
+    [InlineData("#00A0A0")]
+    [InlineData("#FF7F50")]
     public void Colors_AlwaysReachWcagAA(string accent)
     {
         var theme = AccentTheme.From(accent);
 
-        Assert.True(AccentTheme.Contrast(theme.Ink, theme.Accent) >= 4.5, "texte sur bouton");
+        Assert.True(AccentTheme.Contrast(theme.Ink, theme.Button) >= 4.5, "texte sur le fond du bouton");
         Assert.True(AccentTheme.Contrast(theme.Deep, AccentTheme.Paper) >= 4.5, "accent en texte sur le fond clair");
     }
 
@@ -35,6 +40,14 @@ public class AccentThemeTests
 
         Assert.Equal(AccentTheme.DefaultAccent, theme.Accent);
         Assert.DoesNotContain("url", theme.Style);
+    }
+
+    [Fact]
+    public void ReadableAccent_IsUsedAsIsForButtons_WhileAMidToneIsMovedUntilReadable()
+    {
+        Assert.Equal("#8C3B2A", AccentTheme.From("#8C3B2A").Button);
+        Assert.NotEqual("#FF0000", AccentTheme.From("#FF0000").Button);
+        Assert.Contains("--accent-btn:", AccentTheme.From("#FF0000").Style);
     }
 
     [Fact]

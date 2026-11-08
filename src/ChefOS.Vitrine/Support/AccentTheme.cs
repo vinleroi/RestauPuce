@@ -5,10 +5,11 @@ namespace ChefOS.Vitrine.Support;
 
 /// <summary>
 /// Couleurs dérivées de la couleur d'accent du restaurant, calculées pour rester lisibles (contraste WCAG AA, 4,5:1) :
-/// <see cref="Ink"/> est le texte posé sur l'accent (boutons), <see cref="Deep"/> l'accent assombri au besoin pour servir de texte sur le fond clair du site.
+/// <see cref="Button"/> est le fond des boutons : l'accent tel quel quand un texte blanc ou sombre y est lisible, sinon l'accent assombri (texte blanc) ou éclairci
+/// (texte sombre) jusqu'à 4,5:1 ; <see cref="Ink"/> est le texte posé dessus, <see cref="Deep"/> l'accent assombri au besoin pour servir de texte sur le fond clair du site.
 /// Une valeur absente ou invalide (jamais injectée telle quelle dans le CSS) donne l'accent par défaut.
 /// </summary>
-public sealed partial record AccentTheme(string Accent, string Ink, string Deep)
+public sealed partial record AccentTheme(string Accent, string Ink, string Deep, string Button)
 {
     public const string DefaultAccent = "#8C3B2A";
     public const string Paper = "#FAF7F2";
@@ -22,21 +23,34 @@ public sealed partial record AccentTheme(string Accent, string Ink, string Deep)
         var accent = hex is not null && HexPattern().IsMatch(hex) ? hex.ToUpperInvariant() : DefaultAccent;
         var rgb = Parse(accent);
 
-        var ink = Contrast(rgb, Parse("#FFFFFF")) >= Contrast(rgb, Parse(Dark)) ? "#FFFFFF" : Dark;
+        var white = Parse("#FFFFFF");
+        var dark = Parse(Dark);
+        var ink = Contrast(rgb, white) >= Contrast(rgb, dark) ? "#FFFFFF" : Dark;
+
+        // Les couleurs moyennes (rouge vif, vert marin…) n'atteignent 4,5:1 ni avec du blanc ni avec du sombre : on déplace le fond du bouton.
+        var button = rgb;
+        var inkRgb = Parse(ink);
+        for (var i = 0; i < 60 && Contrast(button, inkRgb) < 4.5; i++)
+        {
+            button = ink == "#FFFFFF"
+                ? ((int)(button.R * 0.94), (int)(button.G * 0.94), (int)(button.B * 0.94))
+                : (button.R + (int)((255 - button.R) * 0.08) + 1, button.G + (int)((255 - button.G) * 0.08) + 1, button.B + (int)((255 - button.B) * 0.08) + 1);
+            button = (Math.Min(button.R, 255), Math.Min(button.G, 255), Math.Min(button.B, 255));
+        }
 
         var paper = Parse(Paper);
         var deep = rgb;
         for (var i = 0; i < 40 && Contrast(deep, paper) < 4.5; i++)
             deep = ((int)(deep.R * 0.92), (int)(deep.G * 0.92), (int)(deep.B * 0.92));
 
-        return new AccentTheme(accent, ink, Hex(deep));
+        return new AccentTheme(accent, ink, Hex(deep), Hex(button));
     }
 
     /// <summary>Rapport de contraste WCAG entre deux couleurs « #RRGGBB ».</summary>
     public static double Contrast(string foreground, string background) => Contrast(Parse(foreground), Parse(background));
 
     /// <summary>Valeur de l'attribut <c>style</c> qui pose les variables CSS du restaurant.</summary>
-    public string Style => $"--accent:{Accent};--accent-ink:{Ink};--accent-deep:{Deep}";
+    public string Style => $"--accent:{Accent};--accent-btn:{Button};--accent-ink:{Ink};--accent-deep:{Deep}";
 
     private static double Contrast((int R, int G, int B) a, (int R, int G, int B) b)
     {

@@ -1,6 +1,5 @@
 @page "/{slug}"
 @inherits SlugPageBase
-@inject NavigationManager Navigation
 
 @if (Ready)
 {
@@ -22,10 +21,10 @@
                 }
                 <div class="hero__cta">
                     <a class="btn btn--lg" href="@Url("/reserver")">Réserver une table</a>
-                    <a class="btn btn--lg btn--light" href="#carte">Voir la carte</a>
+                    <a class="btn btn--lg btn--light" href="@Url("#carte")">Voir la carte</a>
                 </div>
             </div>
-            <a class="hero__cue" href="#ambiance" aria-label="Descendre vers l'ambiance">Découvrir ↓</a>
+            <a class="hero__cue" href="@Url("#ambiance")" aria-label="Descendre vers l'ambiance">Découvrir ↓</a>
         </section>
 
         @if (!string.IsNullOrWhiteSpace(Vitrine.AmbianceText) || Vitrine.GalleryImageIds.Count > 0)
@@ -134,8 +133,22 @@
                 {
                     <p><a class="btn btn--lg btn--light" href="@Url("/reserver")">Réserver une table</a></p>
                     <ul class="book__rules">
-                        <li>Acompte de @Pages.Reserve.Fmt.Money(Profile.DepositPerPerson) par personne</li>
-                        <li>Au-delà de @Profile.GroupThreshold personnes : plats pré-commandés, prépaiement de @(Math.Round(Profile.PrepaymentPercent * 100, 0))&nbsp;%</li>
+                        @if (Profile.DepositPerPerson > 0)
+                        {
+                            <li>Acompte de @Pages.Reserve.Fmt.Money(Profile.DepositPerPerson) par personne</li>
+                        }
+                        @if (Profile.PrepaymentPercent > 0)
+                        {
+                            <li>Au-delà de @Profile.GroupThreshold personnes : plats pré-commandés, prépaiement de @(Math.Round(Profile.PrepaymentPercent * 100, 0))&nbsp;%</li>
+                        }
+                        else
+                        {
+                            <li>Au-delà de @Profile.GroupThreshold personnes : plats pré-commandés</li>
+                        }
+                        @if (Profile.DepositPerPerson <= 0 && Profile.PrepaymentPercent <= 0)
+                        {
+                            <li>Réservation sans acompte</li>
+                        }
                         <li>Annulation gratuite jusqu'à @Profile.FreeCancellationHours&nbsp;h avant</li>
                     </ul>
                 }

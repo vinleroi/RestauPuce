@@ -75,7 +75,13 @@
 
     private PublicWineDetail? _wine;
 
-    protected override async Task LoadAsync() => _wine = await Wines.GetPublishedAsync(Id);
+    protected override async Task LoadAsync()
+    {
+        _wine = await Wines.GetPublishedAsync(Id);
+        // Vin inconnu, non publié ou d'un autre restaurant : un vrai 404, pas une page 200.
+        if (_wine is null)
+            Nav.NotFound();
+    }
 
     private RenderFragment Row(string label, string? value) => builder =>
     {

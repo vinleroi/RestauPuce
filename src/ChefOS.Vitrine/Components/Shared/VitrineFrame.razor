@@ -15,6 +15,10 @@
         <meta property="og:image" content="@Nav.ToAbsoluteUri($"{Slug}/images/{cover}")" />
     }
     <meta name="theme-color" content="@Theme.Accent" />
+    @if (NoIndex)
+    {
+        <meta name="robots" content="noindex" />
+    }
 </HeadContent>
 
 <div class="vt" style="@Theme.Style">
@@ -82,6 +86,8 @@
     [Parameter] public string? Section { get; set; }
     /// <summary>Barre de navigation pleine (pages intérieures) plutôt que posée sur la couverture.</summary>
     [Parameter] public bool Solid { get; set; }
+    /// <summary>Page personnelle (lien d'une réservation) : à ne pas indexer.</summary>
+    [Parameter] public bool NoIndex { get; set; }
     [Parameter] public bool ShowFloatingButton { get; set; } = true;
     [Parameter] public RenderFragment? ChildContent { get; set; }
 

@@ -15,11 +15,14 @@ public record ReservationDishInput(int RecipeId, int Quantity);
 
 public record ReservationGuestInput(string? FirstName, string? LastName, IReadOnlyList<ReservationDishInput> Dishes);
 
-/// <summary>Demande de réservation : <paramref name="ServiceName"/> et l'heure viennent d'un <see cref="Slot"/> proposé par <see cref="ReservationService.GetSlotsAsync"/>.</summary>
+/// <summary>
+/// Demande de réservation : <paramref name="ServiceName"/> et l'heure viennent d'un <see cref="Slot"/> proposé par <see cref="ReservationService.GetSlotsAsync"/>.
+/// <paramref name="ExpectedAmount"/> : le montant que le client a vu ; s'il diffère de celui du serveur, la réservation est refusée (réservation en ligne seulement).
+/// </summary>
 public record ReservationRequest(
     DateOnly Date, TimeOnly Time, string ServiceName, int PartySize,
     string CustomerName, string CustomerEmail, string CustomerPhone, string? Note,
-    IReadOnlyList<ReservationGuestInput> Guests);
+    IReadOnlyList<ReservationGuestInput> Guests, decimal? ExpectedAmount = null);
 
 public record ReservationStart(string Token, string? CheckoutUrl, decimal AmountDue, ReservationStatus Status);
 
@@ -159,20 +162,20 @@ public partial class ReservationService(
 
         var profile = await db.VitrineProfiles.AsNoTracking().FirstOrDefaultAsync();
         if (profile is null || !profile.IsPublished || !profile.ReservationsOpen)
-            throw new DomainValidationException(ClosedMessage);
+            throw new DomainValidationException(ClosedMessage, ValidationFields.Slot);
 
         if (request.PartySize < 1 || request.PartySize > profile.MaxPartySize)
-            throw new DomainValidationException(request.PartySize < 1 ? PartyMessage : $"Le nombre de couverts est limité à {profile.MaxPartySize}");
+            throw new DomainValidationException(request.PartySize < 1 ? PartyMessage : $"Le nombre de couverts est limité à {profile.MaxPartySize}", ValidationFields.Slot);
 
         var name = request.CustomerName?.Trim() ?? "";
         var mail = request.CustomerEmail?.Trim() ?? "";
         var phone = request.CustomerPhone?.Trim() ?? "";
         if (name.Length == 0)
-            throw new DomainValidationException(NameMessage);
+            throw new DomainValidationException(NameMessage, ValidationFields.Contact);
         if (!EmailPattern().IsMatch(mail))
-            throw new DomainValidationException(EmailMessage);
+            throw new DomainValidationException(EmailMessage, ValidationFields.Contact);
         if (phone.Replace(" ", "").Length < 6)
-            throw new DomainValidationException(PhoneMessage);
+            throw new DomainValidationException(PhoneMessage, ValidationFields.Contact);
         RequireLengths(name, mail, phone, request.Note);
 
         var restaurant = await db.Restaurants.AsNoTracking().FirstAsync(r => r.Id == profile.RestaurantId);
@@ -186,6 +189,9 @@ public partial class ReservationService(
             (guests, preorderTotal) = await BuildGuestsAsync(db, request);
 
         var due = ReservationPricing.Compute(request.PartySize, preorderTotal, profile);
+        if (request.ExpectedAmount is { } expected && expected != due.Amount)
+            throw new DomainValidationException($"Le montant a changé ({Money(expected)} → {Money(due.Amount)}) : vérifiez votre récapitulatif", ValidationFields.Amount);
+
         var token = NewToken();
         var reservation = new Reservation
         {
@@ -211,7 +217,7 @@ public partial class ReservationService(
             var remaining = await ReservationCapacity.RemainingAsync(db, request.ServiceName, request.Date, restaurant.TimeZoneId, now,
                 profile.PendingPaymentMinutes, 0, CancellationToken.None);
             if (remaining < request.PartySize)
-                throw new DomainValidationException(FullMessage);
+                throw new DomainValidationException(FullMessage, ValidationFields.Slot);
 
             db.Reservations.Add(reservation);
             await db.SaveChangesAsync();
@@ -235,23 +241,23 @@ public partial class ReservationService(
         DateTime now, VitrineProfile profile, bool enforceLead, bool checkClosure = true)
     {
         if (checkClosure && await db.ClosureDays.AnyAsync(c => c.DateLocal == date))
-            throw new DomainValidationException(ClosedDayMessage);
+            throw new DomainValidationException(ClosedDayMessage, ValidationFields.Slot);
 
         var schedule = await db.ServiceSchedules.AsNoTracking()
             .FirstOrDefaultAsync(s => s.DayOfWeek == date.DayOfWeek && s.Name == serviceName);
         if (schedule is null || time < schedule.StartLocal || time >= schedule.EndLocal
             || (time.Hour * 60 + time.Minute - (schedule.StartLocal.Hour * 60 + schedule.StartLocal.Minute)) % Math.Max(schedule.SlotMinutes, 1) != 0)
-            throw new DomainValidationException(InvalidSlotMessage);
+            throw new DomainValidationException(InvalidSlotMessage, ValidationFields.Slot);
 
         var startsAtUtc = RestaurantClock.ToUtc(date, time, timeZone);
         if (enforceLead)
         {
             if (startsAtUtc <= now)
-                throw new DomainValidationException(PastSlotMessage);
+                throw new DomainValidationException(PastSlotMessage, ValidationFields.Slot);
             if (startsAtUtc < now.AddMinutes(profile.MinLeadMinutes))
-                throw new DomainValidationException($"Ce créneau est trop proche : réservez au moins {profile.MinLeadMinutes} minutes à l'avance");
+                throw new DomainValidationException($"Ce créneau est trop proche : réservez au moins {profile.MinLeadMinutes} minutes à l'avance", ValidationFields.Slot);
             if (date > RestaurantClock.Today(now, timeZone).AddDays(profile.MaxDaysAhead))
-                throw new DomainValidationException($"Ce créneau est trop éloigné : {profile.MaxDaysAhead} jours à l'avance au maximum");
+                throw new DomainValidationException($"Ce créneau est trop éloigné : {profile.MaxDaysAhead} jours à l'avance au maximum", ValidationFields.Slot);
         }
 
         return startsAtUtc;
@@ -262,15 +268,15 @@ public partial class ReservationService(
     {
         var inputs = request.Guests ?? [];
         if (inputs.Count != request.PartySize)
-            throw new DomainValidationException($"Indiquez les {request.PartySize} convives et leurs plats");
+            throw new DomainValidationException($"Indiquez les {request.PartySize} convives et leurs plats", ValidationFields.Guests);
         if (inputs.Any(g => g.Dishes is null || g.Dishes.Count == 0))
-            throw new DomainValidationException("Chaque convive doit choisir au moins un plat");
+            throw new DomainValidationException("Chaque convive doit choisir au moins un plat", ValidationFields.Guests);
         if (inputs.Any(g => g.Dishes.Count > MaxDishLinesPerGuest))
-            throw new DomainValidationException($"Un convive ne peut pas choisir plus de {MaxDishLinesPerGuest} plats");
+            throw new DomainValidationException($"Un convive ne peut pas choisir plus de {MaxDishLinesPerGuest} plats", ValidationFields.Guests);
         if (inputs.SelectMany(g => g.Dishes).Any(d => d.Quantity < 1 || d.Quantity > MaxDishQuantity))
-            throw new DomainValidationException("La quantité d'un plat est invalide");
+            throw new DomainValidationException("La quantité d'un plat est invalide", ValidationFields.Guests);
         if (inputs.Any(g => (g.FirstName?.Trim().Length ?? 0) > 100 || (g.LastName?.Trim().Length ?? 0) > 100))
-            throw new DomainValidationException(TooLongMessage);
+            throw new DomainValidationException(TooLongMessage, ValidationFields.Guests);
 
         var ids = inputs.SelectMany(g => g.Dishes).Select(d => d.RecipeId).Distinct().ToList();
         var recipes = await db.Recipes.AsNoTracking()
@@ -278,7 +284,7 @@ public partial class ReservationService(
                 && r.SellingPriceInclVat != null && r.VatRate != null)
             .ToDictionaryAsync(r => r.Id);
         if (ids.Any(id => !recipes.ContainsKey(id)))
-            throw new DomainValidationException(DishUnavailableMessage);
+            throw new DomainValidationException(DishUnavailableMessage, ValidationFields.Guests);
 
         var total = 0m;
         var guests = new List<ReservationGuest>();
@@ -631,16 +637,18 @@ public partial class ReservationService(
     }
 
     /// <summary>Plafonds des saisies publiques.</summary>
+    private static string Money(decimal amount) => amount.ToString("0.00", System.Globalization.CultureInfo.GetCultureInfo("fr-BE")) + "\u00A0€";
+
     private static void RequireLengths(string name, string mail, string phone, string? note)
     {
         if (name.Length > 120)
-            throw new DomainValidationException("Le nom ne peut pas dépasser 120 caractères");
+            throw new DomainValidationException("Le nom ne peut pas dépasser 120 caractères", ValidationFields.Contact);
         if (mail.Length > 200)
-            throw new DomainValidationException("L'adresse e-mail ne peut pas dépasser 200 caractères");
+            throw new DomainValidationException("L'adresse e-mail ne peut pas dépasser 200 caractères", ValidationFields.Contact);
         if (phone.Length > 40)
-            throw new DomainValidationException("Le numéro de téléphone ne peut pas dépasser 40 caractères");
+            throw new DomainValidationException("Le numéro de téléphone ne peut pas dépasser 40 caractères", ValidationFields.Contact);
         if ((note?.Trim().Length ?? 0) > 1000)
-            throw new DomainValidationException("La note ne peut pas dépasser 1000 caractères");
+            throw new DomainValidationException("La note ne peut pas dépasser 1000 caractères", ValidationFields.Contact);
     }
 
     private static string NewToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');

@@ -73,16 +73,50 @@ public sealed class VitrineSiteTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task WineOfAnotherRestaurant_Returns404OrNotFoundFiche()
+    public async Task WineOfAnotherRestaurantOrUnknown_Returns404StatusCode()
     {
         await using var site = await VitrineSite.CreateAsync(postgres);
 
-        // L'identifiant du vin du Bistro, demandé sous le slug d'un autre restaurant : jamais la fiche.
-        var response = await site.Client.GetAsync($"/{site.Other.Slug}/vins/{site.BistroWineId}");
-        var html = await Html(response);
+        // L'identifiant du vin du Bistro, demandé sous le slug d'un autre restaurant : jamais la fiche, et un vrai 404.
+        var foreign = await site.Client.GetAsync($"/{site.Other.Slug}/vins/{site.BistroWineId}");
+        var unknown = await site.Client.GetAsync($"/{site.Bistro.Slug}/vins/999999");
 
-        Assert.DoesNotContain("Agrumes et pierre à fusil", html);
-        Assert.Contains("Vin introuvable", html);
+        Assert.Equal(HttpStatusCode.NotFound, foreign.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+        Assert.DoesNotContain("Agrumes et pierre à fusil", await Html(foreign));
+    }
+
+    [Fact]
+    public async Task HomeHeroLinks_StayOnTheRestaurantPage_NotTheRootPage()
+    {
+        await using var site = await VitrineSite.CreateAsync(postgres);
+
+        var html = await Html(await site.Client.GetAsync($"/{site.Bistro.Slug}"));
+
+        // Avec <base href="/">, « #carte » seul mènerait à « /#carte » (la page d'accueil générale).
+        Assert.Contains($"href=\"/{site.Bistro.Slug}#carte\"", html);
+        Assert.Contains($"href=\"/{site.Bistro.Slug}#ambiance\"", html);
+        Assert.DoesNotContain("href=\"#", html);
+    }
+
+    [Fact]
+    public async Task ReservationPageAndDemoCheckout_AreNotIndexed()
+    {
+        await using var site = await VitrineSite.CreateAsync(postgres);
+        string id;
+        await using (var scope = site.Factory.Services.CreateAsyncScope())
+        {
+            var gateway = scope.ServiceProvider.GetRequiredService<ChefOS.Infrastructure.Payments.DemoPaymentGateway>();
+            id = (await gateway.CreateAsync(20m, "d", $"http://localhost/{site.Bistro.Slug}/reservation/abc", "", new Dictionary<string, string>(), default)).Id;
+        }
+
+        var reservation = await Html(await site.Client.GetAsync($"/{site.Bistro.Slug}/reservation/jeton-inconnu"));
+        var checkout = await Html(await site.Client.GetAsync($"/paiement-demo/{id}"));
+        var home = await Html(await site.Client.GetAsync($"/{site.Bistro.Slug}"));
+
+        Assert.Contains("<meta name=\"robots\" content=\"noindex\"", reservation);
+        Assert.Contains("<meta name=\"robots\" content=\"noindex\"", checkout);
+        Assert.DoesNotContain("noindex", home);
     }
 
     [Fact]

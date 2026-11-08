@@ -13,7 +13,7 @@
 
 @if (Ready)
 {
-    <VitrineFrame Slug="@Slug" Vitrine="Vitrine!" Section="Votre réservation" Solid="true" ShowFloatingButton="false">
+    <VitrineFrame Slug="@Slug" Vitrine="Vitrine!" Section="Votre réservation" Solid="true" ShowFloatingButton="false" NoIndex="true">
         <div class="wrap page">
             @if (_loaded && _reservation is null)
             {
@@ -124,6 +124,7 @@
     private string? _error;
     private Timer? _poll;
     private int _polls;
+    private volatile bool _disposed;
 
     protected override async Task LoadAsync()
     {
@@ -144,7 +145,7 @@
     {
         if (_reservation?.Status == ReservationStatus.PendingPayment && _polls < 45)
         {
-            _poll ??= new Timer(_ => _ = InvokeAsync(PollAsync), null, TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(4));
+            _poll ??= new Timer(_ => Tick(), null, TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(4));
             return;
         }
 
@@ -152,8 +153,27 @@
         _poll = null;
     }
 
+    /// <summary>Tic du minuteur : après la suppression de la page (circuit fermé), plus rien n'est lancé et l'échec éventuel est ignoré.</summary>
+    private void Tick()
+    {
+        if (_disposed)
+            return;
+
+        try
+        {
+            _ = InvokeAsync(PollAsync).ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Le circuit est fermé entre-temps.
+        }
+    }
+
     private async Task PollAsync()
     {
+        if (_disposed)
+            return;
+
         _polls++;
         try
         {
@@ -164,7 +184,8 @@
             Logger.LogWarning("Rafraîchissement de la réservation impossible : {Reason}", ex.Message);
         }
 
-        StateHasChanged();
+        if (!_disposed)
+            StateHasChanged();
     }
 
     private async Task CancelAsync()
@@ -243,20 +264,31 @@
     {
         var limit = RestaurantClock.ToLocal(r.FreeCancellationUntilUtc, Restaurant!.TimeZoneId);
         var free = Clock.GetUtcNow().UtcDateTime <= r.FreeCancellationUntilUtc;
-        var paid = r.AmountDue > 0 && r.PaymentStatus is PaymentStatus.Paid or PaymentStatus.Open;
+        // Seul un paiement réellement encaissé peut être remboursé : tant qu'il est ouvert, rien n'a été prélevé.
+        var paid = r.AmountDue > 0 && r.PaymentStatus == PaymentStatus.Paid;
+        var notCharged = r.AmountDue > 0 && r.PaymentStatus == PaymentStatus.Open;
         var when = Fmt.LocalDateTime(limit.Date, limit.Time);
 
         if (free)
         {
-            return paid
-                ? $"Annulation gratuite jusqu'au {when} : vous serez remboursé de {Fmt.Money(r.AmountDue)}. Ensuite, le paiement n'est pas remboursé."
+            if (paid)
+                return $"Annulation gratuite jusqu'au {when} : vous serez remboursé de {Fmt.Money(r.AmountDue)}. Ensuite, le paiement n'est pas remboursé.";
+            return notCharged
+                ? $"Annulation gratuite jusqu'au {when}. Aucun paiement n'a été encaissé pour l'instant : annuler ne vous coûte rien."
                 : $"Annulation gratuite jusqu'au {when}.";
         }
 
-        return paid
-            ? $"Le délai d'annulation gratuite est dépassé (il courait jusqu'au {when}) : si vous annulez, {Fmt.Money(r.AmountDue)} ne sera pas remboursé."
+        if (paid)
+            return $"Le délai d'annulation gratuite est dépassé (il courait jusqu'au {when}) : si vous annulez, {Fmt.Money(r.AmountDue)} ne sera pas remboursé.";
+        return notCharged
+            ? "Le délai d'annulation gratuite est dépassé. Aucun paiement n'a été encaissé pour l'instant."
             : "Le délai d'annulation gratuite est dépassé.";
     }
 
-    public void Dispose() => _poll?.Dispose();
+    public void Dispose()
+    {
+        _disposed = true;
+        _poll?.Dispose();
+        _poll = null;
+    }
 }

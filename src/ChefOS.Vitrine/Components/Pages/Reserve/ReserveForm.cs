@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using ChefOS.Core.Common;
 using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Services;
 
@@ -35,12 +36,14 @@ public sealed partial class ReserveForm
     public const int MaxDishQuantity = 50;
     public const int MaxDishLinesPerGuest = 10;
     public const int FewLeftThreshold = 4;
+    /// <summary>Longueur maximale du nom, celle du service.</summary>
+    public const int MaxNameLength = 120;
 
     private const string Nbsp = " ";
 
     private readonly string _timeZone;
     private readonly DateTime _utcNow;
-    private readonly Dictionary<int, PublicDish> _dishes;
+    private Dictionary<int, PublicDish> _dishes;
     private readonly HashSet<DateOnly> _closedDates;
     private readonly HashSet<DayOfWeek> _serviceDays;
     private IReadOnlyList<Slot> _slots = [];
@@ -54,7 +57,7 @@ public sealed partial class ReserveForm
         Rules = rules;
         _timeZone = timeZoneId;
         _utcNow = utcNow;
-        _dishes = menu.SelectMany(c => c.Dishes).GroupBy(d => d.Id).ToDictionary(g => g.Key, g => g.First());
+        _dishes = Index(menu);
         _closedDates = closedDates.ToHashSet();
         _serviceDays = serviceDays.ToHashSet();
         FirstDate = RestaurantClock.Today(utcNow, timeZoneId);
@@ -62,7 +65,21 @@ public sealed partial class ReserveForm
         PartySize = Math.Min(2, Math.Max(1, rules.MaxPartySize));
     }
 
-    public VitrineProfile Rules { get; }
+    private static Dictionary<int, PublicDish> Index(IEnumerable<PublicMenuCategory> menu) =>
+        menu.SelectMany(c => c.Dishes).GroupBy(d => d.Id).ToDictionary(g => g.Key, g => g.First());
+
+    public VitrineProfile Rules { get; private set; }
+
+    /// <summary>
+    /// Remplace les règles et les prix de la carte par ceux que le serveur vient de lire (le montant affiché était périmé) : le récapitulatif
+    /// se recalcule, l'acceptation est à redonner. Ce que le client a saisi est gardé.
+    /// </summary>
+    public void Refresh(VitrineProfile rules, IEnumerable<PublicMenuCategory> menu)
+    {
+        Rules = rules;
+        _dishes = Index(menu);
+        Accepted = false;
+    }
     public ReserveStep Step { get; private set; } = ReserveStep.When;
     public string? Error { get; private set; }
     public bool IsBusy { get; set; }
@@ -342,6 +359,8 @@ public sealed partial class ReserveForm
     {
         if (Name.Trim().Length == 0)
             return "Indiquez votre nom";
+        if (Name.Trim().Length > MaxNameLength)
+            return $"Le nom ne peut pas dépasser {MaxNameLength} caractères";
         if (!EmailPattern().IsMatch(Email.Trim()))
             return "L'adresse e-mail est invalide";
         if (Phone.Trim().Replace(" ", "").Length < 6)
@@ -362,37 +381,36 @@ public sealed partial class ReserveForm
                 .ToList()
             : new List<ReservationGuestInput>();
 
-        return new ReservationRequest(slot.Date, slot.Time, slot.ServiceName, PartySize, Name.Trim(), Email.Trim(), Phone.Trim(), Blank(Note), guests);
+        return new ReservationRequest(slot.Date, slot.Time, slot.ServiceName, PartySize, Name.Trim(), Email.Trim(), Phone.Trim(), Blank(Note), guests, AmountDue);
     }
 
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     // ── Erreurs du serveur ───────────────────────────────────────────────────
 
-    /// <summary>L'étape à laquelle renvoyer le client pour un message du service ; null si le message ne dit pas où corriger.</summary>
-    public static ReserveStep? StepFor(string message)
+    /// <summary>
+    /// L'étape où corriger une erreur du service, d'après la zone que celui-ci indique (<see cref="ValidationFields"/>), jamais d'après le texte :
+    /// null quand l'erreur ne dit pas où corriger (on reste sur l'étape courante).
+    /// </summary>
+    public static ReserveStep? StepFor(string? field) => field switch
     {
-        var text = message.ToLowerInvariant();
-        if (text.Contains("créneau") || text.Contains("fermé") || text.Contains("couverts") || text.Contains("réservations en ligne"))
-            return ReserveStep.When;
-        if (text.Contains("plat") || text.Contains("convive"))
-            return ReserveStep.Guests;
-        if (text.Contains("e-mail") || text.Contains("nom") || text.Contains("téléphone") || text.Contains("trop longue") || text.Contains("paiement"))
-            return ReserveStep.Contact;
-        return null;
-    }
+        ValidationFields.Slot => ReserveStep.When,
+        ValidationFields.Guests => ReserveStep.Guests,
+        ValidationFields.Contact or ValidationFields.Payment or ValidationFields.Amount => ReserveStep.Contact,
+        _ => null
+    };
 
     /// <summary>
     /// Affiche le message du service et renvoie le client à l'étape concernée. Retourne true quand les créneaux sont à recharger
     /// (le créneau choisi n'est plus bon : il est désélectionné).
     /// </summary>
-    public bool HandleServerError(string message)
+    public bool HandleServerError(string message, string? field = null)
     {
         Error = message;
         IsBusy = false;
         Accepted = false;
 
-        var target = StepFor(message);
+        var target = StepFor(field);
         if (target == ReserveStep.Guests && !IsGroup)
             target = ReserveStep.Contact;
         if (target is null)

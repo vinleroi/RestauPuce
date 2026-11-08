@@ -11,7 +11,7 @@ public sealed class DemoPaymentGatewayTests(PostgresFixture postgres)
     private async Task<DemoPaymentGateway> CreateGatewayAsync(string baseUrl = "https://vitrine.test/")
     {
         var options = await postgres.CreateDatabaseAsync();
-        return new DemoPaymentGateway(baseUrl, new TestContextFactory(options, null));
+        return new DemoPaymentGateway(baseUrl, new TestContextFactory(options, null), TimeProvider.System);
     }
 
     [Fact]
@@ -66,8 +66,8 @@ public sealed class DemoPaymentGatewayTests(PostgresFixture postgres)
     {
         var options = await postgres.CreateDatabaseAsync();
         var factory = new TestContextFactory(options, null);
-        var vitrine = new DemoPaymentGateway("https://vitrine.test", factory);
-        var back = new DemoPaymentGateway("https://vitrine.test", factory);
+        var vitrine = new DemoPaymentGateway("https://vitrine.test", factory, TimeProvider.System);
+        var back = new DemoPaymentGateway("https://vitrine.test", factory, TimeProvider.System);
 
         var created = await vitrine.CreateAsync(12.5m, "Réservation Dupont · 2 couverts", "https://vitrine.test/le-bistro/reservation/abc", "", NoMetadata, default);
         await vitrine.SetStatusAsync(created.Id, GatewayStatus.Paid);
@@ -92,5 +92,42 @@ public sealed class DemoPaymentGatewayTests(PostgresFixture postgres)
         await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => gateway.RefundAsync(created.Id, 30m, "same", default)));
 
         Assert.Equal(30m, await gateway.RefundedAmountAsync(created.Id));
+    }
+
+    [Fact]
+    public async Task SetStatus_OnlyChangesAnOpenPayment_PayThenFailCannotUndoAPayment()
+    {
+        var gateway = await CreateGatewayAsync();
+        var created = await gateway.CreateAsync(30m, "d", "https://back", "https://hook", NoMetadata, default);
+
+        await gateway.SetStatusAsync(created.Id, GatewayStatus.Paid);
+        await gateway.SetStatusAsync(created.Id, GatewayStatus.Failed); // sans effet : déjà réglé
+
+        Assert.Equal(GatewayStatus.Paid, await gateway.GetStatusAsync(created.Id, default));
+    }
+
+    [Fact]
+    public async Task SetStatus_FailThenPay_StaysFailed_AndUnknownPaymentStillThrows()
+    {
+        var gateway = await CreateGatewayAsync();
+        var created = await gateway.CreateAsync(30m, "d", "https://back", "https://hook", NoMetadata, default);
+
+        await gateway.SetStatusAsync(created.Id, GatewayStatus.Failed);
+        await gateway.SetStatusAsync(created.Id, GatewayStatus.Paid);
+
+        Assert.Equal(GatewayStatus.Failed, await gateway.GetStatusAsync(created.Id, default));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => gateway.SetStatusAsync("inconnu", GatewayStatus.Paid));
+    }
+
+    [Fact]
+    public async Task CreatedAt_ComesFromTheInjectedClock()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var clock = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(new DateTimeOffset(2026, 11, 2, 9, 0, 0, TimeSpan.Zero));
+        var gateway = new DemoPaymentGateway("https://vitrine.test", new TestContextFactory(options, null), clock);
+
+        var created = await gateway.CreateAsync(10m, "d", "https://back", "", NoMetadata, default);
+
+        Assert.Equal(new DateTime(2026, 11, 2, 9, 0, 0, DateTimeKind.Utc), (await gateway.FindAsync(created.Id))!.CreatedAt);
     }
 }

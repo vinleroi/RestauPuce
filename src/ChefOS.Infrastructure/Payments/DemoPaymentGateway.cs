@@ -9,7 +9,7 @@ namespace ChefOS.Infrastructure.Payments;
 /// avec <see cref="SetStatusAsync"/>. Enregistrée scoped : elle ouvre un contexte par opération via la fabrique du scope.
 /// Ne sert qu'aux démos et aux tests.
 /// </summary>
-public sealed class DemoPaymentGateway(string baseUrl, IDbContextFactory<ChefOsDbContext> factory) : IPaymentGateway
+public sealed class DemoPaymentGateway(string baseUrl, IDbContextFactory<ChefOsDbContext> factory, TimeProvider clock) : IPaymentGateway
 {
     public string Name => "Demo";
 
@@ -20,7 +20,7 @@ public sealed class DemoPaymentGateway(string baseUrl, IDbContextFactory<ChefOsD
         await using var db = await factory.CreateDbContextAsync(ct);
         db.DemoGatewayPayments.Add(new DemoGatewayPayment
         {
-            Id = id, Amount = amount, Description = Truncate(description, 500), RedirectUrl = Truncate(redirectUrl, 2000), CreatedAt = DateTime.UtcNow
+            Id = id, Amount = amount, Description = Truncate(description, 500), RedirectUrl = Truncate(redirectUrl, 2000), CreatedAt = clock.GetUtcNow().UtcDateTime
         });
         await db.SaveChangesAsync(ct);
         return new GatewayPayment(id, $"{baseUrl.TrimEnd('/')}/paiement-demo/{id}");
@@ -58,13 +58,16 @@ public sealed class DemoPaymentGateway(string baseUrl, IDbContextFactory<ChefOsD
         await transaction.CommitAsync(ct);
     }
 
-    /// <summary>Change le statut d'un paiement (page de démonstration).</summary>
+    /// <summary>
+    /// Change le statut d'un paiement encore ouvert (page de démonstration). Mise à jour conditionnelle : un paiement déjà réglé, échoué, expiré ou annulé
+    /// ne change plus (comme chez une vraie passerelle), donc « Payer » puis « Simuler un échec » ne peut pas défaire un paiement. Inconnu : erreur.
+    /// </summary>
     public async Task SetStatusAsync(string id, GatewayStatus status, CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
-        var updated = await db.DemoGatewayPayments.Where(p => p.Id == id)
+        var updated = await db.DemoGatewayPayments.Where(p => p.Id == id && p.Status == GatewayStatus.Open)
             .ExecuteUpdateAsync(set => set.SetProperty(p => p.Status, status), ct);
-        if (updated == 0)
+        if (updated == 0 && !await db.DemoGatewayPayments.AnyAsync(p => p.Id == id, ct))
             throw NotFound();
     }
 
