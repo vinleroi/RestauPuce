@@ -1,0 +1,19 @@
+<li>
+    <article class="wine-card">
+        <span class="tag" data-color="@Wine.Color">@Labels.WineColorLabel(Wine.Color)</span>
+        <h3><a href="/@Slug/vins/@Wine.Id">@Wine.Name@(Wine.Vintage is { } y ? $" {y}" : "")</a></h3>
+        <p class="wine-card__meta">@Wine.Region</p>
+        <p class="wine-card__prices">
+            <span>Bouteille <strong>@ChefOS.Vitrine.Components.Pages.Reserve.Fmt.Money(Wine.PriceBottle)</strong></span>
+            @if (Wine.PriceGlass is { } glass)
+            {
+                <span>Verre <strong>@ChefOS.Vitrine.Components.Pages.Reserve.Fmt.Money(glass)</strong></span>
+            }
+        </p>
+    </article>
+</li>
+
+@code {
+    [Parameter, EditorRequired] public string Slug { get; set; } = "";
+    [Parameter, EditorRequired] public PublicWine Wine { get; set; } = default!;
+}

@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.0.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.16.0" />
@@ -24,6 +25,7 @@
     <ProjectReference Include="..\..\src\ChefOS.Back\ChefOS.Back.csproj" />
     <ProjectReference Include="..\..\src\ChefOS.Core\ChefOS.Core.csproj" />
     <ProjectReference Include="..\..\src\ChefOS.Infrastructure\ChefOS.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\ChefOS.Vitrine\ChefOS.Vitrine.csproj" />
   </ItemGroup>
 
 </Project>

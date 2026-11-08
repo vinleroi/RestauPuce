@@ -1,0 +1,95 @@
+@inject NavigationManager Nav
+
+@* Cadre commun des pages d'un restaurant : titre et balises de partage, couleurs d'accent, navigation, pied de page. *@
+<PageTitle>@PageTitleText</PageTitle>
+
+<HeadContent>
+    <meta name="description" content="@Description" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="fr_BE" />
+    <meta property="og:site_name" content="@Vitrine.RestaurantName" />
+    <meta property="og:title" content="@Title" />
+    <meta property="og:description" content="@Description" />
+    @if (Vitrine.CoverImageId is { } cover)
+    {
+        <meta property="og:image" content="@Nav.ToAbsoluteUri($"{Slug}/images/{cover}")" />
+    }
+    <meta name="theme-color" content="@Theme.Accent" />
+</HeadContent>
+
+<div class="vt" style="@Theme.Style">
+    <a class="skip-link" href="@(Nav.ToBaseRelativePath(Nav.Uri).Split('#')[0])#contenu">Aller au contenu</a>
+
+    <header class="topbar @(Solid ? "topbar--solid" : "")">
+        <div class="wrap topbar__in">
+            <a class="topbar__brand" href="/@Slug">@Vitrine.RestaurantName</a>
+            <nav class="topbar__nav" aria-label="Navigation principale">
+                <a class="hide-sm" href="/@Slug#carte">La carte</a>
+                <a class="hide-sm" href="/@Slug/vins">Les vins</a>
+                <a class="btn btn--small" href="/@Slug/reserver">Réserver</a>
+            </nav>
+        </div>
+    </header>
+
+    <main id="contenu" tabindex="-1">
+        @ChildContent
+    </main>
+
+    <footer class="footer">
+        <div class="wrap">
+            <div class="footer__grid">
+                <div>
+                    <h2>@Vitrine.RestaurantName</h2>
+                    <address>
+                        @if (!string.IsNullOrWhiteSpace(Vitrine.Address))
+                        {
+                            <span>@Vitrine.Address</span><br />
+                        }
+                        @if (!string.IsNullOrWhiteSpace(Vitrine.City) && Vitrine.Address?.Contains(Vitrine.City, StringComparison.OrdinalIgnoreCase) != true)
+                        {
+                            <span>@Vitrine.City</span>
+                        }
+                    </address>
+                </div>
+                <div>
+                    <p>
+                        @if (!string.IsNullOrWhiteSpace(Vitrine.Phone))
+                        {
+                            <span>Téléphone : <a href="tel:@(new string(Vitrine.Phone.Where(c => char.IsDigit(c) || c == '+').ToArray()))">@Vitrine.Phone</a></span><br />
+                        }
+                        @if (!string.IsNullOrWhiteSpace(Vitrine.PublicEmail))
+                        {
+                            <span>E-mail : <a href="mailto:@Vitrine.PublicEmail">@Vitrine.PublicEmail</a></span>
+                        }
+                    </p>
+                    <p><a href="/@Slug/vins">La carte des vins</a> · <a href="/@Slug/reserver">Réserver une table</a></p>
+                </div>
+            </div>
+            <small>Site propulsé par ChefOS.</small>
+        </div>
+    </footer>
+
+    @if (ShowFloatingButton)
+    {
+        <a class="btn btn--lg fab" href="/@Slug/reserver">Réserver une table</a>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Slug { get; set; } = "";
+    [Parameter, EditorRequired] public PublicVitrine Vitrine { get; set; } = default!;
+    /// <summary>Nom de la page (« Carte des vins ») ajouté devant le titre ; vide pour l'accueil.</summary>
+    [Parameter] public string? Section { get; set; }
+    /// <summary>Barre de navigation pleine (pages intérieures) plutôt que posée sur la couverture.</summary>
+    [Parameter] public bool Solid { get; set; }
+    [Parameter] public bool ShowFloatingButton { get; set; } = true;
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private AccentTheme Theme => AccentTheme.From(Vitrine.AccentColor);
+
+    private string Title => Seo.Title(Vitrine.RestaurantName, Vitrine.Tagline);
+
+    private string PageTitleText => string.IsNullOrWhiteSpace(Section) ? Title : $"{Section} · {Title}";
+
+    private string Description => Seo.Description(Vitrine.RestaurantName, Vitrine.City, Vitrine.Tagline, Vitrine.AmbianceText);
+}

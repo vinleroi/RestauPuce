@@ -1,0 +1,79 @@
+@page "/{slug}/vins"
+@inherits SlugPageBase
+@inject WineService Wines
+
+@if (Ready)
+{
+    <VitrineFrame Slug="@Slug" Vitrine="Vitrine!" Section="Carte des vins" Solid="true">
+        <div class="wrap page">
+            <div class="page__head">
+                <p class="eyebrow">La cave</p>
+                <h1>Carte des vins</h1>
+                <p>Parcourez nos bouteilles avant votre visite. Ouvrez une fiche pour lire la description complète et les accords avec nos plats.</p>
+            </div>
+
+            <form class="filters" method="get" action="@Url("/vins")">
+                <div class="field">
+                    <label for="couleur">Couleur</label>
+                    <select id="couleur" name="couleur">
+                        <option value="">Toutes les couleurs</option>
+                        @foreach (var color in Enum.GetValues<WineColor>())
+                        {
+                            <option value="@color" selected="@(Color == color)">@Labels.WineColorLabel(color)</option>
+                        }
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="region">Région</label>
+                    <select id="region" name="region">
+                        <option value="">Toutes les régions</option>
+                        @foreach (var name in _regions)
+                        {
+                            <option value="@name" selected="@(string.Equals(name, Region, StringComparison.OrdinalIgnoreCase))">@name</option>
+                        }
+                    </select>
+                </div>
+                <button class="btn" type="submit">Filtrer</button>
+                @if (Color is not null || !string.IsNullOrWhiteSpace(Region))
+                {
+                    <a class="btn btn--ghost" href="@Url("/vins")">Tout afficher</a>
+                }
+            </form>
+
+            @if (_wines.Count == 0)
+            {
+                <p>@(_hasAny ? "Aucun vin ne correspond à ces critères." : "La carte des vins sera bientôt en ligne.")</p>
+            }
+            else
+            {
+                <p class="sr-only" role="status">@_wines.Count vin(s) affiché(s)</p>
+                <ul class="wines">
+                    @foreach (var wine in _wines)
+                    {
+                        <WineCard Slug="@Slug" Wine="wine" />
+                    }
+                </ul>
+            }
+        </div>
+    </VitrineFrame>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "couleur")] public string? ColorText { get; set; }
+    [SupplyParameterFromQuery(Name = "region")] public string? Region { get; set; }
+
+    private IReadOnlyList<PublicWine> _wines = [];
+    private IReadOnlyList<string> _regions = [];
+    private bool _hasAny;
+
+    private WineColor? Color => Enum.TryParse<WineColor>(ColorText, out var parsed) && Enum.IsDefined(parsed) ? parsed : null;
+
+    protected override async Task LoadAsync()
+    {
+        var all = await Wines.ListPublishedAsync(null, null);
+        _hasAny = all.Count > 0;
+        _regions = all.Select(w => w.Region).Where(r => !string.IsNullOrWhiteSpace(r)).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(r => r, StringComparer.InvariantCultureIgnoreCase).ToList();
+        _wines = await Wines.ListPublishedAsync(Color, string.IsNullOrWhiteSpace(Region) ? null : Region);
+    }
+}

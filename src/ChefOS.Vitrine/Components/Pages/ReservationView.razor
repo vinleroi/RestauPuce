@@ -1,0 +1,262 @@
+@page "/{slug}/reservation/{token}"
+@rendermode InteractiveServer
+@implements IDisposable
+@inherits SlugPageBase
+@using System.Globalization
+@using ChefOS.Core.Common
+@using ChefOS.Vitrine.Components.Pages.Reserve
+@inject ReservationService Reservations
+@inject CircuitAttempts Attempts
+@inject IHttpContextAccessor HttpAccessor
+@inject TimeProvider Clock
+@inject ILogger<ReservationView> Logger
+
+@if (Ready)
+{
+    <VitrineFrame Slug="@Slug" Vitrine="Vitrine!" Section="Votre réservation" Solid="true" ShowFloatingButton="false">
+        <div class="wrap page">
+            @if (_loaded && _reservation is null)
+            {
+                <div class="page__head">
+                    <h1>Réservation introuvable</h1>
+                    <p>Ce lien ne correspond à aucune réservation. Vérifiez l'adresse reçue après votre réservation.</p>
+                    <p><a class="btn" href="@Url()">Retour au restaurant</a></p>
+                </div>
+            }
+            else if (_reservation is { } r)
+            {
+                <div class="page__head">
+                    <p class="eyebrow">Votre réservation</p>
+                    <h1>@Headline(r)</h1>
+                    <p><span class="status" data-status="@r.Status" role="status">@StatusLabel(r)</span></p>
+                </div>
+
+                @if (_error is { } error)
+                {
+                    <div class="alert" role="alert">@error</div>
+                }
+
+                @if (r.Status == ReservationStatus.PendingPayment)
+                {
+                    <div class="alert alert--info" role="status">
+                        Votre paiement n'est pas encore confirmé. Cette page se met à jour toute seule dès que la banque a répondu.
+                        @if (r.CheckoutUrl is { } checkout)
+                        {
+                            <span> Vous n'avez pas fini de payer ? <a href="@checkout">Reprendre le paiement</a>.</span>
+                        }
+                    </div>
+                }
+                else if (r.Status == ReservationStatus.Expired)
+                {
+                    <div class="alert" role="status">Le délai de paiement est dépassé : la table n'est plus réservée. <a href="@Url("/reserver")">Faire une nouvelle réservation</a>.</div>
+                }
+
+                <div class="card stack">
+                    <dl class="summary">
+                        <div><dt>Date</dt><dd>@r.LocalDate.ToString("dddd d MMMM yyyy", FrBe)</dd></div>
+                        <div><dt>Heure</dt><dd>@r.LocalTime.ToString("HH\\:mm", CultureInfo.InvariantCulture) (@r.ServiceName)</dd></div>
+                        <div><dt>Couverts</dt><dd>@r.PartySize</dd></div>
+                        <div><dt>Au nom de</dt><dd>@r.CustomerName</dd></div>
+                        @if (!string.IsNullOrWhiteSpace(r.Note))
+                        {
+                            <div><dt>Remarque</dt><dd>@r.Note</dd></div>
+                        }
+                        @if (r.PreorderTotalInclVat > 0)
+                        {
+                            <div><dt>Plats pré-commandés</dt><dd>@Fmt.Money(r.PreorderTotalInclVat)</dd></div>
+                        }
+                        @if (r.AmountDue > 0)
+                        {
+                            <div class="total"><dt>@PaidLabel(r)</dt><dd>@Fmt.Money(r.AmountDue)</dd></div>
+                        }
+                    </dl>
+
+                    @if (RefundNote(r) is { } refund)
+                    {
+                        <p class="alert alert--ok" role="status">@refund</p>
+                    }
+                </div>
+
+                @if (r.Status is ReservationStatus.PendingPayment or ReservationStatus.Confirmed)
+                {
+                    <section class="card stack" style="margin-top:1.5rem" aria-labelledby="annuler-titre">
+                        <h2 id="annuler-titre">Annuler ma réservation</h2>
+                        <p class="rule">@CancellationRule(r)</p>
+
+                        @if (!r.CanCancel)
+                        {
+                            <p>Cette réservation ne peut plus être annulée en ligne. Contactez le restaurant@(string.IsNullOrWhiteSpace(Vitrine!.Phone) ? "" : $" au {Vitrine.Phone}").</p>
+                        }
+                        else if (!_confirming)
+                        {
+                            <p><button type="button" class="btn btn--danger" @onclick="() => _confirming = true">Annuler ma réservation</button></p>
+                        }
+                        else
+                        {
+                            <div role="alertdialog" aria-labelledby="confirm-titre">
+                                <p id="confirm-titre"><strong>Confirmer l'annulation ?</strong> Cette action est définitive.</p>
+                                <div class="inline-form">
+                                    <button type="button" class="btn btn--danger" disabled="@_busy" @onclick="CancelAsync">@(_busy ? "Annulation…" : "Oui, annuler ma réservation")</button>
+                                    <button type="button" class="btn btn--ghost" disabled="@_busy" @onclick="() => _confirming = false">Non, la garder</button>
+                                </div>
+                            </div>
+                        }
+                    </section>
+                }
+
+                <p style="margin-top:2rem"><a href="@Url()">← Retour au restaurant</a></p>
+            }
+        </div>
+    </VitrineFrame>
+}
+
+@code {
+    private static readonly CultureInfo FrBe = new("fr-BE");
+
+    [Parameter] public string Token { get; set; } = "";
+
+    [PersistentState] public string? ClientIp { get; set; }
+
+    private PublicReservation? _reservation;
+    private bool _loaded;
+    private bool _confirming;
+    private bool _busy;
+    private string? _error;
+    private Timer? _poll;
+    private int _polls;
+
+    protected override async Task LoadAsync()
+    {
+        ClientIp ??= HttpAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString();
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        // GetByTokenAsync relit un paiement encore ouvert chez la passerelle (retour du client avant le webhook).
+        _reservation = await Reservations.GetByTokenAsync(Token);
+        _loaded = true;
+        UpdatePolling();
+    }
+
+    /// <summary>Tant que le paiement est en attente, la page se rafraîchit toute seule (toutes les 4 s, 3 minutes au plus).</summary>
+    private void UpdatePolling()
+    {
+        if (_reservation?.Status == ReservationStatus.PendingPayment && _polls < 45)
+        {
+            _poll ??= new Timer(_ => _ = InvokeAsync(PollAsync), null, TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(4));
+            return;
+        }
+
+        _poll?.Dispose();
+        _poll = null;
+    }
+
+    private async Task PollAsync()
+    {
+        _polls++;
+        try
+        {
+            await RefreshAsync();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Logger.LogWarning("Rafraîchissement de la réservation impossible : {Reason}", ex.Message);
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task CancelAsync()
+    {
+        if (_busy)
+            return;
+
+        if (!Attempts.TryAcquire(ClientIp))
+        {
+            _error = AttemptLimiter.Message;
+            return;
+        }
+
+        _busy = true;
+        _error = null;
+        try
+        {
+            await Reservations.CancelByCustomerAsync(Token);
+            _confirming = false;
+            await RefreshAsync();
+        }
+        catch (DomainValidationException ex)
+        {
+            _error = ex.Message;
+            _confirming = false;
+            await RefreshAsync();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Logger.LogError(ex, "Annulation impossible");
+            _error = "Une erreur est survenue, réessayez dans un instant";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string StatusLabel(PublicReservation r) => r.Status switch
+    {
+        ReservationStatus.PendingPayment => "En attente de paiement",
+        ReservationStatus.Confirmed => "Confirmée",
+        ReservationStatus.Seated => "Clients installés",
+        ReservationStatus.NoShow => "Absence constatée",
+        ReservationStatus.Cancelled => "Annulée",
+        ReservationStatus.Expired => "Expirée",
+        _ => r.Status.ToString()
+    };
+
+    private static string Headline(PublicReservation r) => r.Status switch
+    {
+        ReservationStatus.Confirmed => "Votre table est réservée",
+        ReservationStatus.PendingPayment => "Plus qu'un instant",
+        ReservationStatus.Cancelled => "Réservation annulée",
+        ReservationStatus.Expired => "Réservation expirée",
+        _ => "Votre réservation"
+    };
+
+    private static string PaidLabel(PublicReservation r) => r.PaymentStatus switch
+    {
+        PaymentStatus.Paid => "Montant payé",
+        PaymentStatus.Refunded or PaymentStatus.RefundPending => "Montant payé (remboursé)",
+        PaymentStatus.Open => "Montant à payer",
+        _ => "Montant"
+    };
+
+    private static string? RefundNote(PublicReservation r) => r.PaymentStatus switch
+    {
+        PaymentStatus.Refunded => $"Votre paiement de {Fmt.Money(r.AmountDue)} vous a été remboursé.",
+        PaymentStatus.RefundPending => $"Le remboursement de {Fmt.Money(r.AmountDue)} est en cours.",
+        _ => null
+    };
+
+    /// <summary>La règle qui s'applique si l'on annule maintenant, avec la date limite en heure locale.</summary>
+    private string CancellationRule(PublicReservation r)
+    {
+        var limit = RestaurantClock.ToLocal(r.FreeCancellationUntilUtc, Restaurant!.TimeZoneId);
+        var free = Clock.GetUtcNow().UtcDateTime <= r.FreeCancellationUntilUtc;
+        var paid = r.AmountDue > 0 && r.PaymentStatus is PaymentStatus.Paid or PaymentStatus.Open;
+        var when = Fmt.LocalDateTime(limit.Date, limit.Time);
+
+        if (free)
+        {
+            return paid
+                ? $"Annulation gratuite jusqu'au {when} : vous serez remboursé de {Fmt.Money(r.AmountDue)}. Ensuite, le paiement n'est pas remboursé."
+                : $"Annulation gratuite jusqu'au {when}.";
+        }
+
+        return paid
+            ? $"Le délai d'annulation gratuite est dépassé (il courait jusqu'au {when}) : si vous annulez, {Fmt.Money(r.AmountDue)} ne sera pas remboursé."
+            : "Le délai d'annulation gratuite est dépassé.";
+    }
+
+    public void Dispose() => _poll?.Dispose();
+}

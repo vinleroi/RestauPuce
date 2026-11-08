@@ -1,0 +1,99 @@
+@page "/paiement-demo/{id}"
+@using ChefOS.Infrastructure.Payments
+@using ChefOS.Vitrine.Components.Pages.Reserve
+@inject IServiceProvider Services
+@inject NavigationManager Nav
+@inject SlugResolver Resolver
+@inject PaymentService Payments
+@inject ILogger<DemoCheckout> Logger
+
+@* Page de paiement de démonstration : n'existe qu'avec la passerelle Demo (sinon 404). Aucun argent ne circule. *@
+<PageTitle>Paiement de démonstration — ChefOS</PageTitle>
+
+@if (_payment is { } payment)
+{
+    <main class="wrap page">
+        <div class="center-card card stack">
+            <p class="demo-banner" role="note">Mode démonstration : aucun argent ne sera prélevé.</p>
+            <h1>Paiement</h1>
+            <dl class="summary">
+                <div><dt>Description</dt><dd>@payment.Description</dd></div>
+                <div class="total"><dt>Montant</dt><dd>@Fmt.Money(payment.Amount)</dd></div>
+            </dl>
+
+            @if (payment.Status == GatewayStatus.Open)
+            {
+                <form method="post" @formname="paiement-demo" @onsubmit="HandleAsync">
+                    <AntiforgeryToken />
+                    <div class="inline-form">
+                        <button class="btn btn--lg" type="submit" name="choix" value="payer">Payer</button>
+                        <button class="btn btn--ghost" type="submit" name="choix" value="echec">Simuler un échec</button>
+                    </div>
+                </form>
+            }
+            else
+            {
+                <p class="alert alert--info" role="status">Ce paiement est déjà traité (@payment.Status).</p>
+                @if (ReturnPath is { } back)
+                {
+                    <p><a class="btn" href="@back">Retour à la réservation</a></p>
+                }
+            }
+        </div>
+    </main>
+}
+
+@code {
+    [Parameter] public string Id { get; set; } = "";
+
+    [SupplyParameterFromForm(Name = "choix", FormName = "paiement-demo")] public string? Choice { get; set; }
+
+    private DemoGatewayPayment? _payment;
+
+    /// <summary>Chemin local de retour (jamais une adresse externe, même si la passerelle en avait mémorisé une).</summary>
+    private string? ReturnPath => ToLocalPath(_payment?.RedirectUrl);
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Passerelle Demo seulement : en mode Mollie, la page n'existe pas.
+        if (Services.GetService<DemoPaymentGateway>() is not { } gateway)
+        {
+            Nav.NotFound();
+            return;
+        }
+
+        _payment = await gateway.FindAsync(Id);
+        if (_payment is null)
+            Nav.NotFound();
+    }
+
+    private async Task HandleAsync()
+    {
+        if (Services.GetService<DemoPaymentGateway>() is not { } gateway || _payment is null || _payment.Status != GatewayStatus.Open)
+            return;
+
+        var status = Choice == "payer" ? GatewayStatus.Paid : GatewayStatus.Failed;
+        await gateway.SetStatusAsync(Id, status);
+
+        var path = ReturnPath;
+        try
+        {
+            // La synchronisation lit les réservations du restaurant : on le retrouve par le slug de l'adresse de retour (/{slug}/reservation/{jeton}).
+            if (path is not null && path.Split('/', StringSplitOptions.RemoveEmptyEntries) is [var slug, ..]
+                && await Resolver.EnterAsync(slug) is not null)
+            {
+                await Payments.SyncAsync(Id);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Le retour du client relira le statut : on ne bloque pas la redirection.
+            Logger.LogWarning("Synchronisation du paiement de démonstration impossible : {Reason}", ex.Message);
+        }
+
+        Nav.NavigateTo(path ?? "/", forceLoad: true);
+    }
+
+    private static string? ToLocalPath(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" ? uri.PathAndQuery : null;
+}

@@ -1,28 +1,18 @@
-﻿@page "/Error"
+@page "/Error"
 @using System.Diagnostics
 
 <PageTitle>Erreur — ChefOS Vitrine</PageTitle>
 
-<h1 class="text-danger">Une erreur est survenue.</h1>
-<h2 class="text-danger">Votre demande n'a pas pu être traitée.</h2>
+<main class="wrap page">
+    <p class="eyebrow">Erreur</p>
+    <h1>Une erreur est survenue</h1>
+    <p>Votre demande n'a pas pu être traitée. Réessayez dans un instant.</p>
 
-@if (ShowRequestId)
-{
-    <p>
-        <strong>Identifiant de la requête :</strong> <code>@RequestId</code>
-    </p>
-}
-
-<h3>Mode développement</h3>
-<p>
-    Passer en environnement <strong>Development</strong> affiche des informations détaillées sur l'erreur survenue.
-</p>
-<p>
-    <strong>L'environnement Development ne doit pas être activé sur une application déployée.</strong>
-    Il peut exposer aux utilisateurs des informations sensibles issues des exceptions.
-    Pour déboguer en local, activez-le en définissant la variable d'environnement <strong>ASPNETCORE_ENVIRONMENT</strong> à <strong>Development</strong>
-    puis redémarrez l'application.
-</p>
+    @if (ShowRequestId)
+    {
+        <p><small>Identifiant de la requête : <code>@RequestId</code></small></p>
+    }
+</main>
 
 @code{
     [CascadingParameter]

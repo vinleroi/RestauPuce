@@ -1,0 +1,145 @@
+@page "/{slug}"
+@inherits SlugPageBase
+@inject NavigationManager Navigation
+
+@if (Ready)
+{
+    <VitrineFrame Slug="@Slug" Vitrine="Vitrine!">
+        <section class="hero" aria-labelledby="titre">
+            @if (Vitrine!.CoverImageId is { } cover)
+            {
+                <img class="hero__img" src="@Url($"/images/{cover}")" alt="" fetchpriority="high" />
+            }
+            <div class="wrap hero__body">
+                @if (!string.IsNullOrWhiteSpace(Vitrine.City))
+                {
+                    <p class="hero__city">@Vitrine.City</p>
+                }
+                <h1 id="titre">@Vitrine.RestaurantName</h1>
+                @if (!string.IsNullOrWhiteSpace(Vitrine.Tagline))
+                {
+                    <p class="hero__tagline">@Vitrine.Tagline</p>
+                }
+                <div class="hero__cta">
+                    <a class="btn btn--lg" href="@Url("/reserver")">Réserver une table</a>
+                    <a class="btn btn--lg btn--light" href="#carte">Voir la carte</a>
+                </div>
+            </div>
+            <a class="hero__cue" href="#ambiance" aria-label="Descendre vers l'ambiance">Découvrir ↓</a>
+        </section>
+
+        @if (!string.IsNullOrWhiteSpace(Vitrine.AmbianceText) || Vitrine.GalleryImageIds.Count > 0)
+        {
+            <section class="section" id="ambiance" aria-labelledby="ambiance-titre">
+                <div class="wrap ambiance">
+                    <div>
+                        <p class="eyebrow">L'ambiance</p>
+                        <h2 id="ambiance-titre">@(string.IsNullOrWhiteSpace(Vitrine.Tagline) ? "Bienvenue" : Vitrine.Tagline)</h2>
+                        @if (!string.IsNullOrWhiteSpace(Vitrine.AmbianceText))
+                        {
+                            <p class="ambiance__text">@Vitrine.AmbianceText</p>
+                        }
+                    </div>
+                    @if (Vitrine.GalleryImageIds.Count > 0)
+                    {
+                        <div class="gallery">
+                            @for (var i = 0; i < Vitrine.GalleryImageIds.Count; i++)
+                            {
+                                <img src="@Url($"/images/{Vitrine.GalleryImageIds[i]}")" alt="@Vitrine.RestaurantName, photo @(i + 1)" loading="lazy" decoding="async" />
+                            }
+                        </div>
+                    }
+                </div>
+            </section>
+        }
+
+        <section class="section section--alt" id="carte" aria-labelledby="carte-titre">
+            <div class="wrap">
+                <div class="section__head">
+                    <p class="eyebrow">La carte</p>
+                    <h2 id="carte-titre">À table</h2>
+                </div>
+
+                @if (Vitrine.Menu.Count == 0)
+                {
+                    <p>La carte sera bientôt en ligne.</p>
+                }
+
+                @foreach (var category in Vitrine.Menu)
+                {
+                    <div class="menu__cat">
+                        <h3>@category.Name</h3>
+                        <ul class="dishes">
+                            @foreach (var dish in category.Dishes)
+                            {
+                                <li class="dish" id="plat-@dish.Id">
+                                    <div class="dish__line">
+                                        <h4 class="dish__name">@dish.Name</h4>
+                                        <span class="dish__dots" aria-hidden="true"></span>
+                                        <span class="dish__price">@Pages.Reserve.Fmt.Money(dish.PriceInclVat)</span>
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(dish.Description))
+                                    {
+                                        <p class="dish__desc">@dish.Description</p>
+                                    }
+                                    <AllergenList Value="dish.Allergens" />
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+
+                @if (Vitrine.Menu.Count > 0)
+                {
+                    <p class="menu__note">Prix TTC par personne. Une allergie ? Dites-le-nous à la réservation ou en salle.</p>
+                }
+            </div>
+        </section>
+
+        @if (Vitrine.Wines.Count > 0)
+        {
+            <section class="section" id="vins" aria-labelledby="vins-titre">
+                <div class="wrap">
+                    <div class="section__head">
+                        <p class="eyebrow">La cave</p>
+                        <h2 id="vins-titre">Une carte des vins à parcourir</h2>
+                        <p>Découvrez nos bouteilles à l'avance : robe, nez, bouche, accords avec les plats de la maison.</p>
+                    </div>
+                    <ul class="wines">
+                        @foreach (var wine in Vitrine.Wines)
+                        {
+                            <WineCard Slug="@Slug" Wine="wine" />
+                        }
+                    </ul>
+                    <p style="margin-top:2rem"><a class="btn btn--ghost" href="@Url("/vins")">Toute la carte des vins</a></p>
+                </div>
+            </section>
+        }
+
+        <section class="section book" id="reservation" aria-labelledby="reservation-titre">
+            <div class="wrap">
+                <div class="section__head">
+                    <p class="eyebrow" style="color:#fff">Réservation</p>
+                    <h2 id="reservation-titre">Réservez votre table</h2>
+                    @if (Profile is { ReservationsOpen: true })
+                    {
+                        <p>Choisissez la date, le nombre de couverts et l'heure, puis réglez en ligne : votre table est confirmée aussitôt.</p>
+                    }
+                    else
+                    {
+                        <p>Les réservations en ligne sont fermées pour le moment. @(string.IsNullOrWhiteSpace(Vitrine.Phone) ? "" : $"Appelez-nous au {Vitrine.Phone}.")</p>
+                    }
+                </div>
+                @if (Profile is { ReservationsOpen: true })
+                {
+                    <p><a class="btn btn--lg btn--light" href="@Url("/reserver")">Réserver une table</a></p>
+                    <ul class="book__rules">
+                        <li>Acompte de @Pages.Reserve.Fmt.Money(Profile.DepositPerPerson) par personne</li>
+                        <li>Au-delà de @Profile.GroupThreshold personnes : plats pré-commandés, prépaiement de @(Math.Round(Profile.PrepaymentPercent * 100, 0))&nbsp;%</li>
+                        <li>Annulation gratuite jusqu'à @Profile.FreeCancellationHours&nbsp;h avant</li>
+                    </ul>
+                }
+            </div>
+        </section>
+    </VitrineFrame>
+}

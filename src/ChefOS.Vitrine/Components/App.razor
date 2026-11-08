@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="fr-BE">
 
 <head>
@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
     <ResourcePreloader />
-    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["vitrine.css"]" />
     <link rel="stylesheet" href="@Assets["ChefOS.Vitrine.styles.css"]" />
     <ImportMap />
     <HeadOutlet />
@@ -14,6 +14,12 @@
 
 <body>
     <Routes />
+    <ReconnectModal />
+    <div id="blazor-error-ui" data-nosnippet>
+        Une erreur est survenue.
+        <a href="." class="reload">Recharger</a>
+        <span class="dismiss" role="button" aria-label="Fermer">🗙</span>
+    </div>
     <script src="@Assets["_framework/blazor.web.js"]"></script>
 </body>
 

@@ -1,0 +1,450 @@
+@page "/{slug}/reserver"
+@rendermode InteractiveServer
+@inherits SlugPageBase
+@using System.Globalization
+@using ChefOS.Core.Common
+@inject ReservationService Reservations
+@inject PublicUrls Urls
+@inject CircuitAttempts Attempts
+@inject IHttpContextAccessor HttpAccessor
+@inject TimeProvider Clock
+@inject ILogger<Reserve> Logger
+
+@if (Ready)
+{
+    <VitrineFrame Slug="@Slug" Vitrine="Vitrine!" Section="Réserver" Solid="true" ShowFloatingButton="false">
+        <div class="wrap page">
+            <div class="page__head">
+                <p class="eyebrow">Réservation</p>
+                <h1>Réserver une table</h1>
+            </div>
+
+            @if (_form is null || Profile is not { ReservationsOpen: true })
+            {
+                <div class="alert alert--info" role="status">
+                    Les réservations en ligne sont fermées pour le moment.
+                    @if (!string.IsNullOrWhiteSpace(Vitrine!.Phone))
+                    {
+                        <span> Appelez-nous au <a href="tel:@(new string(Vitrine.Phone.Where(c => char.IsDigit(c) || c == '+').ToArray()))">@Vitrine.Phone</a>.</span>
+                    }
+                </div>
+            }
+            else
+            {
+                <ol class="steps" aria-label="Étapes de la réservation">
+                    <li aria-current="@(_form.Step == ReserveStep.When ? "step" : null)" class="@(_form.Step != ReserveStep.When ? "is-done" : "")">Date et couverts</li>
+                    @if (_form.IsGroup)
+                    {
+                        <li aria-current="@(_form.Step == ReserveStep.Guests ? "step" : null)" class="@(_form.Step == ReserveStep.Contact ? "is-done" : "")">Convives et plats</li>
+                    }
+                    <li aria-current="@(_form.Step == ReserveStep.Contact ? "step" : null)">Vos coordonnées</li>
+                </ol>
+
+                @if (_form.Error is { } error)
+                {
+                    <div class="alert" role="alert" id="erreur">@error</div>
+                }
+
+                @switch (_form.Step)
+                {
+                    case ReserveStep.When:
+                        <section class="card stack" aria-labelledby="etape1">
+                            <h2 id="etape1" tabindex="-1" @ref="_heading">Quand venez-vous ?</h2>
+
+                            <div class="field">
+                                <span id="couverts-label">Nombre de couverts</span>
+                                <div class="stepper" role="group" aria-labelledby="couverts-label">
+                                    <button type="button" aria-label="Un couvert de moins" disabled="@(_form.PartySize <= 1)" @onclick="() => ChangeParty(-1)">−</button>
+                                    <output aria-live="polite">@_form.PartySize</output>
+                                    <button type="button" aria-label="Un couvert de plus" disabled="@(_form.PartySize >= _form.Rules.MaxPartySize)" @onclick="() => ChangeParty(1)">+</button>
+                                </div>
+                                @if (_form.IsGroup)
+                                {
+                                    <small>À partir de @(_form.Rules.GroupThreshold + 1) personnes, vous choisissez les plats de chaque convive et en prépayez une partie.</small>
+                                }
+                                else
+                                {
+                                    <small>Jusqu'à @_form.Rules.MaxPartySize couverts. Au-delà de @_form.Rules.GroupThreshold, les plats se choisissent à l'avance.</small>
+                                }
+                            </div>
+
+                            <div class="cal">
+                                <div class="cal__head">
+                                    <button type="button" class="cal__nav" aria-label="Mois précédent" disabled="@(!_form.CanShowPreviousMonth(_month))" @onclick="() => _month = _month.AddMonths(-1)">←</button>
+                                    <h3 id="cal-titre" aria-live="polite">@_month.ToString("MMMM yyyy", FrBe)</h3>
+                                    <button type="button" class="cal__nav" aria-label="Mois suivant" disabled="@(!_form.CanShowNextMonth(_month))" @onclick="() => _month = _month.AddMonths(1)">→</button>
+                                </div>
+                                <div class="cal__grid" role="group" aria-labelledby="cal-titre">
+                                    @foreach (var dow in new[] { "L", "M", "M", "J", "V", "S", "D" })
+                                    {
+                                        <div class="cal__dow" aria-hidden="true">@dow</div>
+                                    }
+                                    @foreach (var week in _form.MonthWeeks(_month))
+                                    {
+                                        foreach (var day in week)
+                                        {
+                                            if (!day.InMonth)
+                                            {
+                                                <span class="cal__day cal__blank" aria-hidden="true"></span>
+                                                continue;
+                                            }
+
+                                            var date = day.Date;
+                                            var dayLabel = date.ToString("dddd d MMMM", FrBe) + (day.IsClosed ? ", fermé" : "");
+                                            <button type="button" class="cal__day @(day.IsClosed ? "is-closed" : "")" disabled="@(!day.Selectable)"
+                                                    aria-pressed="@(_form.Date == date ? "true" : "false")"
+                                                    aria-label="@dayLabel"
+                                                    @onclick="() => PickDate(date)">@date.Day</button>
+                                        }
+                                    }
+                                </div>
+                                <p class="cal__legend">Les jours grisés sont fermés ou hors de la période réservable (jusqu'au @_form.LastDate.ToString("d MMMM yyyy", FrBe)).</p>
+                            </div>
+
+                            @if (_form.Date is { } chosen)
+                            {
+                                <div aria-live="polite">
+                                    <h3>Créneaux du @chosen.ToString("dddd d MMMM", FrBe)</h3>
+                                    @if (_loadingSlots)
+                                    {
+                                        <p>Recherche des créneaux…</p>
+                                    }
+                                    else if (_form.Slots.Count == 0)
+                                    {
+                                        <p>Aucun créneau disponible ce jour-là pour @Fmt.Covers(_form.PartySize). Essayez une autre date ou moins de couverts.</p>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var group in _form.SlotGroups)
+                                        {
+                                            <div class="slotgroup">
+                                                <h4>@group.ServiceName</h4>
+                                                <ul class="slots">
+                                                    @foreach (var slot in group.Slots)
+                                                    {
+                                                        var hint = _form.RemainingHint(slot);
+                                                        var selected = _form.SelectedSlot is { } current && current.Time == slot.Time && current.ServiceName == slot.ServiceName;
+                                                        <li>
+                                                            <button type="button" class="slot" aria-pressed="@(selected ? "true" : "false")" @onclick="() => _form.SelectSlot(slot)">
+                                                                @slot.Time.ToString("HH\\:mm", CultureInfo.InvariantCulture)
+                                                                @if (hint is not null)
+                                                                {
+                                                                    <small>@hint</small>
+                                                                }
+                                                            </button>
+                                                        </li>
+                                                    }
+                                                </ul>
+                                            </div>
+                                        }
+                                    }
+                                </div>
+                            }
+
+                            <div class="actions actions--end">
+                                <button type="button" class="btn btn--lg" @onclick="Advance">Continuer</button>
+                            </div>
+                        </section>
+                        break;
+
+                    case ReserveStep.Guests:
+                        <section class="stack" aria-labelledby="etape2">
+                            <div class="card">
+                                <h2 id="etape2" tabindex="-1" @ref="_heading">Les convives et leurs plats</h2>
+                                <p>Pour @Fmt.Covers(_form.PartySize), indiquez ce que chacun mangera. Les noms sont facultatifs. Une partie de ce repas est réglée à la réservation.</p>
+                            </div>
+
+                            <div class="guests">
+                                @for (var i = 0; i < _form.PartySize; i++)
+                                {
+                                    var index = i;
+                                    var guest = _form.Guests[index];
+                                    <fieldset class="guest">
+                                        <legend>Convive @(index + 1)</legend>
+                                        <div class="guest__names">
+                                            <div class="field">
+                                                <label for="prenom-@index">Prénom <small>(facultatif)</small></label>
+                                                <input id="prenom-@index" type="text" autocomplete="off" maxlength="100" @bind="guest.FirstName" @bind:event="oninput" />
+                                            </div>
+                                            <div class="field">
+                                                <label for="nom-@index">Nom <small>(facultatif)</small></label>
+                                                <input id="nom-@index" type="text" autocomplete="off" maxlength="100" @bind="guest.LastName" @bind:event="oninput" />
+                                            </div>
+                                        </div>
+
+                                        @if (guest.Dishes.Count > 0)
+                                        {
+                                            <ul class="guest__lines">
+                                                @foreach (var line in guest.Dishes)
+                                                {
+                                                    var recipeId = line.RecipeId;
+                                                    <li class="guest__line">
+                                                        <span>@_form.DishName(recipeId)</span>
+                                                        <div class="stepper stepper--sm" role="group" aria-label="Quantité de @_form.DishName(recipeId)">
+                                                            <button type="button" aria-label="Une portion de moins" @onclick="() => _form.SetQuantity(index, recipeId, line.Quantity - 1)">−</button>
+                                                            <output>@line.Quantity</output>
+                                                            <button type="button" aria-label="Une portion de plus" disabled="@(line.Quantity >= ReserveForm.MaxDishQuantity)" @onclick="() => _form.AddDish(index, recipeId)">+</button>
+                                                        </div>
+                                                        <span class="price">@Fmt.Money(line.Quantity * _form.DishPrice(recipeId))</span>
+                                                        <button type="button" class="link link--danger" @onclick="() => _form.RemoveDish(index, recipeId)">Retirer<span class="sr-only"> @_form.DishName(recipeId)</span></button>
+                                                    </li>
+                                                }
+                                            </ul>
+                                        }
+
+                                        @if (guest.Dishes.Count < ReserveForm.MaxDishLinesPerGuest)
+                                        {
+                                            <div class="guest__add">
+                                                <select aria-label="Ajouter un plat pour le convive @(index + 1)" value="@Pick(index)" @onchange="e => SetPick(index, e.Value?.ToString())">
+                                                    <option value="0">Choisir un plat…</option>
+                                                    @foreach (var category in Vitrine!.Menu)
+                                                    {
+                                                        <optgroup label="@category.Name">
+                                                            @foreach (var dish in category.Dishes)
+                                                            {
+                                                                <option value="@dish.Id">@dish.Name — @Fmt.Money(dish.PriceInclVat)</option>
+                                                            }
+                                                        </optgroup>
+                                                    }
+                                                </select>
+                                                <button type="button" class="btn btn--small" @onclick="() => AddPicked(index)">Ajouter</button>
+                                            </div>
+                                        }
+
+                                        <div class="guest__foot">
+                                            @if (_form.CanCopyFromPrevious(index))
+                                            {
+                                                <button type="button" class="link" @onclick="() => _form.CopyFromPrevious(index)">Copier le choix du convive précédent</button>
+                                            }
+                                            else
+                                            {
+                                                <span></span>
+                                            }
+                                            <span>Total convive @(index + 1) : @Fmt.Money(_form.GuestTotal(index))</span>
+                                        </div>
+                                    </fieldset>
+                                }
+                            </div>
+
+                            <div class="card" aria-live="polite">
+                                <dl class="summary">
+                                    <div><dt>Pré-commande</dt><dd>@Fmt.Money(_form.PreorderTotal)</dd></div>
+                                    @if (_form.NatureLabel is { } nature)
+                                    {
+                                        <div class="total"><dt>@nature</dt><dd>@Fmt.Money(_form.AmountDue)</dd></div>
+                                    }
+                                </dl>
+                            </div>
+
+                            <div class="actions">
+                                <button type="button" class="btn btn--ghost" @onclick="GoBack">Retour</button>
+                                <button type="button" class="btn btn--lg" @onclick="Advance">Continuer</button>
+                            </div>
+                        </section>
+                        break;
+
+                    default:
+                        <section class="stack" aria-labelledby="etape3">
+                            <div class="card stack">
+                                <h2 id="etape3" tabindex="-1" @ref="_heading">Vos coordonnées</h2>
+                                <div class="row">
+                                    <div class="field">
+                                        <label for="nom">Nom</label>
+                                        <input id="nom" type="text" autocomplete="name" maxlength="200" required @bind="_form.Name" @bind:event="oninput" />
+                                    </div>
+                                    <div class="field">
+                                        <label for="email">Adresse e-mail</label>
+                                        <input id="email" type="email" autocomplete="email" maxlength="200" required @bind="_form.Email" @bind:event="oninput" />
+                                    </div>
+                                    <div class="field">
+                                        <label for="tel">Téléphone</label>
+                                        <input id="tel" type="tel" autocomplete="tel" maxlength="40" required @bind="_form.Phone" @bind:event="oninput" />
+                                    </div>
+                                </div>
+                                <div class="field">
+                                    <label for="remarque">Remarque, allergies <small>(facultatif)</small></label>
+                                    <textarea id="remarque" maxlength="500" @bind="_form.Note" @bind:event="oninput"></textarea>
+                                </div>
+                            </div>
+
+                            <div class="card">
+                                <h2>Récapitulatif</h2>
+                                <dl class="summary">
+                                    <div><dt>Date</dt><dd>@(_form.SelectedSlot is { } s ? s.Date.ToString("dddd d MMMM yyyy", FrBe) : "")</dd></div>
+                                    <div><dt>Heure</dt><dd>@(_form.SelectedSlot is { } t ? $"{t.Time:HH\\:mm} ({t.ServiceName})" : "")</dd></div>
+                                    <div><dt>Couverts</dt><dd>@_form.PartySize</dd></div>
+                                    @if (_form.IsGroup)
+                                    {
+                                        <div><dt>Plats pré-commandés</dt><dd>@Fmt.Money(_form.PreorderTotal)</dd></div>
+                                    }
+                                    <div class="total"><dt>Montant à payer</dt><dd>@(_form.AmountDue > 0 ? Fmt.Money(_form.AmountDue) : "Rien à payer")</dd></div>
+                                </dl>
+                                @if (_form.NatureLabel is { } natureLine)
+                                {
+                                    <p class="cal__legend">@natureLine</p>
+                                }
+
+                                @if (_form.CancellationText is { } rule)
+                                {
+                                    <p class="rule"><strong>Annulation.</strong> @rule</p>
+                                }
+
+                                <label class="check">
+                                    <input type="checkbox" @bind="_form.Accepted" />
+                                    <span>J'accepte les conditions d'annulation et de paiement ci-dessus.</span>
+                                </label>
+                            </div>
+
+                            <div class="actions">
+                                <button type="button" class="btn btn--ghost" @onclick="GoBack" disabled="@_form.IsBusy">Retour</button>
+                                <button type="button" class="btn btn--lg" disabled="@(!_form.CanSubmit)" @onclick="SubmitAsync">
+                                    @(_form.IsBusy ? "Un instant…" : _form.SubmitLabel)
+                                </button>
+                            </div>
+                            @if (!_form.Accepted && _form.ContactError() is null)
+                            {
+                                <p class="cal__legend">Cochez « J'accepte » pour continuer.</p>
+                            }
+                            else if (_form.ContactError() is { } missing)
+                            {
+                                <p class="cal__legend">@missing</p>
+                            }
+                        </section>
+                        break;
+                }
+            }
+        </div>
+    </VitrineFrame>
+}
+
+@code {
+    private static readonly CultureInfo FrBe = new("fr-BE");
+
+    /// <summary>Adresse IP du client, lue au rendu initial (le circuit interactif n'a plus de requête HTTP) puis conservée pour limiter les tentatives.</summary>
+    [PersistentState] public string? ClientIp { get; set; }
+
+    private ReserveForm? _form;
+    private DateOnly _month;
+    private bool _loadingSlots;
+    private ElementReference _heading;
+    private bool _focusHeading;
+    private readonly Dictionary<int, int> _picks = [];
+
+    protected override async Task LoadAsync()
+    {
+        ClientIp ??= HttpAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString();
+        if (_form is not null || Profile is not { ReservationsOpen: true })
+            return;
+
+        var closures = await VitrineService.GetClosuresAsync();
+        var schedules = await VitrineService.GetSchedulesAsync();
+        _form = new ReserveForm(Profile, Restaurant!.TimeZoneId, Clock.GetUtcNow().UtcDateTime, Vitrine!.Menu,
+            closures.Select(c => c.DateLocal), schedules.Select(s => s.DayOfWeek).Distinct());
+        _month = _form.FirstDate;
+    }
+
+    private async Task ChangeParty(int delta)
+    {
+        _form!.SetPartySize(_form.PartySize + delta);
+        await LoadSlotsAsync();
+    }
+
+    private async Task PickDate(DateOnly date)
+    {
+        if (_form!.SelectDate(date))
+            await LoadSlotsAsync();
+    }
+
+    private async Task LoadSlotsAsync()
+    {
+        if (_form?.Date is not { } date)
+            return;
+
+        _loadingSlots = true;
+        try
+        {
+            _form.SetSlots(await Reservations.GetSlotsAsync(date, _form.PartySize));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Logger.LogWarning("Créneaux non chargés : {Reason}", ex.Message);
+            _form.SetSlots([]);
+        }
+        finally
+        {
+            _loadingSlots = false;
+        }
+    }
+
+    private int Pick(int guest) => _picks.GetValueOrDefault(guest);
+
+    private void SetPick(int guest, string? value) => _picks[guest] = int.TryParse(value, out var id) ? id : 0;
+
+    private void AddPicked(int guest)
+    {
+        if (_picks.GetValueOrDefault(guest) is > 0 and var id)
+            _form!.AddDish(guest, id);
+        _picks[guest] = 0;
+    }
+
+    private void Advance()
+    {
+        if (_form!.TryAdvance())
+            _focusHeading = true;
+    }
+
+    private void GoBack()
+    {
+        _form!.Back();
+        _focusHeading = true;
+    }
+
+    private async Task SubmitAsync()
+    {
+        var form = _form!;
+        if (!form.CanSubmit)
+            return;
+
+        if (!Attempts.TryAcquire(ClientIp))
+        {
+            form.HandleServerError(AttemptLimiter.Message);
+            return;
+        }
+
+        form.IsBusy = true;
+        try
+        {
+            var start = await Reservations.CreateAsync(form.ToRequest(), Urls.ReservationBase(Slug), Urls.Webhook(Slug));
+            // Le client part payer (adresse de la passerelle) ou, s'il n'y a rien à payer, voit directement sa réservation confirmée.
+            // Le bouton reste désactivé : un second envoi créerait une seconde réservation.
+            Nav.NavigateTo(start.CheckoutUrl ?? Url($"/reservation/{start.Token}"), forceLoad: true);
+        }
+        catch (DomainValidationException ex)
+        {
+            if (form.HandleServerError(ex.Message))
+                await LoadSlotsAsync();
+            _focusHeading = true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Logger.LogError(ex, "Réservation impossible pour {Slug}", Slug);
+            form.HandleServerError("Une erreur est survenue, réessayez dans un instant");
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusHeading)
+            return;
+
+        _focusHeading = false;
+        try
+        {
+            await _heading.FocusAsync();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or JSException)
+        {
+            // Pas de titre à cibler (étape changée entre-temps) : sans conséquence.
+        }
+    }
+}

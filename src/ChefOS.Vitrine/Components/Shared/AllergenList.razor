@@ -1,0 +1,13 @@
+@if (Value != Core.Ingredients.EuAllergen.None)
+{
+    <ul class="allergens" aria-label="Allergènes">
+        @foreach (var allergen in Labels.Present(Value))
+        {
+            <li title="Contient : @Labels.AllergenLabel(allergen)"><span aria-hidden="true">@Labels.AllergenIcon(allergen)</span> @Labels.AllergenLabel(allergen)</li>
+        }
+    </ul>
+}
+
+@code {
+    [Parameter] public Core.Ingredients.EuAllergen Value { get; set; }
+}

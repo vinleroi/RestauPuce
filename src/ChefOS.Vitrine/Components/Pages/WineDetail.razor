@@ -1,0 +1,94 @@
+@page "/{slug}/vins/{id:int}"
+@inherits SlugPageBase
+@inject WineService Wines
+
+@if (Ready)
+{
+    <VitrineFrame Slug="@Slug" Vitrine="Vitrine!" Section="@(_wine?.Name ?? "Carte des vins")" Solid="true">
+        <div class="wrap page">
+            <p class="crumbs"><a href="@Url("/vins")">← Toute la carte des vins</a></p>
+
+            @if (_wine is null)
+            {
+                <h1>Vin introuvable</h1>
+                <p>Ce vin n'est plus sur la carte.</p>
+            }
+            else
+            {
+                <div class="fiche">
+                    <article>
+                        <span class="tag" data-color="@_wine.Color">@Labels.WineColorLabel(_wine.Color)</span>
+                        <h1>@_wine.Name@(_wine.Vintage is { } year ? $" {year}" : "")</h1>
+                        <p class="wine-card__meta">
+                            @string.Join(" · ", new[] { _wine.Producer, _wine.Appellation, _wine.Region, _wine.Country }.Where(s => !string.IsNullOrWhiteSpace(s)))
+                        </p>
+
+                        <dl>
+                            @Row("Cépages", _wine.Grapes)
+                            @Row("Robe", _wine.Robe)
+                            @Row("Nez", _wine.Nez)
+                            @Row("Bouche", _wine.Bouche)
+                            @Row("Garde", _wine.Garde)
+                            @Row("Service", _wine.ServiceTemperature)
+                            @Row("Accords", _wine.GeneralPairings)
+                        </dl>
+
+                        @if (!string.IsNullOrWhiteSpace(_wine.PersonalNote))
+                        {
+                            <blockquote class="quote">@_wine.PersonalNote</blockquote>
+                        }
+                    </article>
+
+                    <aside class="stack" aria-label="Prix et accords">
+                        <div class="panel">
+                            <h2>Prix</h2>
+                            <p>Bouteille : <strong>@Pages.Reserve.Fmt.Money(_wine.PriceBottle)</strong></p>
+                            @if (_wine.PriceGlass is { } glass)
+                            {
+                                <p>Au verre : <strong>@Pages.Reserve.Fmt.Money(glass)</strong></p>
+                            }
+                        </div>
+
+                        @if (_wine.Pairings.Count > 0)
+                        {
+                            <div class="panel">
+                                <h2>Avec nos plats</h2>
+                                <ul class="pairings">
+                                    @foreach (var pairing in _wine.Pairings)
+                                    {
+                                        <li><a href="@Url($"#plat-{pairing.RecipeId}")">@pairing.DishName</a></li>
+                                    }
+                                </ul>
+                            </div>
+                        }
+
+                        <a class="btn" href="@Url("/reserver")">Réserver une table</a>
+                    </aside>
+                </div>
+            }
+        </div>
+    </VitrineFrame>
+}
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private PublicWineDetail? _wine;
+
+    protected override async Task LoadAsync() => _wine = await Wines.GetPublishedAsync(Id);
+
+    private RenderFragment Row(string label, string? value) => builder =>
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+
+        builder.OpenElement(0, "div");
+        builder.OpenElement(1, "dt");
+        builder.AddContent(2, label);
+        builder.CloseElement();
+        builder.OpenElement(3, "dd");
+        builder.AddContent(4, value);
+        builder.CloseElement();
+        builder.CloseElement();
+    };
+}
