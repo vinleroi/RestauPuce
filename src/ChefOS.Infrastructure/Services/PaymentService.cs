@@ -28,6 +28,9 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
     internal const string PaidAfterExpiryNote = "Paiement reçu après expiration : remboursé";
     internal const string PaidAfterCancellationNote = "Paiement reçu après annulation : remboursé";
 
+    private string WrongGatewayMessage(string used) =>
+        $"Ce paiement a été fait via {used} : configurez Payments:Gateway={used} sur cette application";
+
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
 
     /// <summary>
@@ -100,6 +103,8 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
             return null;
         if (payment.Status != PaymentStatus.Open)
             return payment.Status;
+        if (payment.Gateway != gateway.Name)
+            throw new DomainValidationException(WrongGatewayMessage(payment.Gateway));
 
         var status = await gateway.GetStatusAsync(gatewayPaymentId, ct);
         return status switch
@@ -110,6 +115,24 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
             GatewayStatus.Expired => await ApplyUnpaidAsync(db, payment, PaymentStatus.Expired, ct),
             _ => await ApplyUnpaidAsync(db, payment, PaymentStatus.Canceled, ct)
         };
+    }
+
+    /// <summary>
+    /// Relit chez la passerelle un paiement connu par son identifiant local (action « Vérifier le paiement » du back) ; même effet que <see cref="SyncAsync"/>.
+    /// </summary>
+    /// <exception cref="DomainValidationException">Paiement inconnu, sans identifiant chez la passerelle, ou fait via une autre passerelle.</exception>
+    public async Task<PaymentStatus> SyncByIdAsync(int paymentId, CancellationToken ct = default)
+    {
+        await using var db = await factory.CreateDbContextAsync(ct);
+        var gatewayId = await db.Payments.AsNoTracking().Where(p => p.Id == paymentId).Select(p => p.GatewayPaymentId).FirstOrDefaultAsync(ct);
+        if (gatewayId is null)
+        {
+            if (!await db.Payments.AnyAsync(p => p.Id == paymentId, ct))
+                throw new DomainValidationException(UnknownPaymentMessage);
+            return await CurrentStatusAsync(db, paymentId, ct);
+        }
+
+        return await SyncAsync(gatewayId, ct) ?? throw new DomainValidationException(UnknownPaymentMessage);
     }
 
     private async Task<PaymentStatus> ApplyUnpaidAsync(ChefOsDbContext db, Payment payment, PaymentStatus target, CancellationToken ct)
@@ -185,7 +208,9 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
             }
             else
             {
-                note = string.Empty; // installée ou absente : le paiement est enregistré, rien à faire
+                note = string.Empty; // déjà confirmée ou installée : le paiement est enregistré, rien à faire
+                logger.LogWarning("Paiement {PaymentId} réglé pour la réservation {ReservationId} déjà {Status} : aucun changement d'état",
+                    payment.Id, reservation.Id, current.Status);
             }
 
             // Ni confirmée ni simplement enregistrée : le paiement ne doit jamais rester réglé sans place, on le rembourse.
@@ -251,8 +276,8 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
     /// <summary>
     /// Rembourse intégralement un paiement réglé, une seule fois. <c>Paid → RefundPending</c> est une mise à jour conditionnelle (l'appel qui la gagne continue,
     /// les autres s'effacent). L'appel à la passerelle se fait ensuite sous un verrou consultatif de transaction propre au paiement : une relance simultanée d'un
-    /// paiement déjà <c>RefundPending</c> s'efface si un autre appel est en cours. La clé d'idempotence <c>refund-{id}</c> rend un rejeu inoffensif chez la passerelle, et
-    /// avant de rembourser on relit le montant déjà remboursé : si la passerelle a réussi mais que l'enregistrement a échoué, la relance rattrape (<c>Refunded</c>)
+    /// paiement déjà <c>RefundPending</c> s'efface si un autre appel est en cours. La clé d'idempotence <c>refund-{identifiant chez la passerelle}</c> rend un rejeu inoffensif chez la passerelle, et
+    /// avant de rembourser on relit le montant déjà remboursé et on ne demande que le reste : si la passerelle a réussi mais que l'enregistrement a échoué, la relance rattrape (<c>Refunded</c>)
     /// au lieu d'échouer indéfiniment. Si la passerelle échoue, le paiement reste <c>RefundPending</c> et l'erreur remonte.
     /// </summary>
     /// <exception cref="DomainValidationException">Paiement inconnu ou non remboursable (jamais réglé).</exception>
@@ -264,6 +289,8 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
 
         if (payment.Status == PaymentStatus.Refunded)
             return;
+        if (payment.Status is (PaymentStatus.Paid or PaymentStatus.RefundPending) && payment.Gateway != gateway.Name)
+            throw new DomainValidationException(WrongGatewayMessage(payment.Gateway));
         if (payment.Status == PaymentStatus.Paid)
         {
             var claimed = await db.Payments
@@ -284,8 +311,9 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
             return; // un autre appel rembourse en ce moment
 
         var gatewayId = payment.GatewayPaymentId!;
-        if (await gateway.GetRefundedAmountAsync(gatewayId, ct) < payment.Amount)
-            await gateway.RefundAsync(gatewayId, payment.Amount, $"refund-{paymentId}", ct);
+        var remaining = payment.Amount - await gateway.GetRefundedAmountAsync(gatewayId, ct);
+        if (remaining > 0m)
+            await gateway.RefundAsync(gatewayId, remaining, $"refund-{gatewayId}", ct);
 
         var refundedAt = Now;
         await db.Payments

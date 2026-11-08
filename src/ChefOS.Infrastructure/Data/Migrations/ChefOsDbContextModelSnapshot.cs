@@ -899,6 +899,9 @@ namespace ChefOS.Infrastructure.Data.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
 
+                    b.Property<DateTime>("FreeCancellationUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<bool>("IsManual")
                         .HasColumnType("boolean");
 

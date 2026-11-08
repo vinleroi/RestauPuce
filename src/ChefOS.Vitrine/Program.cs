@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Threading.RateLimiting;
 using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Wines;
@@ -47,25 +46,6 @@ builder.Services.AddSingleton<PublicUrls>();
 builder.Services.AddSingleton<AttemptLimiter>();
 builder.Services.AddScoped<CircuitAttempts>();
 
-// 10 tentatives par minute et par adresse IP sur le webhook (HTTP) ; la création et l'annulation, qui passent par le circuit interactif,
-// sont gardées par CircuitAttempts avec la même limite.
-builder.Services.AddRateLimiter(options =>
-{
-    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.AddPolicy(VitrineEndpoints.RateLimitPolicy, context =>
-        RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "inconnue", _ => new FixedWindowRateLimiterOptions
-        {
-            PermitLimit = AttemptLimiter.PermitLimit, Window = AttemptLimiter.Window, QueueLimit = 0, AutoReplenishment = true
-        }));
-    options.OnRejected = async (context, token) =>
-    {
-        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-        context.HttpContext.Response.Headers.RetryAfter = "60";
-        context.HttpContext.Response.ContentType = "text/plain; charset=utf-8";
-        await context.HttpContext.Response.WriteAsync(AttemptLimiter.Message, token);
-    };
-});
-
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -92,7 +72,6 @@ app.UseRequestLocalization();
 // Routage explicite : le slug du lien doit être connu avant d'atteindre l'endpoint (restaurant courant, 404 si inconnu ou non publié).
 app.UseRouting();
 app.UseMiddleware<SlugTenantMiddleware>();
-app.UseRateLimiter();
 app.UseAntiforgery();
 
 app.MapStaticAssets();

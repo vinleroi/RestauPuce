@@ -4,7 +4,9 @@ using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Tests.Infrastructure;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ChefOS.Tests.Vitrine;
 
@@ -26,7 +28,7 @@ public sealed class VitrineSite : IAsyncDisposable
 
     public HttpClient Client => Factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
 
-    public static async Task<VitrineSite> CreateAsync(PostgresFixture postgres, string? gateway = null)
+    public static async Task<VitrineSite> CreateAsync(PostgresFixture postgres, string? gateway = null, Action<IServiceCollection>? configureServices = null)
     {
         var options = await postgres.CreateDatabaseAsync();
         var connection = new ChefOsDbContext(options, new FixedTenantContext(null)).Database.GetConnectionString()!;
@@ -88,6 +90,8 @@ public sealed class VitrineSite : IAsyncDisposable
             builder.UseSetting("ConnectionStrings:ChefOs", connection);
             builder.UseSetting("Payments:Gateway", gateway ?? "Demo");
             builder.UseSetting("Payments:BaseUrl", "http://localhost");
+            if (configureServices is not null)
+                builder.ConfigureTestServices(configureServices);
         });
 
         return new VitrineSite

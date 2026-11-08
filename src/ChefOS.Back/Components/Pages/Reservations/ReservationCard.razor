@@ -75,6 +75,13 @@
         {
             <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" Disabled="Busy" OnClick="@(() => OnCancel.InvokeAsync(Card))">Annuler</MudButton>
         }
+        @foreach (var payment in Card.CheckablePayments)
+        {
+            <MudButton Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small" Disabled="Busy"
+                       OnClick="@(() => OnCheckPayment.InvokeAsync((Card, payment)))">
+                Vérifier le paiement
+            </MudButton>
+        }
         @foreach (var payment in Card.RefundablePayments)
         {
             <MudButton Variant="Variant.Outlined" Color="Color.Secondary" Size="Size.Small" Disabled="Busy"
@@ -107,6 +114,9 @@
 
     [Parameter]
     public EventCallback<(ReservationCardView Card, PaymentLine Payment)> OnRefund { get; set; }
+
+    [Parameter]
+    public EventCallback<(ReservationCardView Card, PaymentLine Payment)> OnCheckPayment { get; set; }
 
     // Les grands groupes (plus de 4 convives) s'ouvrent à la demande ; l'état choisi survit aux rafraîchissements (la carte est identifiée par @key).
     protected override void OnInitialized() => _guestsOpen = !Card.GuestsCollapsedByDefault;

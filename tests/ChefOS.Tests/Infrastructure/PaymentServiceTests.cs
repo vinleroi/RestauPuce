@@ -193,7 +193,7 @@ public class PaymentServiceTests(PostgresFixture postgres)
         await first;
 
         Assert.Equal(PaymentStatus.Refunded, (await h.PaymentsOfAsync(payment.ReservationId)).Single().Status);
-        Assert.Equal([$"refund-{payment.Id}"], h.Gateway.RefundKeys);
+        Assert.Equal([$"refund-{payment.GatewayPaymentId}"], h.Gateway.RefundKeys);
     }
 
     [Fact]

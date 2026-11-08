@@ -438,7 +438,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         Assert.Equal(OrderSource.Vitrine, order.Source);
         Assert.Equal(OrderStatus.Nouvelle, order.Status);
         Assert.Equal("Dupont", order.TableOrCustomer);
-        Assert.Equal("Réservation Dupont · 6 couverts · Anniversaire", order.Note);
+        Assert.Equal("Réservation Dupont · 6 couverts · Anniversaire · Déjà réglé en ligne : 46,50 € (prépaiement)", order.Note);
         Assert.Equal(7, order.Lines.Count);
         var notes = order.Lines.OrderBy(l => l.Id).Select(l => (l.RecipeId, l.Note)).ToList();
         Assert.Equal([(steak, "Jeanne Martin"), (salad, "Jeanne Martin"), (steak, "Paul"), (salad, "Convive 3"), (steak, "Durand"), (steak, "E F"), (steak, "G H")], notes);

@@ -304,6 +304,7 @@ internal static class DemoVitrine
     {
         PublicToken = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_'),
         StartsAtUtc = RestaurantClock.ToUtc(date, time, TimeZoneId),
+        FreeCancellationUntilUtc = RestaurantClock.ToUtc(date, time, TimeZoneId).AddHours(-new VitrineProfile().FreeCancellationHours),
         ServiceName = service, PartySize = party, CustomerName = name, CustomerEmail = email, CustomerPhone = phone,
         Status = status, CreatedAt = createdAt,
         ConfirmedAt = status is ReservationStatus.Confirmed or ReservationStatus.Cancelled ? createdAt.AddMinutes(3) : null,

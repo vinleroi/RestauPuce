@@ -14,7 +14,7 @@ namespace ChefOS.Infrastructure.Services;
 /// Les écritures sont tout ou rien. Le restaurant courant n'est pas connu du service : il se déduit du profil, créé au besoin
 /// (le contexte filtré par restaurant l'estampille).
 /// </summary>
-public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory)
+public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory, TimeProvider? clock = null)
 {
     private const int MaxImageBytes = 5 * 1024 * 1024;
     private const int MaxGalleryImages = 6;
@@ -29,6 +29,8 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory)
     private const string UnknownImageMessage = "Image introuvable";
     private const string InvalidPositionMessage = "Position invalide";
     private const string UnknownClosureMessage = "Fermeture introuvable";
+
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
 
     private static readonly HashSet<string> AcceptedImageTypes = new(StringComparer.Ordinal) { "image/jpeg", "image/png", "image/webp" };
 
@@ -107,8 +109,8 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory)
             throw new DomainValidationException("Le délai minimal avant réservation ne peut pas être négatif");
         if (input.MaxDaysAhead < 0)
             throw new DomainValidationException("Le nombre de jours de réservation à l'avance ne peut pas être négatif");
-        if (input.PendingPaymentMinutes < 0)
-            throw new DomainValidationException("Le délai de paiement ne peut pas être négatif");
+        if (input.PendingPaymentMinutes is < 10 or > 120)
+            throw new DomainValidationException("Le délai de paiement doit être compris entre 10 et 120 minutes");
 
         try
         {
@@ -284,7 +286,11 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory)
         return all.OrderBy(s => DayOrder(s.DayOfWeek)).ThenBy(s => s.StartLocal).ThenBy(s => s.Name).ToList();
     }
 
-    /// <summary>Remplace tous les services du restaurant, tout ou rien : un seul service invalide laisse les services actuels intacts.</summary>
+    /// <summary>
+    /// Remplace tous les services du restaurant, tout ou rien : un seul service invalide laisse les services actuels intacts. Les places réservées sont rattachées
+    /// au service par son nom : renommer ou supprimer un service (jour + nom) qui a des réservations à venir (confirmées, installées, ou en attente de paiement encore
+    /// valides) est refusé, car ses couverts seraient revendus. Changer la capacité ou les horaires d'un service qui garde son nom reste permis.
+    /// </summary>
     public async Task SaveSchedulesAsync(IReadOnlyList<ServiceScheduleInput> schedules)
     {
         var normalized = schedules.Select(s => s with { Name = RequireServiceName(s.Name) }).ToList();
@@ -318,6 +324,7 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory)
         await RequireProfileAsync(db, track: false);
 
         await using var transaction = await db.Database.BeginTransactionAsync();
+        await RefuseDisappearingServicesWithBookingsAsync(db, normalized);
         await db.ServiceSchedules.ExecuteDeleteAsync();
         db.ServiceSchedules.AddRange(normalized.Select(s => new ServiceSchedule
         {
@@ -326,6 +333,36 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory)
         }));
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
+    }
+
+    private async Task RefuseDisappearingServicesWithBookingsAsync(ChefOsDbContext db, List<ServiceScheduleInput> next)
+    {
+        var kept = next.Select(s => (s.DayOfWeek, s.Name)).ToHashSet();
+        var disappearing = (await db.ServiceSchedules.AsNoTracking().Select(s => new { s.DayOfWeek, s.Name }).ToListAsync())
+            .Where(s => !kept.Contains((s.DayOfWeek, s.Name)))
+            .ToList();
+        if (disappearing.Count == 0)
+            return;
+
+        var now = _clock.GetUtcNow().UtcDateTime;
+        var pendingMinutes = await db.VitrineProfiles.Select(p => (int?)p.PendingPaymentMinutes).FirstOrDefaultAsync() ?? new VitrineProfile().PendingPaymentMinutes;
+        var cutoff = now.AddMinutes(-pendingMinutes);
+        var timeZone = await db.Restaurants.Select(r => r.TimeZoneId).FirstAsync();
+        var names = disappearing.Select(s => s.Name).Distinct().ToList();
+
+        var upcoming = await db.Reservations.AsNoTracking()
+            .Where(r => r.StartsAtUtc > now && names.Contains(r.ServiceName)
+                && (r.Status == ReservationStatus.Confirmed || r.Status == ReservationStatus.Seated
+                    || (r.Status == ReservationStatus.PendingPayment && r.CreatedAt > cutoff)))
+            .Select(r => new { r.ServiceName, r.StartsAtUtc })
+            .ToListAsync();
+
+        foreach (var service in disappearing)
+        {
+            if (upcoming.Any(r => r.ServiceName == service.Name && RestaurantClock.ToLocal(r.StartsAtUtc, timeZone).Date.DayOfWeek == service.DayOfWeek))
+                throw new DomainValidationException(
+                    $"Le service {service.Name} du {DayName(service.DayOfWeek)} a des réservations à venir : modifiez-le après ces dates ou gardez son nom");
+        }
     }
 
     private static string RequireServiceName(string? name)

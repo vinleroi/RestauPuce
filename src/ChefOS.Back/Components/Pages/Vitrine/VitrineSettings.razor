@@ -205,7 +205,7 @@ else
                                          Adornment="Adornment.End" AdornmentText="jours" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
                     </MudItem>
                     <MudItem xs="12" sm="6" md="4">
-                        <MudNumericField T="int?" @bind-Value="_form.PendingPaymentMinutes" Culture="Ui.Fr" Format="0" Min="0" Label="Délai pour payer"
+                        <MudNumericField T="int?" @bind-Value="_form.PendingPaymentMinutes" Culture="Ui.Fr" Format="0" Min="10" Max="120" Label="Délai pour payer"
                                          Adornment="Adornment.End" AdornmentText="min" HelperText="Passé ce délai, la place est libérée"
                                          HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
                     </MudItem>

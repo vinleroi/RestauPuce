@@ -165,18 +165,68 @@ public sealed class VitrineSiteTests(PostgresFixture postgres)
         Assert.Equal(HttpStatusCode.OK, missingId.StatusCode);
     }
 
+    /// <summary>Passerelle dont la lecture du statut échoue toujours (panne chez Mollie) ; aucun appel réseau.</summary>
+    private sealed class UnreachableGateway : ChefOS.Infrastructure.Payments.IPaymentGateway
+    {
+        public string Name => "Demo";
+
+        public Task<ChefOS.Infrastructure.Payments.GatewayPayment> CreateAsync(decimal amount, string description, string redirectUrl, string webhookUrl,
+            IDictionary<string, string> metadata, CancellationToken ct) => throw new InvalidOperationException("injoignable");
+
+        public Task<ChefOS.Infrastructure.Payments.GatewayStatus> GetStatusAsync(string id, CancellationToken ct) => throw new InvalidOperationException("injoignable");
+
+        public Task RefundAsync(string id, decimal amount, string idempotencyKey, CancellationToken ct) => throw new InvalidOperationException("injoignable");
+
+        public Task<decimal> GetRefundedAmountAsync(string id, CancellationToken ct) => throw new InvalidOperationException("injoignable");
+    }
+
     [Fact]
-    public async Task Webhook_IsRateLimited_PerClient_WithAFrenchMessage()
+    public async Task Webhook_SyncFailure_Answers503SoMollieRetries()
+    {
+        await using var site = await VitrineSite.CreateAsync(postgres, configureServices: services =>
+        {
+            foreach (var d in services.Where(d => d.ServiceType == typeof(ChefOS.Infrastructure.Payments.IPaymentGateway)).ToList())
+                services.Remove(d);
+            services.AddScoped<ChefOS.Infrastructure.Payments.IPaymentGateway, UnreachableGateway>();
+        });
+        await using (var db = new ChefOS.Infrastructure.Data.ChefOsDbContext(site.Options, new ChefOS.Infrastructure.Data.FixedTenantContext(site.Bistro.Id)))
+        {
+            var reservation = new ChefOS.Core.Vitrine.Reservation
+            {
+                PublicToken = "jeton-webhook", StartsAtUtc = DateTime.UtcNow.AddDays(3), ServiceName = "Dîner", PartySize = 2, CustomerName = "Dupont",
+                CustomerEmail = "d@example.com", CustomerPhone = "0470 12 34 56", Status = ChefOS.Core.Vitrine.ReservationStatus.PendingPayment,
+                CreatedAt = DateTime.UtcNow, AmountDue = 20m
+            };
+            db.Reservations.Add(reservation);
+            await db.SaveChangesAsync();
+            db.Payments.Add(new ChefOS.Core.Vitrine.Payment
+            {
+                ReservationId = reservation.Id, Kind = ChefOS.Core.Vitrine.PaymentKind.Deposit, Amount = 20m, Status = ChefOS.Core.Vitrine.PaymentStatus.Open,
+                Gateway = "Demo", GatewayPaymentId = "tr_en_panne", CreatedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var failing = await site.Client.PostAsync($"/{site.Bistro.Slug}/webhooks/mollie",
+            new FormUrlEncodedContent(new Dictionary<string, string> { ["id"] = "tr_en_panne" }));
+        var unknown = await site.Client.PostAsync($"/{site.Bistro.Slug}/webhooks/mollie",
+            new FormUrlEncodedContent(new Dictionary<string, string> { ["id"] = "tr_inconnu" }));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, failing.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, unknown.StatusCode);
+    }
+
+    [Fact]
+    public async Task Webhook_IsNotRateLimited()
     {
         await using var site = await VitrineSite.CreateAsync(postgres);
         var path = $"/{site.Bistro.Slug}/webhooks/mollie";
-        HttpResponseMessage last = null!;
 
-        for (var i = 0; i < 11; i++)
-            last = await site.Client.PostAsync(path, new FormUrlEncodedContent(new Dictionary<string, string> { ["id"] = "tr_x" }));
-
-        Assert.Equal(HttpStatusCode.TooManyRequests, last.StatusCode);
-        Assert.Equal("Trop de tentatives, réessayez dans une minute", await last.Content.ReadAsStringAsync());
+        for (var i = 0; i < 15; i++)
+        {
+            var response = await site.Client.PostAsync(path, new FormUrlEncodedContent(new Dictionary<string, string> { ["id"] = "tr_x" }));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
     }
 
     [Fact]

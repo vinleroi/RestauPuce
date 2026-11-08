@@ -278,4 +278,16 @@ public class ReservationDayViewTests
     {
         Assert.Equal(50, View(Service("A", 40, 30), Service("B", 40, 20)).TotalCovers);
     }
+
+    [Theory]
+    [InlineData(ReservationStatus.PendingPayment, PaymentStatus.Open, 1)]
+    [InlineData(ReservationStatus.Expired, PaymentStatus.Open, 1)]
+    [InlineData(ReservationStatus.Confirmed, PaymentStatus.Open, 0)]
+    [InlineData(ReservationStatus.PendingPayment, PaymentStatus.Paid, 0)]
+    public void OpenPayments_OfPendingOrExpiredReservations_CanBeChecked(ReservationStatus status, PaymentStatus payment, int expected)
+    {
+        var view = View(Service("Dîner", 40, 2, Res(1, 18, status: status, payments: [new PaymentDetail(7, PaymentKind.Deposit, 20m, payment, null)])));
+
+        Assert.Equal(expected, view.Services[0].Cards[0].CheckablePayments.Count);
+    }
 }

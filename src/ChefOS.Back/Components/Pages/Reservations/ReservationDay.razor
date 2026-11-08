@@ -73,7 +73,7 @@ else
                 @foreach (var card in service.Cards)
                 {
                     <div @key="card.Id">
-                        <ReservationCard Card="card" Busy="_busy" OnSeat="SeatAsync" OnNoShow="NoShowAsync" OnCancel="CancelAsync" OnRefund="RefundAsync" />
+                        <ReservationCard Card="card" Busy="_busy" OnSeat="SeatAsync" OnNoShow="NoShowAsync" OnCancel="CancelAsync" OnRefund="RefundAsync" OnCheckPayment="CheckPaymentAsync" />
                     </div>
                 }
             </MudItem>
@@ -476,6 +476,43 @@ else
         {
             // Passerelle de paiement injoignable ou qui refuse : le paiement reste « À rembourser », on pourra réessayer.
             Snackbar.Add($"Remboursement impossible : {e.Message}", Severity.Error);
+        }
+        finally
+        {
+            await ReloadAfterActionAsync();
+        }
+    }
+
+    // Relit le paiement chez la passerelle (le webhook n'est peut-être jamais arrivé) puis rafraîchit l'écran avec le résultat.
+    private async Task CheckPaymentAsync((ReservationCardView Card, PaymentLine Payment) item)
+    {
+        if (_busy)
+            return;
+
+        _busy = true;
+        try
+        {
+            var status = await PaymentService.SyncByIdAsync(item.Payment.Id);
+            switch (status)
+            {
+                case PaymentStatus.Open:
+                    Snackbar.Add($"Paiement de {item.Card.Name} : toujours en attente chez la passerelle", Severity.Info);
+                    break;
+                case PaymentStatus.Paid:
+                    Snackbar.Add($"Paiement de {item.Card.Name} reçu", Severity.Success);
+                    break;
+                default:
+                    Snackbar.Add($"Paiement de {item.Card.Name} : {ReservationDayView.PaymentStatusLabel(status).ToLower(Ui.Fr)}", Severity.Warning);
+                    break;
+            }
+        }
+        catch (DomainValidationException e)
+        {
+            Snackbar.Add(e.Message, Severity.Error);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Snackbar.Add($"Vérification impossible : {e.Message}", Severity.Error);
         }
         finally
         {

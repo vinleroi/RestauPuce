@@ -23,5 +23,7 @@ public class Reservation : ITenantScoped
     public decimal PreorderTotalInclVat { get; set; }
     public int? OrderId { get; set; }
     public bool IsManual { get; set; }
+    /// <summary>Fin de l'annulation gratuite (UTC), figée à la réservation : la règle que le client a acceptée ne change plus ensuite.</summary>
+    public DateTime FreeCancellationUntilUtc { get; set; }
     public List<ReservationGuest> Guests { get; set; } = new();
 }

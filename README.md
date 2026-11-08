@@ -70,7 +70,7 @@ dotnet run --project src/ChefOS.Back      # en premier : migrations, données de
 dotnet run --project src/ChefOS.Vitrine   # dans un second terminal
 ```
 
-Démarrez le back en premier : il applique les migrations et crée la démo. Dans une base vide, « Le Petit Bistro » est livré avec une vitrine **publiée** (ambiance, couleur, ville de Liège, sans image : un dégradé sert de couverture), des services du mardi au samedi (Midi 12:00-14:00 pour 40 couverts, Soir 19:00-22:00 pour 50, fermé le dimanche et le lundi, un congé annuel dans trois semaines), une phrase publique sur chacun des 12 plats, 15 vins de la bibliothèque avec prix et accords (plus un vin dont la fiche IA est « à relire », non publié), et 9 réservations sur les 7 prochains jours ouverts : 6 petites tables confirmées, un groupe de 8 avec convives nommés et plats pré-commandés, une demande en attente de paiement déjà périmée (elle passe en « Expirée » à la première lecture) et une annulation remboursée. Tous les paiements de ces réservations sont des paiements de démonstration.
+Démarrez le back en premier : il applique les migrations et crée la démo. Dans une base vide, « Le Petit Bistro » est livré avec une vitrine **publiée** (ambiance, couleur, ville de Liège, sans image : un dégradé sert de couverture), des services du mardi au samedi (Midi 12:00-14:00 pour 40 couverts, Soir 19:00-22:00 pour 50, fermé le dimanche et le lundi, un congé annuel dans trois semaines), une phrase publique sur chacun des 12 plats, 15 vins de la bibliothèque avec prix et accords (plus un vin dont la fiche IA est « à relire », non publié), et 9 réservations sur les 7 prochains jours : 6 petites tables confirmées, un groupe de 8 avec convives nommés et plats pré-commandés, une demande en attente de paiement déjà périmée (elle passe en « Expirée » à la première lecture) et une annulation remboursée. Tous les paiements de ces réservations sont des paiements de démonstration.
 
 Règles par défaut : acompte de 10 € par personne jusqu'à 5 couverts ; au-delà, les convives choisissent leurs plats et le prépaiement est de 30 % de la pré-commande ; annulation gratuite jusqu'à 24 h avant ; une demande non payée expire après 30 minutes.
 
@@ -85,7 +85,10 @@ La section `Payments` choisit la passerelle, au démarrage (redémarrez pour en 
 dotnet user-secrets set Mollie:ApiKey test_... --project src/ChefOS.Vitrine
 dotnet user-secrets set Mollie:ApiKey test_... --project src/ChefOS.Back
 Payments__Gateway=Mollie dotnet run --project src/ChefOS.Vitrine
+Payments__Gateway=Mollie dotnet run --project src/ChefOS.Back   # le back aussi, pour rembourser ou vérifier un paiement Mollie
 ```
+
+  Le back doit tourner avec `Payments:Gateway=Mollie` (et la clé) pour rembourser ou vérifier les paiements Mollie : sinon il refuse avec « Ce paiement a été fait via Mollie : configurez Payments:Gateway=Mollie sur cette application ».
 
   (La variable d'environnement `MOLLIE_API_KEY` sert de repli.) Sans clé, la passerelle refuse chaque paiement avec un message explicite.
 

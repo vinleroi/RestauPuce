@@ -14,8 +14,10 @@ public class VitrineServiceTests(PostgresFixture postgres)
 {
     private static readonly byte[] Bytes = [1, 2, 3, 4];
 
+    private static readonly DateTimeOffset Today = new(2026, 11, 2, 9, 0, 0, TimeSpan.Zero);
+
     private static VitrineService CreateService(DbContextOptions<ChefOsDbContext> options, int restaurantId) =>
-        new(new TestContextFactory(options, restaurantId));
+        new(new TestContextFactory(options, restaurantId), new Microsoft.Extensions.Time.Testing.FakeTimeProvider(Today));
 
     private static VitrineProfileInput ValidInput(Func<VitrineProfileInput, VitrineProfileInput>? change = null)
     {
@@ -86,7 +88,9 @@ public class VitrineServiceTests(PostgresFixture postgres)
     [InlineData("cancel", "-1", "Le délai d'annulation gratuite ne peut pas être négatif")]
     [InlineData("lead", "-1", "Le délai minimal avant réservation ne peut pas être négatif")]
     [InlineData("ahead", "-1", "Le nombre de jours de réservation à l'avance ne peut pas être négatif")]
-    [InlineData("pending", "-1", "Le délai de paiement ne peut pas être négatif")]
+    [InlineData("pending", "-1", "Le délai de paiement doit être compris entre 10 et 120 minutes")]
+    [InlineData("pending", "9", "Le délai de paiement doit être compris entre 10 et 120 minutes")]
+    [InlineData("pending", "121", "Le délai de paiement doit être compris entre 10 et 120 minutes")]
     [InlineData("tz", "Mars/Olympus", "Fuseau horaire inconnu")]
     public async Task SaveProfile_Validates(string field, string value, string message)
     {
@@ -109,6 +113,17 @@ public class VitrineServiceTests(PostgresFixture postgres)
         var ex = await Assert.ThrowsAsync<DomainValidationException>(() => service.SaveProfileAsync(input));
 
         Assert.Equal(message, ex.Message);
+    }
+
+    [Fact]
+    public async Task SaveProfile_PendingPaymentMinutes_BoundariesAreAccepted()
+    {
+        var (_, _, service) = await SetUpAsync();
+
+        await service.SaveProfileAsync(ValidInput(i => i with { PendingPaymentMinutes = 10 }));
+        await service.SaveProfileAsync(ValidInput(i => i with { PendingPaymentMinutes = 120 }));
+
+        Assert.Equal(120, (await service.GetOrCreateProfileAsync()).PendingPaymentMinutes);
     }
 
     [Fact]
@@ -401,4 +416,92 @@ public class VitrineServiceTests(PostgresFixture postgres)
         Name = name, Vintage = vintage, Position = position, IsPublished = published, PriceBottle = bottle, PriceGlass = glass,
         Region = "Bordeaux", Country = "France", Color = WineColor.Rouge
     };
+
+    // ── Services et réservations à venir ─────────────────────────────────────
+
+    private static async Task AddReservationAsync(DbContextOptions<ChefOsDbContext> options, int restaurant, string service, DateTime startsAtUtc,
+        ReservationStatus status = ReservationStatus.Confirmed, DateTime? createdAt = null)
+    {
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurant));
+        db.Reservations.Add(new Reservation
+        {
+            PublicToken = Guid.NewGuid().ToString("N"), StartsAtUtc = startsAtUtc, ServiceName = service, PartySize = 2, CustomerName = "Dupont",
+            CustomerEmail = "d@example.com", CustomerPhone = "0470 12 34 56", Status = status, CreatedAt = createdAt ?? Today.UtcDateTime,
+            FreeCancellationUntilUtc = startsAtUtc.AddHours(-24)
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private static readonly DateTime NextFridayDinner = new(2026, 11, 6, 18, 0, 0, DateTimeKind.Utc); // vendredi 19:00 à Bruxelles
+
+    [Fact]
+    public async Task SaveSchedules_RenamingAServiceWithUpcomingBookings_Refused()
+    {
+        var (options, restaurant, service) = await SetUpAsync();
+        await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Soir", 19, 22), Schedule(DayOfWeek.Saturday, "Soir", 19, 22)]);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner);
+
+        var ex = await Assert.ThrowsAsync<DomainValidationException>(() =>
+            service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Dîner", 19, 22), Schedule(DayOfWeek.Saturday, "Soir", 19, 22)]));
+
+        Assert.Equal("Le service Soir du vendredi a des réservations à venir : modifiez-le après ces dates ou gardez son nom", ex.Message);
+        Assert.Equal(["Soir", "Soir"], (await service.GetSchedulesAsync()).Select(s => s.Name));
+    }
+
+    [Fact]
+    public async Task SaveSchedules_RemovingAServiceWithUpcomingBookings_Refused()
+    {
+        var (options, restaurant, service) = await SetUpAsync();
+        await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Soir", 19, 22)]);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner, ReservationStatus.Seated);
+
+        var ex = await Assert.ThrowsAsync<DomainValidationException>(() => service.SaveSchedulesAsync([Schedule(DayOfWeek.Saturday, "Soir", 19, 22)]));
+
+        Assert.Contains("a des réservations à venir", ex.Message);
+        Assert.Single(await service.GetSchedulesAsync());
+    }
+
+    [Fact]
+    public async Task SaveSchedules_PendingPaymentStillValid_BlocksRename_ButAStaleOneDoesNot()
+    {
+        var (options, restaurant, service) = await SetUpAsync();
+        await service.SaveProfileAsync(ValidInput(i => i with { PendingPaymentMinutes = 30 }));
+        await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Soir", 19, 22)]);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner, ReservationStatus.PendingPayment, Today.UtcDateTime.AddMinutes(-31));
+
+        await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Dîner", 19, 22)]); // périmée : elle ne tient plus de places
+
+        await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Soir", 19, 22)]);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner, ReservationStatus.PendingPayment, Today.UtcDateTime.AddMinutes(-5));
+        await Assert.ThrowsAsync<DomainValidationException>(() => service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Dîner", 19, 22)]));
+    }
+
+    [Fact]
+    public async Task SaveSchedules_RenameAllowed_WhenNothingUpcomingHoldsSeats()
+    {
+        var (options, restaurant, service) = await SetUpAsync();
+        await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Soir", 19, 22)]);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner.AddDays(-14)); // passée
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner, ReservationStatus.Cancelled);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner, ReservationStatus.Expired);
+        await AddReservationAsync(options, restaurant, "Midi", NextFridayDinner); // un autre service
+
+        await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Dîner", 19, 22)]);
+
+        Assert.Equal("Dîner", (await service.GetSchedulesAsync()).Single().Name);
+    }
+
+    [Fact]
+    public async Task SaveSchedules_CapacityAndTimeChangesAllowed_OnAKeptName()
+    {
+        var (options, restaurant, service) = await SetUpAsync();
+        await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Soir", 19, 22, capacity: 40)]);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner);
+
+        await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Soir", 18, 23, capacity: 60, slot: 15)]);
+
+        var saved = Assert.Single(await service.GetSchedulesAsync());
+        Assert.Equal(60, saved.Capacity);
+        Assert.Equal(new TimeOnly(18, 0), saved.StartLocal);
+    }
 }

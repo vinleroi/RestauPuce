@@ -40,6 +40,10 @@ public sealed class ReservationCardView
             ? Payments.Where(p => p.Status is PaymentStatus.Paid or PaymentStatus.RefundPending).ToList()
             : [];
 
+        CheckablePayments = detail.Status is ReservationStatus.PendingPayment or ReservationStatus.Expired
+            ? Payments.Where(p => p.Status == PaymentStatus.Open).ToList()
+            : [];
+
         var paid = detail.Payments.FirstOrDefault(p => p.Status == PaymentStatus.Paid);
         CanOfferRefundOnCancel = paid is not null;
         RefundOnCancelLabel = paid?.Kind == PaymentKind.Prepayment ? "Rembourser le prépaiement" : "Rembourser l'acompte";
@@ -78,6 +82,9 @@ public sealed class ReservationCardView
 
     /// <summary>Paiements qu'un clic sur « Rembourser » reprend : réglés ou dont le remboursement a échoué, d'une réservation annulée ou expirée.</summary>
     public IReadOnlyList<PaymentLine> RefundablePayments { get; }
+
+    /// <summary>Paiements encore ouverts d'une réservation en attente ou expirée : « Vérifier le paiement » les relit chez la passerelle (webhook jamais reçu).</summary>
+    public IReadOnlyList<PaymentLine> CheckablePayments { get; }
 
     public bool CanOfferRefundOnCancel { get; }
 

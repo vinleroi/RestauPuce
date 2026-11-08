@@ -81,6 +81,7 @@ public partial class ReservationService(
     private const string StatusChangedMessage = "La réservation a déjà changé de statut";
     private const string CannotCancelMessage = "Cette réservation ne peut plus être annulée";
     private const int OrderNumberRetries = 5;
+    private const int MaxSyncedPaymentsPerListing = 10;
     private const int MaxDishQuantity = 50;
     private const int MaxDishLinesPerGuest = 10;
 
@@ -208,6 +209,7 @@ public partial class ReservationService(
             ConfirmedAt = due.Amount == 0m ? now : null,
             AmountDue = due.Amount,
             PreorderTotalInclVat = preorderTotal,
+            FreeCancellationUntilUtc = startsAtUtc.AddHours(-profile.FreeCancellationHours),
             Guests = guests
         };
 
@@ -343,17 +345,15 @@ public partial class ReservationService(
                 reservation = await db.Reservations.AsNoTracking().FirstAsync(r => r.Id == reservation.Id);
         }
 
-        var profile = await db.VitrineProfiles.AsNoTracking().FirstOrDefaultAsync();
         var timeZone = await db.Restaurants.Where(r => r.Id == reservation.RestaurantId).Select(r => r.TimeZoneId).FirstAsync();
         var (date, time) = RestaurantClock.ToLocal(reservation.StartsAtUtc, timeZone);
         var latest = await db.Payments.AsNoTracking().Where(p => p.ReservationId == reservation.Id).OrderByDescending(p => p.Id).FirstOrDefaultAsync();
-        var hours = profile?.FreeCancellationHours ?? 24;
 
         return new PublicReservation(
             reservation.PublicToken, reservation.Status, Utc(reservation.StartsAtUtc), date, time, reservation.ServiceName,
             reservation.PartySize, reservation.CustomerName, reservation.Note, reservation.AmountDue, reservation.PreorderTotalInclVat,
             reservation.Status == ReservationStatus.PendingPayment && latest?.Status == PaymentStatus.Open ? latest.CheckoutUrl : null,
-            latest?.Status, Utc(reservation.StartsAtUtc).AddHours(-hours),
+            latest?.Status, Utc(reservation.FreeCancellationUntilUtc),
             CanCustomerCancel(reservation.Status, reservation.StartsAtUtc, Now));
     }
 
@@ -361,7 +361,7 @@ public partial class ReservationService(
         status is ReservationStatus.PendingPayment or ReservationStatus.Confirmed && startsAtUtc > now;
 
     /// <summary>
-    /// Annulation par le client. Dans le délai gratuit : <c>Cancelled</c> et remboursement intégral automatique d'un paiement réglé (si la passerelle échoue, le paiement
+    /// Annulation par le client. Dans le délai gratuit figé à la réservation (<see cref="Reservation.FreeCancellationUntilUtc"/>) : <c>Cancelled</c> et remboursement intégral automatique d'un paiement réglé (si la passerelle échoue, le paiement
     /// reste <c>RefundPending</c> et le back peut relancer). Hors délai : <c>Cancelled</c>, sans remboursement. Refusée si la réservation est installée, passée ou terminée.
     /// Annuler une réservation déjà annulée ne change rien.
     /// </summary>
@@ -377,8 +377,7 @@ public partial class ReservationService(
         if (!CanCustomerCancel(reservation.Status, reservation.StartsAtUtc, now))
             throw new DomainValidationException(CannotCancelMessage);
 
-        var hours = await db.VitrineProfiles.Select(p => (int?)p.FreeCancellationHours).FirstOrDefaultAsync() ?? 24;
-        var free = CancellationPolicy.IsFreeCancellation(reservation.StartsAtUtc, now, hours);
+        var free = now <= reservation.FreeCancellationUntilUtc; // la règle figée à la réservation, pas celle d'aujourd'hui
 
         await CancelAsync(db, reservation.Id, refund: free, now);
     }
@@ -443,6 +442,8 @@ public partial class ReservationService(
         var from = RestaurantClock.ToUtc(localDate, TimeOnly.MinValue, timeZone);
         var to = RestaurantClock.ToUtc(localDate.AddDays(1), TimeOnly.MinValue, timeZone);
 
+        await TrySyncOpenPaymentsAsync(db, from, to);
+
         var schedules = await db.ServiceSchedules.AsNoTracking().Where(s => s.DayOfWeek == localDate.DayOfWeek).ToListAsync();
         var reservations = await db.Reservations.AsNoTracking()
             .Include(r => r.Guests.OrderBy(g => g.Position)).ThenInclude(g => g.Dishes)
@@ -472,6 +473,40 @@ public partial class ReservationService(
                 paymentRows.Where(p => p.ReservationId == r.Id).Select(p => new PaymentDetail(p.Id, p.Kind, p.Amount, p.Status, p.RefundAmount)).ToList())).ToList();
             return new ServiceDayView(service, schedules.FirstOrDefault(s => s.Name == service)?.Capacity ?? 0, booked, details);
         }).ToList();
+    }
+
+    /// <summary>
+    /// Relit chez la passerelle, « au mieux », les paiements encore ouverts des réservations du jour qui attendent leur paiement ou ont expiré : le back reprend ainsi
+    /// un paiement dont le webhook ne lui est jamais parvenu. Borné à <see cref="MaxSyncedPaymentsPerListing"/> par appel ; un échec est journalisé et n'empêche pas la liste.
+    /// </summary>
+    private async Task TrySyncOpenPaymentsAsync(ChefOsDbContext db, DateTime from, DateTime to)
+    {
+        try
+        {
+            var open = await db.Payments.AsNoTracking()
+                .Where(p => p.Status == PaymentStatus.Open && p.GatewayPaymentId != null
+                    && db.Reservations.Any(r => r.Id == p.ReservationId && r.StartsAtUtc >= from && r.StartsAtUtc < to
+                        && (r.Status == ReservationStatus.PendingPayment || r.Status == ReservationStatus.Expired)))
+                .OrderBy(p => p.Id)
+                .Select(p => p.GatewayPaymentId!)
+                .Take(MaxSyncedPaymentsPerListing)
+                .ToListAsync();
+            foreach (var gatewayId in open)
+            {
+                try
+                {
+                    await payments.SyncAsync(gatewayId);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger?.LogWarning("Lecture du statut du paiement {GatewayPaymentId} impossible : {Reason}", gatewayId, ex.Message);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning("Lecture des paiements ouverts du jour impossible : {Reason}", ex.Message);
+        }
     }
 
     /// <summary>
@@ -512,7 +547,8 @@ public partial class ReservationService(
         {
             PublicToken = NewToken(), StartsAtUtc = startsAtUtc, ServiceName = request.ServiceName, PartySize = request.PartySize,
             CustomerName = name, CustomerEmail = mail, CustomerPhone = phone, Note = NullIfBlank(request.Note),
-            Status = ReservationStatus.Confirmed, CreatedAt = now, ConfirmedAt = now, AmountDue = 0m, IsManual = true
+            Status = ReservationStatus.Confirmed, CreatedAt = now, ConfirmedAt = now, AmountDue = 0m, IsManual = true,
+            FreeCancellationUntilUtc = startsAtUtc.AddHours(-profile.FreeCancellationHours)
         };
 
         await using var transaction = await db.Database.BeginTransactionAsync();
@@ -572,6 +608,14 @@ public partial class ReservationService(
             {
                 var note = $"Réservation {reservation.CustomerName} · {reservation.PartySize} couverts"
                            + (string.IsNullOrWhiteSpace(reservation.Note) ? "" : $" · {reservation.Note.Trim()}");
+                var paid = await db.Payments.AsNoTracking()
+                    .Where(p => p.ReservationId == reservationId && p.Status == PaymentStatus.Paid)
+                    .Select(p => new { p.Kind, p.Amount }).ToListAsync();
+                if (paid.Count > 0)
+                {
+                    var kinds = paid.Select(p => p.Kind == PaymentKind.Deposit ? "acompte" : "prépaiement").Distinct();
+                    note += $" · Déjà réglé en ligne : {paid.Sum(p => p.Amount).ToString("0.00", System.Globalization.CultureInfo.GetCultureInfo("fr-BE"))} € ({string.Join(" + ", kinds)})";
+                }
                 try
                 {
                     orderId = await _orders.CreateFromFrozenLinesAsync(OrderSource.Vitrine, reservation.CustomerName, note, lines, db, Now);
@@ -636,9 +680,9 @@ public partial class ReservationService(
         }
     }
 
-    /// <summary>Plafonds des saisies publiques.</summary>
     private static string Money(decimal amount) => amount.ToString("0.00", System.Globalization.CultureInfo.GetCultureInfo("fr-BE")) + "\u00A0€";
 
+    /// <summary>Plafonds des saisies publiques.</summary>
     private static void RequireLengths(string name, string mail, string phone, string? note)
     {
         if (name.Length > 120)

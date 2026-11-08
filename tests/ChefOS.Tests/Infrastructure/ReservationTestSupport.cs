@@ -21,13 +21,17 @@ public sealed class FaultyGateway(DemoPaymentGateway inner) : IPaymentGateway
     public Task? RefundBlock { get; set; }
     public int RefundCalls;
     public List<string> RefundKeys { get; } = [];
+    public List<decimal> RefundAmounts { get; } = [];
+    /// <summary>La lecture du statut échoue (passerelle injoignable).</summary>
+    public bool FailStatus { get; set; }
     public string Name => inner.Name;
 
     public Task<GatewayPayment> CreateAsync(decimal amount, string description, string redirectUrl, string webhookUrl,
         IDictionary<string, string> metadata, CancellationToken ct) =>
         FailCreate ? throw new InvalidOperationException("Mollie ne répond pas") : inner.CreateAsync(amount, description, redirectUrl, webhookUrl, metadata, ct);
 
-    public Task<GatewayStatus> GetStatusAsync(string id, CancellationToken ct) => inner.GetStatusAsync(id, ct);
+    public Task<GatewayStatus> GetStatusAsync(string id, CancellationToken ct) =>
+        FailStatus ? throw new InvalidOperationException("Mollie ne répond pas") : inner.GetStatusAsync(id, ct);
 
     public Task<decimal> GetRefundedAmountAsync(string id, CancellationToken ct) => inner.GetRefundedAmountAsync(id, ct);
 
@@ -35,7 +39,10 @@ public sealed class FaultyGateway(DemoPaymentGateway inner) : IPaymentGateway
     {
         Interlocked.Increment(ref RefundCalls);
         lock (RefundKeys)
+        {
             RefundKeys.Add(idempotencyKey);
+            RefundAmounts.Add(amount);
+        }
         if (RefundBlock is { } block)
             await block;
         if (FailRefund)
