@@ -504,4 +504,32 @@ public class VitrineServiceTests(PostgresFixture postgres)
         Assert.Equal(60, saved.Capacity);
         Assert.Equal(new TimeOnly(18, 0), saved.StartLocal);
     }
+
+    [Fact]
+    public async Task SaveSchedules_UsesTheCurrentRestaurantsTimeZone_WhenAnotherRestaurantSharesTheDatabase()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var auckland = await TestData.CreateRestaurantAsync(options, "Auckland");
+        var brussels = await TestData.CreateRestaurantAsync(options, "Bruxelles");
+        var aucklandService = CreateService(options, auckland);
+        var brusselsService = CreateService(options, brussels);
+        await aucklandService.SaveProfileAsync(ValidInput(i => i with { TimeZoneId = "Pacific/Auckland" }));
+        await brusselsService.SaveProfileAsync(ValidInput(i => i with { TimeZoneId = "Europe/Brussels" }));
+
+        // Le même instant tombe un vendredi à 22:30 à Bruxelles et un samedi à 10:30 à Auckland.
+        var lateFriday = new DateTime(2026, 11, 6, 21, 30, 0, DateTimeKind.Utc);
+        foreach (var (service, restaurant) in new[] { (aucklandService, auckland), (brusselsService, brussels) })
+        {
+            await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Soir", 19, 23)]);
+            await AddReservationAsync(options, restaurant, "Soir", lateFriday);
+        }
+
+        // Bruxelles : la réservation est un vendredi, le service du vendredi ne peut pas changer de nom.
+        await Assert.ThrowsAsync<DomainValidationException>(() => brusselsService.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Dîner", 19, 23)]));
+        // Auckland : la même réservation est un samedi, le service du vendredi peut changer de nom.
+        await aucklandService.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Dîner", 19, 23)]);
+
+        Assert.Equal("Soir", (await brusselsService.GetSchedulesAsync()).Single().Name);
+        Assert.Equal("Dîner", (await aucklandService.GetSchedulesAsync()).Single().Name);
+    }
 }

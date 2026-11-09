@@ -321,10 +321,10 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory, 
         }
 
         await using var db = await factory.CreateDbContextAsync();
-        await RequireProfileAsync(db, track: false);
+        var profile = await RequireProfileAsync(db, track: false);
 
         await using var transaction = await db.Database.BeginTransactionAsync();
-        await RefuseDisappearingServicesWithBookingsAsync(db, normalized);
+        await RefuseDisappearingServicesWithBookingsAsync(db, profile, normalized);
         await db.ServiceSchedules.ExecuteDeleteAsync();
         db.ServiceSchedules.AddRange(normalized.Select(s => new ServiceSchedule
         {
@@ -335,7 +335,7 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory, 
         await transaction.CommitAsync();
     }
 
-    private async Task RefuseDisappearingServicesWithBookingsAsync(ChefOsDbContext db, List<ServiceScheduleInput> next)
+    private async Task RefuseDisappearingServicesWithBookingsAsync(ChefOsDbContext db, VitrineProfile profile, List<ServiceScheduleInput> next)
     {
         var kept = next.Select(s => (s.DayOfWeek, s.Name)).ToHashSet();
         var disappearing = (await db.ServiceSchedules.AsNoTracking().Select(s => new { s.DayOfWeek, s.Name }).ToListAsync())
@@ -345,9 +345,9 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory, 
             return;
 
         var now = _clock.GetUtcNow().UtcDateTime;
-        var pendingMinutes = await db.VitrineProfiles.Select(p => (int?)p.PendingPaymentMinutes).FirstOrDefaultAsync() ?? new VitrineProfile().PendingPaymentMinutes;
-        var cutoff = now.AddMinutes(-pendingMinutes);
-        var timeZone = await db.Restaurants.Select(r => r.TimeZoneId).FirstAsync();
+        var cutoff = now.AddMinutes(-profile.PendingPaymentMinutes);
+        // Restaurants n'a pas de filtre par restaurant : on filtre explicitement sur le restaurant courant.
+        var timeZone = await db.Restaurants.Where(r => r.Id == profile.RestaurantId).Select(r => r.TimeZoneId).FirstAsync();
         var names = disappearing.Select(s => s.Name).Distinct().ToList();
 
         var upcoming = await db.Reservations.AsNoTracking()

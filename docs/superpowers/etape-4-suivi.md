@@ -28,10 +28,10 @@ L'utilisateur a validé le parcours client (maquette) et l'approche de la biblio
   - Couleur d'accent contrastée (AA).
   - `noindex` sur la page de réservation et la page de paiement démo.
 - **Arrivée en salle.** La commande en cuisine est créée à partir des plats pré-commandés aux prix figés, avec le nom de chaque convive en note.
+- **Fuseau horaire des services (corrigé après la revue finale).** Le contrôle « service avec réservations à venir » lit maintenant le fuseau du restaurant courant, et non celui d'un autre restaurant de la base. Un test avec deux restaurants dans la même base (Bruxelles et Auckland) le vérifie.
 
 ## À reprendre
 
-- **À corriger rapidement.** `VitrineService.cs:350` lit le fuseau horaire sans filtrer sur le restaurant courant. Le contrôle « service avec réservations à venir » peut donc utiliser le fuseau d'un autre restaurant (correction d'une ligne).
 - **Vérification automatique des paiements dans le back.**
   - Elle n'est pas bornée dans le temps : prévoir un délai global de 3 à 5 s et traiter d'abord les paiements les plus récents.
   - Ajouter un index sur (`RestaurantId`, `GatewayPaymentId`).
