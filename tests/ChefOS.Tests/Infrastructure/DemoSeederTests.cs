@@ -31,6 +31,12 @@ public class DemoSeederTests(PostgresFixture postgres)
     /// Hôte minimal : infrastructure branchée sur la base de test, Identity, restaurant courant fixe (aucun, comme le fait le seeder)
     /// et section <c>Demo</c> fournie par la configuration, comme dans une vraie application.
     /// </summary>
+    /// <summary>
+    /// L'instant fixe de tous les tests du seed : 23 h 30 UTC le 12/11/2026, soit 00 h 30 le 13/11 à Bruxelles. Les jours UTC et bruxellois diffèrent,
+    /// donc chaque test prouve aussi que le seed et les attentes comptent les jours dans le fuseau du restaurant.
+    /// </summary>
+    internal static readonly DateTime Now = new(2026, 11, 12, 23, 30, 0, DateTimeKind.Utc);
+
     internal static ServiceProvider BuildHost(
         DbContextOptions<ChefOsDbContext> options, string password = DemoPassword, Action<IdentityBuilder>? configureIdentity = null,
         TimeProvider? clock = null)
@@ -51,9 +57,8 @@ public class DemoSeederTests(PostgresFixture postgres)
         services.AddLogging();
         services.AddSingleton<IConfiguration>(configuration);
         services.AddSingleton<ITenantContext>(new FixedTenantContext(null));
-        // L'horloge injectée prime : l'infrastructure n'enregistre TimeProvider.System que si aucune n'est déjà là.
-        if (clock is not null)
-            services.AddSingleton(clock);
+        // L'horloge injectée (par défaut l'instant fixe) prime : l'infrastructure n'enregistre TimeProvider.System que si aucune n'est déjà là.
+        services.AddSingleton(clock ?? new FakeTimeProvider(new DateTimeOffset(Now)));
         services.AddChefOsInfrastructure(connectionString);
         services.AddChefOsDemoSeeder();
         var identity = services.AddIdentityCore<ApplicationUser>().AddEntityFrameworkStores<ChefOsDbContext>();
@@ -170,7 +175,7 @@ public class DemoSeederTests(PostgresFixture postgres)
         var ingredients = await db.Ingredients.ToListAsync();
         var prices = await db.IngredientPrices.ToListAsync();
 
-        var now = DateTime.UtcNow;
+        var now = Now;
         Assert.All(prices, p =>
         {
             Assert.Equal(DateTimeKind.Utc, p.Date.Kind);
@@ -357,8 +362,8 @@ public class DemoSeederTests(PostgresFixture postgres)
 
         // Le paiement en attente est plus vieux que le délai : il expirera à la première lecture.
         var pending = Assert.Single(reservations, r => r.Status == ReservationStatus.PendingPayment);
-        Assert.True(DateTime.UtcNow - pending.CreatedAt > TimeSpan.FromMinutes(30));
-        Assert.True(pending.StartsAtUtc > DateTime.UtcNow);
+        Assert.True(Now - pending.CreatedAt > TimeSpan.FromMinutes(30));
+        Assert.True(pending.StartsAtUtc > Now);
 
         Assert.All(reservations.Where(r => r.Status != ReservationStatus.Cancelled).GroupBy(r => (r.ServiceName, r.StartsAtUtc.Date)),
             g => Assert.True(g.Sum(r => r.PartySize) < 40, $"{g.Key} : {g.Sum(r => r.PartySize)} couverts"));
@@ -373,13 +378,13 @@ public class DemoSeederTests(PostgresFixture postgres)
         var restaurantId = await GetBistroIdAsync(options);
 
         var factory = new TestContextFactory(options, restaurantId);
-        var clock = TimeProvider.System;
+        var clock = new FakeTimeProvider(new DateTimeOffset(Now));
         var gateway = new DemoPaymentGateway("https://vitrine.test", factory, clock);
         var email = new RecordingEmailSender();
         var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance, email);
         var service = new ReservationService(factory, clock, payments, email);
 
-        var today = RestaurantClock.Today(DateTime.UtcNow, "Europe/Brussels");
+        var today = RestaurantClock.Today(Now, "Europe/Brussels");
         var daysWithSlots = 0;
         for (var i = 0; i <= 8; i++)
             if ((await service.GetSlotsAsync(today.AddDays(i), 2)).Count > 0)
@@ -460,7 +465,7 @@ public class DemoSeederTests(PostgresFixture postgres)
     // ── Activité : ventes, commandes, pertes, tickets et inventaires ─────────
 
     // Le jour d'aujourd'hui du restaurant (Bruxelles), pas du serveur : entre 22 h et minuit UTC, c'est déjà demain à Bruxelles.
-    private static DateTime Today => DateTime.SpecifyKind(RestaurantClock.Today(DateTime.UtcNow, "Europe/Brussels").ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc);
+    private static DateTime Today => DateTime.SpecifyKind(RestaurantClock.Today(Now, "Europe/Brussels").ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc);
 
     /// <summary>Les statistiques des 4 dernières semaines (J-27 à J), la période par défaut de la page /stats.</summary>
     private async Task<(DbContextOptions<ChefOsDbContext> Options, int RestaurantId, PeriodStats Stats)> SeedAndReadLastFourWeeksAsync()
@@ -544,7 +549,7 @@ public class DemoSeederTests(PostgresFixture postgres)
         Assert.InRange(orders.Count, 14, 18);
         Assert.Equal(Enumerable.Range(1, orders.Count), orders.Select(o => o.Number));            // numéros séquentiels 1..n
         Assert.Equal(orders.OrderBy(o => o.CreatedAt).Select(o => o.Number), orders.Select(o => o.Number));
-        var now = DateTime.UtcNow;
+        var now = Now;
         Assert.All(orders, o =>
         {
             Assert.InRange(o.CreatedAt, Today.AddDays(-6), now);
@@ -625,24 +630,16 @@ public class DemoSeederTests(PostgresFixture postgres)
     [Fact]
     public async Task Seed_EmptyDatabase_ClosesTheCountsAtTheEndOfTheirDay()
     {
-        var before = DateTime.UtcNow;
         var (options, restaurantId, _) = await SeedAndReadLastFourWeeksAsync();
-        var after = DateTime.UtcNow;
         await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
         var counts = await db.StockCounts.OrderBy(c => c.Date).ToListAsync();
 
         // Un inventaire se compte en fin de journée, après le service et les livraisons : celui d'il y a 28 jours est clôturé à 23 h 30, heure de Bruxelles, son jour.
-        Assert.Equal(EndOfDay(Today.AddDays(-28)), counts[0].ClosedAt);
+        Assert.Equal(new DateTime(2026, 10, 16, 21, 30, 0, DateTimeKind.Utc), counts[0].ClosedAt);   // heure d'été : 23 h 30 = 21 h 30 UTC
 
-        // Celui d'aujourd'hui l'est à 23 h 30 aussi, ou à l'instant du démarrage si la soirée n'est pas finie (jamais dans le futur).
-        var endOfToday = EndOfDay(Today);
-        Assert.InRange(counts[1].ClosedAt!.Value, Min(endOfToday, before.AddMinutes(-1)), Min(endOfToday, after.AddMinutes(-1)));
+        // Celui d'aujourd'hui (13/11) devrait l'être à 23 h 30 aussi, mais il est 00 h 30 : il est clôturé à l'instant du démarrage moins une minute (jamais dans le futur).
+        Assert.Equal(Now.AddMinutes(-1), counts[1].ClosedAt);
     }
-
-    private static DateTime EndOfDay(DateTime day) =>
-        RestaurantClock.ToUtc(DateOnly.FromDateTime(day), new TimeOnly(23, 30), "Europe/Brussels");
-
-    private static DateTime Min(DateTime a, DateTime b) => a <= b ? a : b;
 
     [Fact]
     public async Task Seed_EmptyDatabase_ClosesTwoCountsOfTheSameIngredients_BracketingAppliedMetroReceipts()
@@ -658,7 +655,7 @@ public class DemoSeederTests(PostgresFixture postgres)
         {
             Assert.Equal(StockCountStatus.Cloture, c.Status);
             Assert.NotNull(c.ClosedAt);
-            Assert.True(c.ClosedAt <= DateTime.UtcNow);
+            Assert.True(c.ClosedAt <= Now);
             Assert.True(c.Lines.Count >= 20);
             Assert.All(c.Lines, l =>
             {
