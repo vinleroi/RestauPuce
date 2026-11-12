@@ -10,6 +10,7 @@
 @using ChefOS.Infrastructure.Services
 
 @inject ReceiptService ReceiptService
+@inject RestaurantTime RestaurantTime
 @inject IngredientService IngredientService
 @inject SupplierService SupplierService
 @inject IDialogService DialogService
@@ -80,7 +81,7 @@ else
     @if (applied)
     {
         <MudAlert Severity="Severity.Info" Class="mb-4">
-            Ticket appliqué@(_receipt.AppliedAt is { } appliedAt ? $" le {appliedAt.ToLocalTime().ToString("d", Ui.Fr)}" : ""). Il n'est plus modifiable.
+            Ticket appliqué@(_receipt.AppliedAt is { } appliedAt ? $" le {_calendar!.ToLocal(appliedAt).ToString("d", Ui.Fr)}" : ""). Il n'est plus modifiable.
         </MudAlert>
     }
     else if (needsReading)
@@ -364,12 +365,14 @@ else
 
     private string FileUrl => ReceiptFileEndpoint.RouteFor(Id);
 
-    // Même plafond que ReceiptService : demain (UTC) est permis, selon le fuseau du chef il peut déjà y être ; une date plus lointaine serait refusée.
-    private static DateTime LatestReceiptDate => DateTime.UtcNow.Date.AddDays(1);
+    private RestaurantCalendar? _calendar;
+
+    // Même plafond que ReceiptService : demain (jour du restaurant) est permis ; une date plus lointaine serait refusée.
+    private DateTime LatestReceiptDate => _calendar is null ? default : _calendar.Today.AddDays(1);
 
     // Le jour du ticket est un jour de calendrier (minuit UTC) : il ne se convertit pas en heure locale.
     private string TicketDate =>
-        (_form.ReceiptDate ?? _receipt?.CreatedAt.ToLocalTime())?.ToString("d", Ui.Fr) ?? "";
+        (_form.ReceiptDate ?? (_receipt is null || _calendar is null ? null : _calendar.ToLocal(_receipt.CreatedAt)))?.ToString("d", Ui.Fr) ?? "";
 
     protected override async Task OnParametersSetAsync()
     {
@@ -377,6 +380,7 @@ else
         if (_hasLoaded && _loadedId == Id)
             return;
 
+        _calendar = await RestaurantTime.GetAsync();
         _hasLoaded = true;
         _loadedId = Id;
         _applyResult = null;

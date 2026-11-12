@@ -5,6 +5,7 @@
 @using ChefOS.Infrastructure.Services
 
 @inject InventoryService InventoryService
+@inject RestaurantTime RestaurantTime
 @inject IDialogService DialogService
 @inject ISnackbar Snackbar
 @inject NavigationManager Navigation
@@ -75,16 +76,23 @@
 </MudText>
 
 @code {
-    // Les inventaires peuvent être datés de demain (UTC) : selon le fuseau du chef, demain peut déjà y être.
-    private static DateTime Latest => DateTime.UtcNow.Date.AddDays(1);
+    // Les inventaires peuvent être datés de demain (jour du restaurant), comme l'accepte InventoryService.
+    private DateTime Latest => _calendar is null ? default : _calendar.Today.AddDays(1);
+
+    private RestaurantCalendar? _calendar;
 
     private IReadOnlyList<StockCountSummary> _counts = [];
-    private DateTime? _newDate = DateTime.UtcNow.Date;
+    private DateTime? _newDate;
     private string? _newNote;
     private bool _loading = true;
     private bool _busy;
 
-    protected override Task OnInitializedAsync() => LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        _calendar = await RestaurantTime.GetAsync();
+        _newDate = _calendar.Today;
+        await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
@@ -107,7 +115,7 @@
         _busy = true;
         try
         {
-            var id = await InventoryService.CreateAsync((_newDate ?? DateTime.UtcNow).Date, _newNote);
+            var id = await InventoryService.CreateAsync((_newDate ?? _calendar!.Today).Date, _newNote);
             Navigation.NavigateTo($"/inventory/{id}");
         }
         catch (DomainValidationException e)

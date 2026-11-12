@@ -5,6 +5,7 @@ using ChefOS.Core.Receipts;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
 using ChefOS.Core.Vitrine;
+using ChefOS.Infrastructure.Services;
 
 namespace ChefOS.Tests.Back;
 
@@ -353,43 +354,43 @@ public class UiTests
     public void AdvanceLabel_NamesTheNextStep_AndIsAbsentOnceTheOrderIsFinished(OrderStatus status, string? expected) =>
         Assert.Equal(expected, Ui.AdvanceLabel(status));
 
-    // Un fuseau fixe à UTC+1 (sans heure d'été) rend les heures locales indépendantes de la machine.
-    private static readonly TimeSpan Plus1 = TimeSpan.FromHours(1);
-    private static readonly TimeZoneInfo PlusOne = TimeZoneInfo.CreateCustomTimeZone("test+1", Plus1, "test+1", "test+1");
+    // Bruxelles en novembre : UTC+1 (heure d'hiver), en octobre UTC+2 (heure d'été). Le jour affiché est un jour du restaurant.
+    private static readonly RestaurantCalendar Brussels = new("Europe/Brussels", new DateTime(2026, 11, 3, 12, 0, 0, DateTimeKind.Utc));
     private static readonly DateTime Today = new(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc);
 
     [Theory]
-    [InlineData(2026, 11, 3, 0, 0, "01:00")]       // minuit UTC : début du jour affiché
+    [InlineData(2026, 11, 2, 23, 0, "00:00")]      // minuit à Bruxelles : début du jour affiché
     [InlineData(2026, 11, 3, 18, 40, "19:40")]
     [InlineData(2026, 11, 3, 23, 59, "00:59")]
     public void OrderTimeText_OfTheDisplayedDay_IsJustTheLocalTime(int year, int month, int day, int hour, int minute, string expected) =>
-        Assert.Equal(expected, Ui.OrderTimeText(new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Utc), Today, PlusOne));
+        Assert.Equal(expected, Ui.OrderTimeText(new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Utc), Today, Brussels));
 
     [Theory]
     [InlineData(2026, 11, 2, 22, 40, "hier 23:40")]
     [InlineData(2026, 11, 2, 0, 0, "hier 01:00")]
-    [InlineData(2026, 11, 2, 23, 59, "hier 00:59")]
+    [InlineData(2026, 11, 1, 23, 0, "hier 00:00")]
     public void OrderTimeText_OfTheDayBefore_SaysYesterday(int year, int month, int day, int hour, int minute, string expected) =>
-        Assert.Equal(expected, Ui.OrderTimeText(new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Utc), Today, PlusOne));
+        Assert.Equal(expected, Ui.OrderTimeText(new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Utc), Today, Brussels));
 
     [Theory]
     [InlineData(2026, 11, 1, 22, 40, "01/11 23:40")]
-    [InlineData(2026, 10, 12, 8, 5, "12/10 09:05")]
+    [InlineData(2026, 10, 12, 8, 5, "12/10 10:05")]    // heure d'été : UTC+2
     [InlineData(2026, 10, 31, 23, 30, "01/11 00:30")]   // le jour affiché est celui de l'heure locale
     [InlineData(2025, 12, 31, 12, 0, "31/12 13:00")]
     public void OrderTimeText_OfAnEarlierDay_ShowsTheDateAndTheTime(int year, int month, int day, int hour, int minute, string expected) =>
-        Assert.Equal(expected, Ui.OrderTimeText(new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Utc), Today, PlusOne));
+        Assert.Equal(expected, Ui.OrderTimeText(new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Utc), Today, Brussels));
 
     [Fact]
     public void OrderTimeText_ReadsAnUnspecifiedCreationDateAsUtc() =>
-        Assert.Equal("hier 23:40", Ui.OrderTimeText(new DateTime(2026, 11, 2, 22, 40, 0, DateTimeKind.Unspecified), Today, PlusOne));
+        Assert.Equal("hier 23:40", Ui.OrderTimeText(new DateTime(2026, 11, 2, 22, 40, 0, DateTimeKind.Unspecified), Today, Brussels));
 
     [Fact]
-    public void IsFromEarlierDay_IsTrueBeforeTheDisplayedUtcDayOnly()
+    public void IsFromEarlierDay_IsTrueBeforeTheDisplayedRestaurantDayOnly()
     {
-        Assert.True(Ui.IsFromEarlierDay(Today.AddTicks(-1), Today));
-        Assert.False(Ui.IsFromEarlierDay(Today, Today));
-        Assert.False(Ui.IsFromEarlierDay(Today.AddHours(15), Today.AddHours(15)));   // seul le jour du tableau compte, pas l'heure
+        // 22 h 59 UTC la veille : 23 h 59 à Bruxelles, encore la veille ; 23 h 00 UTC : minuit, le jour affiché commence.
+        Assert.True(Ui.IsFromEarlierDay(new DateTime(2026, 11, 2, 22, 59, 0, DateTimeKind.Utc), Today, Brussels));
+        Assert.False(Ui.IsFromEarlierDay(new DateTime(2026, 11, 2, 23, 0, 0, DateTimeKind.Utc), Today, Brussels));
+        Assert.False(Ui.IsFromEarlierDay(Today.AddHours(15), Today.AddHours(15), Brussels));   // seul le jour du tableau compte, pas l'heure
     }
 
     [Theory]

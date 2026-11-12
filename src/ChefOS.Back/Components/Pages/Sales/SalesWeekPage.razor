@@ -6,6 +6,7 @@
 @using ChefOS.Infrastructure.Services
 
 @inject SalesService SalesService
+@inject RestaurantTime RestaurantTime
 @inject RecipeService RecipeService
 @inject IDialogService DialogService
 @inject ISnackbar Snackbar
@@ -174,21 +175,24 @@ else
     private bool _busy;
     private bool _showDetail;
     private DateTime? _pickedDate;
-    private SalesGridForm _form = SalesGridForm.From(new SalesWeek(DateTime.UtcNow.Date, []), new Dictionary<int, decimal>());
+    // Grille vide en attendant le premier chargement : la semaine courante dépend du jour du restaurant, connu seulement une fois le calendrier lu.
+    private SalesGridForm _form = SalesGridForm.From(new SalesWeek(new DateTime(2000, 1, 3, 0, 0, 0, DateTimeKind.Utc), []), new Dictionary<int, decimal>());
+    private bool _weekKnown;
 
-    private string WeekLabel =>
+    private string WeekLabel => !_weekKnown ? "" :
         $"Semaine du {_form.Monday:dd/MM/yyyy} au {_form.DateOf(SalesGridForm.DayCount - 1):dd/MM/yyyy}";
 
-    protected override Task OnInitializedAsync() => LoadAsync(DateTime.UtcNow);
+    protected override Task OnInitializedAsync() => LoadAsync(null);
 
-    private async Task LoadAsync(DateTime anyDay, bool showLoading = true)
+    // anyDay : un jour de la semaine à afficher ; null pour la semaine d'aujourd'hui (jour du restaurant).
+    private async Task LoadAsync(DateTime? anyDay, bool showLoading = true)
     {
         if (showLoading)
             _loading = true;
 
         try
         {
-            var week = await SalesService.GetWeekAsync(anyDay);
+            var week = await SalesService.GetWeekAsync(anyDay ?? (await RestaurantTime.GetAsync()).Today);
 
             // La grille porte les prix ; la TVA des plats vient du livre de recettes.
             var book = await RecipeService.LoadBookAsync();
@@ -197,6 +201,7 @@ else
                 .ToDictionary(r => r.Id, r => r.VatRate!.Value);
 
             _form = SalesGridForm.From(week, vatRates);
+            _weekKnown = true;
             _pickedDate = _form.Monday;
 
             // Le détail s'ouvre seul quand la semaine en contient ; il ne se referme jamais sans que le chef le décide.
@@ -220,7 +225,7 @@ else
 
     private Task NextWeekAsync() => GoToWeekAsync(_form.Monday.AddDays(7));
 
-    private Task ThisWeekAsync() => GoToWeekAsync(DateTime.UtcNow);
+    private Task ThisWeekAsync() => GoToWeekAsync(null);
 
     private async Task PickDateAsync(DateTime? date)
     {
@@ -235,7 +240,7 @@ else
     }
 
     // Changer de semaine abandonne les quantités saisies mais pas encore enregistrées : on demande d'abord.
-    private async Task GoToWeekAsync(DateTime anyDay)
+    private async Task GoToWeekAsync(DateTime? anyDay)
     {
         if (_busy)
             return;

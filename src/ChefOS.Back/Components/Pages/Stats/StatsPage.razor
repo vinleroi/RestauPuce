@@ -8,6 +8,7 @@
 @using ChefOS.Infrastructure.Services
 
 @inject StatsService StatsService
+@inject RestaurantTime RestaurantTime
 @inject InventoryService InventoryService
 @inject RestaurantService RestaurantService
 @inject ITenantContext Tenant
@@ -48,7 +49,7 @@
     @if (_stats is not null)
     {
         <MudText Typo="Typo.body2" Class="mt-2" Style="@Muted">
-            Période : @_period.Text (@(_period.Days == 1 ? "1 jour" : $"{_period.Days} jours")) · jours UTC · chiffres hors TVA
+            Période : @_period.Text (@(_period.Days == 1 ? "1 jour" : $"{_period.Days} jours")) · jours du restaurant · chiffres hors TVA
         </MudText>
     }
 </MudPaper>
@@ -410,7 +411,7 @@
 
         _betweenCounts = StatsPeriod.BetweenLastCounts(await InventoryService.ListAsync());
 
-        _period = StatsPeriod.Of(_preset, DateTime.UtcNow);
+        _period = StatsPeriod.Of(_preset, (await RestaurantTime.GetAsync()).Today);
         await LoadAsync(_period);
     }
 
@@ -435,7 +436,7 @@
             return;
         }
 
-        await LoadAsync(StatsPeriod.Of(preset, DateTime.UtcNow));
+        await LoadAsync(StatsPeriod.Of(preset, (await RestaurantTime.GetAsync()).Today));
     }
 
     private Task SetCustomFromAsync(DateTime? date)

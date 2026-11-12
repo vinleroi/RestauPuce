@@ -4,6 +4,7 @@
 @using ChefOS.Infrastructure.Services
 
 @inject WasteService WasteService
+@inject RestaurantTime RestaurantTime
 @inject RecipeService RecipeService
 @inject ISnackbar Snackbar
 
@@ -64,15 +65,17 @@
     // Clavier à virgule sur mobile (la valeur par défaut de MudNumericField est « numeric », sans séparateur décimal sur iOS).
     private const InputMode DecimalInput = InputMode.@decimal;
 
-    // Même plafond que WasteService : demain (UTC) est permis, selon le fuseau du chef il peut déjà y être ; une date plus lointaine serait refusée.
-    private static DateTime LatestDate => DateTime.UtcNow.Date.AddDays(1);
+    // Même plafond que WasteService : demain (jour du restaurant) est permis ; une date plus lointaine serait refusée.
+    private DateTime LatestDate => _calendar is null ? default : _calendar.Today.AddDays(1);
+
+    private RestaurantCalendar? _calendar;
 
     private IReadOnlyList<WasteTarget> _targets = [];
     private WasteTarget? _target;
     private decimal? _quantity;
     private MeasureUnit _unit = MeasureUnit.Kg;
     private WasteReason _reason = WasteReason.Perime;
-    private DateTime? _date = DateTime.UtcNow.Date;
+    private DateTime? _date;
     private string? _note;
     private bool _loading = true;
     private bool _saving;
@@ -81,6 +84,8 @@
     {
         try
         {
+            _calendar = await RestaurantTime.GetAsync();
+            _date = _calendar.Today;
             _targets = WasteTarget.Candidates(await RecipeService.LoadBookAsync());
         }
         finally
@@ -115,7 +120,7 @@
         try
         {
             var input = new WasteInput(
-                (_date ?? DateTime.UtcNow).Date,
+                (_date ?? _calendar!.Today).Date,
                 _target?.Kind == WasteTargetKind.Ingredient ? _target.Id : null,
                 _target is { Kind: not WasteTargetKind.Ingredient } ? _target.Id : null,
                 _quantity ?? 0m,

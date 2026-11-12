@@ -4,6 +4,7 @@ using ChefOS.Core.Restaurants;
 using ChefOS.Core.Units;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Identity;
+using ChefOS.Infrastructure.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -18,7 +19,7 @@ namespace ChefOS.Infrastructure.Seeding;
 /// rendement de 1 à 100, plats avec prix et TVA, préparations avec quantité produite, une seule source par ligne, aucune boucle,
 /// prix figés des ventes, commandes numérotées, tickets appliqués avec le prix de chaque ligne ; vitrine publiée, carte des vins et réservations (voir <see cref="DemoVitrine"/>).
 /// </summary>
-public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<ChefOsDbContext> options, IOptions<DemoOptions> demo)
+public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<ChefOsDbContext> options, IOptions<DemoOptions> demo, TimeProvider clock)
 {
     private const string BistroName = "Le Petit Bistro";
     private const string BistroSlug = "le-petit-bistro";
@@ -41,6 +42,8 @@ public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<Che
         if (await global.Restaurants.AnyAsync(ct))
             return;
 
+        // Un seul instant pour tout le seed : l'horloge injectée, jamais celle du serveur.
+        var now = clock.GetUtcNow().UtcDateTime;
         var user = await GetOrCreateDemoUserAsync();
 
         var restaurant = new Restaurant
@@ -49,7 +52,7 @@ public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<Che
             Slug = BistroSlug,
             Address = "Rue Hors-Château 24, 4000 Liège",
             VatNumber = "BE0123.456.789",
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = now
         };
         global.Memberships.Add(new Membership { UserId = user.Id, Restaurant = restaurant, Role = MembershipRole.Owner });
         await global.SaveChangesAsync(ct);
@@ -60,7 +63,7 @@ public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<Che
             EnsureSucceeded(await users.UpdateAsync(user), "Impossible de sélectionner le restaurant de démo");
 
             await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurant.Id));
-            await SeedBusinessDataAsync(db, DateTime.UtcNow, ct);
+            await SeedBusinessDataAsync(db, now, ct);
         }
         catch
         {
@@ -260,6 +263,9 @@ public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<Che
             ["Huile de tournesol"] = [(84, 2.60m), (56, 2.40m), (28, 2.30m)]
         };
 
+        // Une entrée manuelle est un instant ; une entrée de ticket est une étiquette de jour (le jour local du restaurant, à minuit UTC).
+        var calendar = new RestaurantCalendar(DemoActivity.TimeZoneId, now);
+
         void Record(Ingredient ingredient, DateTime date, decimal pricePerBaseUnit, PriceSource source) =>
             db.IngredientPrices.Add(new IngredientPrice
             {
@@ -278,7 +284,7 @@ public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<Che
                 continue;
 
             foreach (var (daysAgo, price) in earlier)
-                Record(ingredient, now.AddDays(-daysAgo), UnitConverter.PricePerBaseFromDisplay(price, ingredient.BaseUnit), PriceSource.Receipt);
+                Record(ingredient, calendar.DayOf(now.AddDays(-daysAgo)), UnitConverter.PricePerBaseFromDisplay(price, ingredient.BaseUnit), PriceSource.Receipt);
         }
     }
 

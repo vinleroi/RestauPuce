@@ -16,6 +16,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 
 namespace ChefOS.Tests.Infrastructure;
 
@@ -31,7 +32,8 @@ public class DemoSeederTests(PostgresFixture postgres)
     /// et section <c>Demo</c> fournie par la configuration, comme dans une vraie application.
     /// </summary>
     internal static ServiceProvider BuildHost(
-        DbContextOptions<ChefOsDbContext> options, string password = DemoPassword, Action<IdentityBuilder>? configureIdentity = null)
+        DbContextOptions<ChefOsDbContext> options, string password = DemoPassword, Action<IdentityBuilder>? configureIdentity = null,
+        TimeProvider? clock = null)
     {
         string connectionString;
         using (var db = new ChefOsDbContext(options, new FixedTenantContext(null)))
@@ -49,6 +51,9 @@ public class DemoSeederTests(PostgresFixture postgres)
         services.AddLogging();
         services.AddSingleton<IConfiguration>(configuration);
         services.AddSingleton<ITenantContext>(new FixedTenantContext(null));
+        // L'horloge injectée prime : l'infrastructure n'enregistre TimeProvider.System que si aucune n'est déjà là.
+        if (clock is not null)
+            services.AddSingleton(clock);
         services.AddChefOsInfrastructure(connectionString);
         services.AddChefOsDemoSeeder();
         var identity = services.AddIdentityCore<ApplicationUser>().AddEntityFrameworkStores<ChefOsDbContext>();
@@ -178,6 +183,40 @@ public class DemoSeederTests(PostgresFixture postgres)
 
         // Le prix courant d'un ingrédient est son prix le plus récent.
         Assert.All(ingredients, i => Assert.Equal(i.CurrentPricePerBaseUnit, byIngredient[i.Id][^1].PricePerBaseUnit));
+    }
+
+    [Fact]
+    public async Task Seed_UsesTheInjectedClock()
+    {
+        // 23 h 30 UTC le 12/11 : il est déjà 00 h 30 le 13/11 à Bruxelles.
+        var now = new DateTimeOffset(2026, 11, 12, 23, 30, 0, TimeSpan.Zero);
+        var options = await postgres.CreateDatabaseAsync();
+        await using var provider = BuildHost(options, clock: new FakeTimeProvider(now));
+
+        await SeedAsync(provider);
+
+        var restaurantId = await GetBistroIdAsync(options);
+        await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
+        var instant = now.UtcDateTime;
+        var today = new DateTime(2026, 11, 13, 0, 0, 0, DateTimeKind.Utc);
+
+        // La commande la plus récente tombe le 13/11, jour local de Bruxelles (et non le 12/11 UTC).
+        var latestOrder = await db.Orders.MaxAsync(o => o.CreatedAt);
+        Assert.Equal(new DateOnly(2026, 11, 13), RestaurantClock.ToLocal(latestOrder, "Europe/Brussels").Date);
+
+        // Rien n'est postérieur à l'instant fixé : instants et étiquettes de jour.
+        Assert.True(await db.Orders.MaxAsync(o => o.StatusChangedAt) <= instant);
+        Assert.True(await db.WasteEntries.MaxAsync(w => w.CreatedAt) <= instant);
+        Assert.True(await db.Receipts.MaxAsync(r => r.CreatedAt) <= instant);
+        Assert.True(await db.Receipts.MaxAsync(r => r.AppliedAt!.Value) <= instant);
+        Assert.True(await db.StockCounts.MaxAsync(c => c.ClosedAt!.Value) <= instant);
+        Assert.True(await db.IngredientPrices.MaxAsync(p => p.Date) <= today);
+        Assert.True(await db.SalesEntries.MaxAsync(e => e.Date) <= today);
+        Assert.True(await db.WasteEntries.MaxAsync(w => w.Date) <= today);
+        Assert.True(await db.Receipts.MaxAsync(r => r.ReceiptDate!.Value) <= today);
+        Assert.Equal(today, await db.StockCounts.MaxAsync(c => c.Date));
+        Assert.True(await db.Reservations.MaxAsync(r => r.CreatedAt) <= instant);
+        Assert.True((await db.Restaurants.IgnoreQueryFilters().SingleAsync(r => r.Id == restaurantId)).CreatedAt <= instant);
     }
 
     [Fact]
@@ -420,7 +459,8 @@ public class DemoSeederTests(PostgresFixture postgres)
 
     // ── Activité : ventes, commandes, pertes, tickets et inventaires ─────────
 
-    private static DateTime Today => DateTime.SpecifyKind(DateTime.UtcNow.Date, DateTimeKind.Utc);
+    // Le jour d'aujourd'hui du restaurant (Bruxelles), pas du serveur : entre 22 h et minuit UTC, c'est déjà demain à Bruxelles.
+    private static DateTime Today => DateTime.SpecifyKind(RestaurantClock.Today(DateTime.UtcNow, "Europe/Brussels").ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc);
 
     /// <summary>Les statistiques des 4 dernières semaines (J-27 à J), la période par défaut de la page /stats.</summary>
     private async Task<(DbContextOptions<ChefOsDbContext> Options, int RestaurantId, PeriodStats Stats)> SeedAndReadLastFourWeeksAsync()
@@ -591,13 +631,16 @@ public class DemoSeederTests(PostgresFixture postgres)
         await using var db = new ChefOsDbContext(options, new FixedTenantContext(restaurantId));
         var counts = await db.StockCounts.OrderBy(c => c.Date).ToListAsync();
 
-        // Un inventaire se compte en fin de journée, après le service et les livraisons : celui d'il y a 28 jours est clôturé à 23 h 30 son jour.
-        Assert.Equal(Today.AddDays(-28).AddHours(23).AddMinutes(30), counts[0].ClosedAt);
+        // Un inventaire se compte en fin de journée, après le service et les livraisons : celui d'il y a 28 jours est clôturé à 23 h 30, heure de Bruxelles, son jour.
+        Assert.Equal(EndOfDay(Today.AddDays(-28)), counts[0].ClosedAt);
 
         // Celui d'aujourd'hui l'est à 23 h 30 aussi, ou à l'instant du démarrage si la soirée n'est pas finie (jamais dans le futur).
-        var endOfToday = Today.AddHours(23).AddMinutes(30);
+        var endOfToday = EndOfDay(Today);
         Assert.InRange(counts[1].ClosedAt!.Value, Min(endOfToday, before.AddMinutes(-1)), Min(endOfToday, after.AddMinutes(-1)));
     }
+
+    private static DateTime EndOfDay(DateTime day) =>
+        RestaurantClock.ToUtc(DateOnly.FromDateTime(day), new TimeOnly(23, 30), "Europe/Brussels");
 
     private static DateTime Min(DateTime a, DateTime b) => a <= b ? a : b;
 

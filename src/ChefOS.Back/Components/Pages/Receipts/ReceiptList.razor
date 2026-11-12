@@ -3,6 +3,7 @@
 @using ChefOS.Infrastructure.Services
 
 @inject ReceiptService ReceiptService
+@inject RestaurantTime RestaurantTime
 
 <PageTitle>Tickets — ChefOS</PageTitle>
 
@@ -42,11 +43,13 @@
 @code {
     private IReadOnlyList<ReceiptSummary> _receipts = [];
     private bool _loading = true;
+    private RestaurantCalendar? _calendar;
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
+            _calendar = await RestaurantTime.GetAsync();
             _receipts = await ReceiptService.ListAsync();
         }
         finally
@@ -55,7 +58,7 @@
         }
     }
 
-    // Le jour du ticket est un jour de calendrier (minuit UTC) : il ne se convertit pas en heure locale. Sans date lue, on affiche le jour du téléversement.
-    private static string DateText(ReceiptSummary receipt) =>
-        (receipt.ReceiptDate ?? receipt.CreatedAt.ToLocalTime()).ToString("d", Ui.Fr);
+    // Le jour du ticket est un jour de calendrier (minuit UTC) : il ne se convertit pas en heure locale. Sans date lue, on affiche le jour du téléversement, à l'heure du restaurant.
+    private string DateText(ReceiptSummary receipt) =>
+        (receipt.ReceiptDate ?? _calendar!.ToLocal(receipt.CreatedAt)).ToString("d", Ui.Fr);
 }

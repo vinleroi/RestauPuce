@@ -4,6 +4,7 @@
 @using ChefOS.Infrastructure.Services
 
 @inject WasteService WasteService
+@inject RestaurantTime RestaurantTime
 @inject IDialogService DialogService
 @inject ISnackbar Snackbar
 
@@ -105,12 +106,14 @@
 
     private static readonly DialogOptions DialogOptions = new() { MaxWidth = MaxWidth.Small, FullWidth = true };
 
-    // Les pertes peuvent être datées de demain (UTC) : selon le fuseau du chef, demain peut déjà y être.
-    private static DateTime Latest => DateTime.UtcNow.Date.AddDays(1);
+    // Les pertes peuvent être datées de demain (jour du restaurant), comme l'accepte WasteService.
+    private DateTime Latest => _calendar is null ? default : _calendar.Today.AddDays(1);
+
+    private RestaurantCalendar? _calendar;
 
     private IReadOnlyList<WasteItem> _items = [];
-    private DateTime? _from = DateTime.UtcNow.Date.AddDays(-6);
-    private DateTime? _to = DateTime.UtcNow.Date;
+    private DateTime? _from;
+    private DateTime? _to;
     private bool _loading = true;
     private bool _busy;
 
@@ -119,7 +122,13 @@
 
     private bool TotalIncomplete => _items.Any(item => item.Cost is null || item.CostIncomplete);
 
-    protected override Task OnInitializedAsync() => LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        _calendar = await RestaurantTime.GetAsync();
+        _to = _calendar.Today;
+        _from = _to.Value.AddDays(-6);
+        await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
@@ -146,11 +155,12 @@
         return LoadAsync();
     }
 
-    private Task SetLastDaysAsync(int days)
+    private async Task SetLastDaysAsync(int days)
     {
-        _to = DateTime.UtcNow.Date;
+        _calendar = await RestaurantTime.GetAsync();
+        _to = _calendar.Today;
         _from = _to.Value.AddDays(1 - days);
-        return LoadAsync();
+        await LoadAsync();
     }
 
     private async Task AddAsync()

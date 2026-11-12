@@ -7,6 +7,7 @@
 @using ChefOS.Infrastructure.Services
 
 @inject IngredientService IngredientService
+@inject RestaurantTime RestaurantTime
 @inject SupplierService SupplierService
 @inject IDialogService DialogService
 @inject ISnackbar Snackbar
@@ -274,7 +275,7 @@ else
 
             _form = IngredientForm.From(ingredient);
             _usage = await IngredientService.GetUsageAsync(id);
-            BuildChart(await IngredientService.GetPriceHistoryAsync(id), ingredient.BaseUnit);
+            BuildChart(await IngredientService.GetPriceHistoryAsync(id), ingredient.BaseUnit, await RestaurantTime.GetAsync());
         }
         finally
         {
@@ -282,12 +283,13 @@ else
         }
     }
 
+    // Une entrée de ticket est un jour de calendrier, affiché tel quel ; une entrée manuelle est un instant, affiché à l'heure du restaurant.
     // Les prix de l'historique sont par unité de base : le graphique les affiche dans l'unité d'affichage (€/kg, €/l, €/pièce).
-    private void BuildChart(IReadOnlyList<IngredientPrice> history, BaseUnit unit)
+    private void BuildChart(IReadOnlyList<IngredientPrice> history, BaseUnit unit, RestaurantCalendar calendar)
     {
         var prices = history.Select(p => (double)UnitConverter.PriceDisplayFromBase(p.PricePerBaseUnit, unit)).ToArray();
         _chartOptions.YAxisTicks = prices.Length == 0 ? 1 : Ui.AxisTickStep(prices.Min(), prices.Max());
-        _chartLabels = history.Select(p => p.Date.ToLocalTime().ToString("d", Ui.Fr)).ToArray();
+        _chartLabels = history.Select(p => (p.Source == PriceSource.Manual ? calendar.ToLocal(p.Date) : p.Date).ToString("d", Ui.Fr)).ToArray();
         _series =
         [
             new ChartSeries<double>

@@ -5,6 +5,7 @@ using ChefOS.Core.Receipts;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
 using ChefOS.Core.Vitrine;
+using ChefOS.Infrastructure.Services;
 
 namespace ChefOS.Back.Components.Shared;
 
@@ -267,24 +268,24 @@ public static class Ui
     };
 
     /// <summary>
-    /// L'heure d'une commande sur le tableau, en heure locale : « 19:40 » pour une commande du jour affiché (<paramref name="dayUtc"/>, un jour UTC). Une commande encore à
-    /// traiter d'un jour précédent porte son jour : « hier 23:40 » si elle date de la veille (jour UTC, comme le tableau), sinon « 02/11 23:40 ».
+    /// L'heure d'une commande sur le tableau, à l'heure du restaurant : « 19:40 » pour une commande du jour affiché (<paramref name="day"/>, un jour du restaurant). Une commande encore à
+    /// traiter d'un jour précédent porte son jour : « hier 23:40 » si elle date de la veille (jour local), sinon « 02/11 23:40 ».
     /// </summary>
-    /// <param name="zone">Le fuseau d'affichage ; celui du serveur par défaut.</param>
-    public static string OrderTimeText(DateTime createdAtUtc, DateTime dayUtc, TimeZoneInfo? zone = null)
+    public static string OrderTimeText(DateTime createdAtUtc, DateTime day, RestaurantCalendar calendar)
     {
         var created = DateTime.SpecifyKind(createdAtUtc, DateTimeKind.Utc);
-        var local = TimeZoneInfo.ConvertTimeFromUtc(created, zone ?? TimeZoneInfo.Local);
+        var local = calendar.ToLocal(created);
         var time = local.ToString("HH:mm", Fr);
 
-        if (created >= dayUtc.Date)
+        if (local.Date >= day.Date)
             return time;
 
-        return created.Date == dayUtc.Date.AddDays(-1) ? $"hier {time}" : $"{local.ToString("dd/MM", Fr)} {time}";
+        return local.Date == day.Date.AddDays(-1) ? $"hier {time}" : $"{local.ToString("dd/MM", Fr)} {time}";
     }
 
-    /// <summary>Vrai quand la commande n'est pas du jour affiché (<paramref name="dayUtc"/>) : une commande encore à traiter d'un jour précédent.</summary>
-    public static bool IsFromEarlierDay(DateTime createdAtUtc, DateTime dayUtc) => createdAtUtc < dayUtc.Date;
+    /// <summary>Vrai quand la commande n'est pas du jour affiché (<paramref name="day"/>, un jour du restaurant) : une commande encore à traiter d'un jour précédent.</summary>
+    public static bool IsFromEarlierDay(DateTime createdAtUtc, DateTime day, RestaurantCalendar calendar) =>
+        calendar.DayOf(DateTime.SpecifyKind(createdAtUtc, DateTimeKind.Utc)) < day.Date;
 
     public static string StockCountStatusLabel(StockCountStatus status) => status switch
     {

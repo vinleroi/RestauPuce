@@ -6,7 +6,9 @@ using ChefOS.Core.Receipts;
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Units;
+using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Data;
+using ChefOS.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace ChefOS.Infrastructure.Seeding;
@@ -23,7 +25,7 @@ namespace ChefOS.Infrastructure.Seeding;
 /// du seed. Les inventaires sont <b>calculés</b> à partir des ventes et des pertes semées (consommation théorique, comme le fait <see cref="Services.StatsService"/>) :
 /// la consommation réelle ne diffère que de ±0,5 % de la théorique, sauf pour trois produits chers (beurre, crème, crevettes grises : +9 à +14 %), qui font apparaître un écart positif.
 /// Le second inventaire est daté du jour même : un écart n'existe que pour une période qui finit à la date d'un inventaire clôturé, ou avant lui.
-/// Tout est relatif à <c>now</c> (jours UTC), déterministe (aucun hasard) et écrit directement dans le contexte, avec les règles des services : prix figés,
+/// Tout est relatif à <c>now</c> (jours et heures du restaurant), déterministe (aucun hasard) et écrit directement dans le contexte, avec les règles des services : prix figés,
 /// commandes numérotées de 1 à n, tickets appliqués avec le prix de chaque ligne.
 /// </summary>
 internal static class DemoActivity
@@ -80,9 +82,14 @@ internal static class DemoActivity
         return shares;
     }
 
+    /// <summary>Le fuseau de « Le Petit Bistro » (celui par défaut d'un restaurant) : les jours de la démo sont les siens.</summary>
+    internal const string TimeZoneId = "Europe/Brussels";
+
     public static async Task AddAsync(ChefOsDbContext db, DateTime now, CancellationToken ct)
     {
-        var today = Utc(now.Date);
+        // Aujourd'hui : le jour local du restaurant (étiquette, minuit UTC), pas celui du serveur.
+        var calendar = new RestaurantCalendar(TimeZoneId, now);
+        var today = calendar.Today;
 
         var recipes = await db.Recipes.Include(r => r.Lines).ToListAsync(ct);
         var dishes = recipes.Where(r => r.Kind == RecipeKind.Dish).ToDictionary(r => r.Name);
@@ -90,7 +97,8 @@ internal static class DemoActivity
         var ingredients = await db.Ingredients.ToListAsync(ct);
         var ingredientsByName = ingredients.ToDictionary(i => i.Name);
         var suppliersById = (await db.Suppliers.ToListAsync(ct)).ToDictionary(s => s.Id);
-        var history = (await db.IngredientPrices.ToListAsync(ct)).ToLookup(p => p.IngredientId);
+        // Comme les services : les prix manuels (des instants) sont lus à leur jour local avant de les comparer à des jours.
+        var history = calendar.PriceHistory(await db.IngredientPrices.ToListAsync(ct)).ToLookup(p => p.IngredientId);
 
         var metro = new Supplier
         {
@@ -114,7 +122,7 @@ internal static class DemoActivity
         var openingDay = today.AddDays(-28);
         var sold = entries.Where(e => e.Date > openingDay)
             .Select(e => (e.RecipeId, e.Quantity))
-            .Concat(orders.Where(o => o.Status != OrderStatus.Annulee && UtcDay(o.CreatedAt) > openingDay)
+            .Concat(orders.Where(o => o.Status != OrderStatus.Annulee && calendar.DayOf(o.CreatedAt) > openingDay)
                 .SelectMany(o => o.Lines).Select(l => (l.RecipeId, (decimal)l.Quantity)))
             .ToList();
 
@@ -181,7 +189,7 @@ internal static class DemoActivity
     /// </summary>
     private static List<Order> Orders(IReadOnlyDictionary<string, Recipe> dishes, DateTime today, DateTime now)
     {
-        DateTime Past(int daysAgo, int hour, int minute) => today.AddDays(-daysAgo).AddHours(hour).AddMinutes(minute);
+        DateTime Past(int daysAgo, int hour, int minute) => At(today.AddDays(-daysAgo), hour, minute);
         DateTime Ago(int minutes) => Utc(now.AddMinutes(-minutes));
 
         OrderScript[] scripts =
@@ -253,7 +261,7 @@ internal static class DemoActivity
             Unit = unit,
             Reason = reason,
             Note = note,
-            CreatedAt = today.AddDays(-daysAgo).AddHours(17).AddMinutes(30)
+            CreatedAt = At(today.AddDays(-daysAgo), 17, 30)
         };
 
         return
@@ -380,7 +388,7 @@ internal static class DemoActivity
             Status = StockCountStatus.Cloture,
             Note = "Inventaire de réserve",
             // Compté en fin de journée, après le service et les livraisons du jour : l'intervalle ]A, B] des écarts compte les achats et les ventes du jour B.
-            ClosedAt = today.AddDays(-28).AddHours(23).AddMinutes(30),
+            ClosedAt = At(today.AddDays(-28), 23, 30),
             Lines = opening
         });
         db.StockCounts.Add(new StockCount
@@ -389,7 +397,7 @@ internal static class DemoActivity
             Status = StockCountStatus.Cloture,
             Note = "Inventaire de réserve",
             // Compté en fin de journée (23:30), ou à l'instant si le démarrage a lieu avant ; jamais dans le futur.
-            ClosedAt = Utc(new[] { today.AddHours(23).AddMinutes(30), now.AddMinutes(-1) }.Min()),
+            ClosedAt = Utc(new[] { At(today, 23, 30), now.AddMinutes(-1) }.Min()),
             Lines = closing
         });
     }
@@ -405,8 +413,8 @@ internal static class DemoActivity
             InvoiceNumber = $"{delivery.Prefix}-{day:yyMMdd}",
             AmountsIncludeVat = false,
             Status = ReceiptStatus.Applied,
-            CreatedAt = day.AddHours(9).AddMinutes(15),
-            AppliedAt = day.AddHours(9).AddMinutes(40)
+            CreatedAt = At(day, 9, 15),
+            AppliedAt = At(day, 9, 40)
         };
 
         var position = 0;
@@ -516,7 +524,10 @@ internal static class DemoActivity
         BaseQuantity = ToBase(quantity, unit, ingredient)
     };
 
+    /// <summary>L'instant UTC d'une heure d'horloge (locale) du restaurant, un jour donné (étiquette de jour).</summary>
+    private static DateTime At(DateTime day, int hour, int minute) =>
+        RestaurantClock.ToUtc(DateOnly.FromDateTime(day), new TimeOnly(hour, minute), TimeZoneId);
+
     private static DateTime Utc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
-    private static DateTime UtcDay(DateTime value) => Utc(value.Date);
-}
+    }
