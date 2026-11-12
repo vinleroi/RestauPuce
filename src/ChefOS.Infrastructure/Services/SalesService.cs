@@ -13,10 +13,12 @@ namespace ChefOS.Infrastructure.Services;
 /// enregistrée ; un changement de prix ultérieur ne la modifie pas.
 /// Les clés étrangères de la base sont à colonne unique : la vérification qu'un plat appartient bien au restaurant courant se fait ici,
 /// via le contexte filtré par restaurant (qui estampille aussi les ajouts).
-/// La semaine va du lundi au dimanche, selon le jour du calendrier UTC.
+/// La semaine va du lundi au dimanche, selon les jours saisis (étiquettes de jour, sans fuseau).
 /// </summary>
-public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
+public class SalesService(IDbContextFactory<ChefOsDbContext> factory, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
     private const string UnknownDishMessage = "Plat introuvable";
     private const string NegativeQuantityMessage = "La quantité ne peut pas être négative";
     private const string WeeklyTotalMondayMessage = "Un total de semaine doit être daté du lundi";
@@ -122,7 +124,7 @@ public class SalesService(IDbContextFactory<ChefOsDbContext> factory)
                 .ToListAsync())
             .ToDictionary(e => new CellKey(e.RecipeId, e.Date, e.Service, e.IsWeeklyTotal));
 
-        var now = DateTime.UtcNow;
+        var now = _clock.GetUtcNow().UtcDateTime;
         foreach (var (key, cell) in effective)
         {
             existing.TryGetValue(key, out var entry);

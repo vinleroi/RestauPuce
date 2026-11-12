@@ -10,8 +10,10 @@ namespace ChefOS.Infrastructure.Services;
 /// Création des restaurants (slug public unique sur toute la plateforme), appartenances des utilisateurs et réglages.
 /// <see cref="Restaurant"/> et <see cref="Membership"/> ne sont pas liés à un restaurant courant : aucun tenant requis.
 /// </summary>
-public partial class RestaurantService(IDbContextFactory<ChefOsDbContext> factory)
+public partial class RestaurantService(IDbContextFactory<ChefOsDbContext> factory, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
     private const string FallbackSlug = "restaurant";
 
     // \z plutôt que $ : $ accepterait aussi un retour à la ligne final.
@@ -30,7 +32,7 @@ public partial class RestaurantService(IDbContextFactory<ChefOsDbContext> factor
             Slug = await GenerateUniqueSlugAsync(db, name),
             Address = NullIfBlank(input.Address),
             VatNumber = NullIfBlank(input.VatNumber),
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = _clock.GetUtcNow().UtcDateTime
         };
 
         // Restaurant et appartenance sont enregistrés dans le même SaveChanges, donc dans la même transaction.

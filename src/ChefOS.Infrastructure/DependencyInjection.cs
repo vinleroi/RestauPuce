@@ -31,6 +31,7 @@ public static class DependencyInjection
         services.TryAddSingleton(TimeProvider.System);
         services.AddScoped<WineLibrarySeeder>();
 
+        services.AddScoped<RestaurantTime>();
         services.AddScoped<RestaurantService>();
         services.AddScoped<IngredientService>();
         services.AddScoped<SupplierService>();

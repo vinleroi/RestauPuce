@@ -44,7 +44,7 @@ public class StatsServiceTests(PostgresFixture postgres)
     public async Task Revenue_SumsEntriesAndOrders_WithSourcesSplit()
     {
         var options = await postgres.CreateDatabaseAsync();
-        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro", "UTC");
         var steak = await AddDishAsync(options, restaurant, "Steak");
         var service = CreateService(options, restaurant);
 
@@ -535,14 +535,14 @@ public class StatsServiceTests(PostgresFixture postgres)
     public async Task Variance_UndatedAppliedReceipt_UsesCreatedAt()
     {
         var options = await postgres.CreateDatabaseAsync();
-        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro", "UTC");
         var boeuf = await AddIngredientAsync(options, restaurant, "Boeuf", price: 0.02m);
         var service = CreateService(options, restaurant);
 
         await AddCountAsync(options, restaurant, Oct1, StockCountStatus.Cloture, (boeuf, 1000m));
         await AddCountAsync(options, restaurant, Oct31, StockCountStatus.Cloture, (boeuf, 1000m));
 
-        // Tickets appliqués sans date lue : le jour UTC de leur création les situe (comme pour la date de leur prix dans l'historique).
+        // Tickets appliqués sans date lue (restaurant en UTC) : le jour local de leur création les situe (comme pour la date de leur prix dans l'historique).
         await AddUndatedReceiptAsync(options, restaurant, Day(10, 10, 9, 30), Item(boeuf, 2m, MeasureUnit.Kg, 36m));       // dans ]1er, 31] : 2 000 g
         await AddUndatedReceiptAsync(options, restaurant, Day(10, 31, 23, 0), Item(boeuf, 500m, MeasureUnit.G, 9m));        // 23 h le jour de B : 500 g
         await AddUndatedReceiptAsync(options, restaurant, Day(10, 1, 12, 0), Item(boeuf, 7m, MeasureUnit.Kg, 126m));        // jour de A : exclu

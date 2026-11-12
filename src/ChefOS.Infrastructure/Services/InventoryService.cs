@@ -11,10 +11,12 @@ namespace ChefOS.Infrastructure.Services;
 /// pour les écarts. Les quantités saisies dans n'importe quelle unité compatible sont converties dans l'unité de base de l'ingrédient.
 /// Les clés étrangères de la base sont à colonne unique : la vérification qu'un ingrédient ou un inventaire appartient bien au restaurant
 /// courant se fait ici, via le contexte filtré par restaurant (qui estampille aussi les ajouts).
-/// Le jour d'un inventaire est un jour du calendrier UTC.
+/// Le jour d'un inventaire est une étiquette de jour ; elle ne peut pas dépasser demain, dans le fuseau du restaurant.
 /// </summary>
-public class InventoryService(IDbContextFactory<ChefOsDbContext> factory)
+public class InventoryService(IDbContextFactory<ChefOsDbContext> factory, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
     private const string UnknownCountMessage = "Inventaire introuvable";
     private const string ClosedMessage = "Inventaire clôturé";
     private const string ClosedCannotBeDeletedMessage = "Un inventaire clôturé ne peut pas être supprimé";
@@ -30,15 +32,14 @@ public class InventoryService(IDbContextFactory<ChefOsDbContext> factory)
     // Échelle de la colonne numeric : arrondir avant de valider évite qu'une quantité négative minuscule soit stockée comme 0, ou l'inverse.
     private const int QuantityScale = 4;
 
-    /// <summary>Crée un inventaire en brouillon, daté du jour UTC de <paramref name="dayUtc"/> (au plus demain, comme pour les tickets).</summary>
+    /// <summary>Crée un inventaire en brouillon, daté du jour de <paramref name="dayUtc"/> (au plus demain, comme pour les tickets).</summary>
     /// <exception cref="DomainValidationException">Date postérieure à demain.</exception>
     public async Task<int> CreateAsync(DateTime dayUtc, string? note)
     {
         var day = UtcDays.Of(dayUtc);
-        if (UtcDays.IsInTheFuture(day))
-            throw new DomainValidationException(FutureMessage);
-
         await using var db = await factory.CreateDbContextAsync();
+        if ((await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock)).IsInTheFuture(day))
+            throw new DomainValidationException(FutureMessage);
 
         var count = new StockCount
         {
@@ -190,7 +191,7 @@ public class InventoryService(IDbContextFactory<ChefOsDbContext> factory)
         await using var db = await factory.CreateDbContextAsync();
         await using var transaction = await db.Database.BeginTransactionAsync();
 
-        var closedAt = DateTime.UtcNow;
+        var closedAt = _clock.GetUtcNow().UtcDateTime;
         var claimed = await db.StockCounts
             .Where(c => c.Id == id && c.Status == StockCountStatus.Brouillon)
             .ExecuteUpdateAsync(set => set

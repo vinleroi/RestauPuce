@@ -721,11 +721,11 @@ public class OrderServiceTests(PostgresFixture postgres)
     public async Task ListForDay_ReturnsOrdersOfTheUtcDay_SortedByNumber()
     {
         var options = await postgres.CreateDatabaseAsync();
-        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro", "UTC");
         var tartare = await AddDishAsync(options, restaurant, "Tartare", 22.40m, 0.12m);
         var burger = await AddDishAsync(options, restaurant, "Burger", 18m, 0.06m);
 
-        // Numéros volontairement hors de l'ordre des dates ; bornes : 00:00 inclus, 24:00 exclu.
+        // Restaurant en UTC : les bornes sont celles du jour UTC. Numéros volontairement hors de l'ordre des dates ; bornes : 00:00 inclus, 24:00 exclu.
         var lateId = await InsertOrderAsync(options, restaurant, 3, Day.AddHours(23).AddMinutes(59).AddSeconds(59), tartare);
         var firstId = await InsertOrderAsync(options, restaurant, 1, Day, tartare);
         var cancelledId = await InsertOrderAsync(options, restaurant, 2, Day.AddHours(12), burger, OrderStatus.Annulee);

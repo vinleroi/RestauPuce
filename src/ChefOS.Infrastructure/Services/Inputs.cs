@@ -199,7 +199,7 @@ public record OrderSummary(
 
 /// <summary>
 /// Une perte à déclarer : exactement un des deux identifiants est renseigné (ingrédient ou recette). <paramref name="Date"/> est un jour
-/// (seul le jour UTC compte). Pour un ingrédient, <paramref name="Unit"/> doit se convertir dans son unité de base ; pour un plat,
+/// (seul le jour compte). Pour un ingrédient, <paramref name="Unit"/> doit se convertir dans son unité de base ; pour un plat,
 /// <paramref name="Quantity"/> est un nombre de portions et l'unité est <c>Piece</c> ; pour une préparation, l'unité doit se convertir dans son unité de production.
 /// </summary>
 public record WasteInput(

@@ -14,10 +14,12 @@ namespace ChefOS.Infrastructure.Services;
 /// qu'elle avait le jour où elle a eu lieu, quelle que soit l'évolution des prix ensuite.
 /// Les clés étrangères de la base sont à colonne unique : la vérification qu'un ingrédient ou une recette appartient bien au restaurant
 /// courant se fait ici, via le contexte filtré par restaurant (qui estampille aussi les ajouts).
-/// Le jour d'une perte est un jour du calendrier UTC.
+/// Le jour d'une perte est une étiquette de jour ; elle ne peut pas dépasser demain, dans le fuseau du restaurant.
 /// </summary>
-public class WasteService(IDbContextFactory<ChefOsDbContext> factory)
+public class WasteService(IDbContextFactory<ChefOsDbContext> factory, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
     private const string TargetMessage = "Choisissez un ingrédient ou une recette";
     private const string QuantityMessage = "La quantité doit être supérieure à 0";
     private const string QuantityTooHighMessage = "Quantité trop élevée";
@@ -55,13 +57,13 @@ public class WasteService(IDbContextFactory<ChefOsDbContext> factory)
             throw new DomainValidationException(QuantityTooHighMessage);
 
         var date = UtcDays.Of(input.Date);
-        if (UtcDays.IsInTheFuture(date))
+        await using var db = await factory.CreateDbContextAsync();
+        var calendar = await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock);
+        if (calendar.IsInTheFuture(date))
             throw new DomainValidationException(FutureMessage);
 
         if (!Enum.IsDefined(input.Reason))
             throw new DomainValidationException(ReasonMessage);
-
-        await using var db = await factory.CreateDbContextAsync();
 
         if (input.IngredientId is { } ingredientId)
         {
@@ -88,7 +90,7 @@ public class WasteService(IDbContextFactory<ChefOsDbContext> factory)
             Unit = input.Unit,
             Reason = input.Reason,
             Note = string.IsNullOrWhiteSpace(input.Note) ? null : input.Note.Trim(),
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = calendar.UtcNow
         };
         db.WasteEntries.Add(entry);
         await db.SaveChangesAsync();
@@ -109,7 +111,7 @@ public class WasteService(IDbContextFactory<ChefOsDbContext> factory)
     }
 
     /// <summary>
-    /// Les pertes des jours UTC <paramref name="fromDay"/> à <paramref name="toDay"/> inclus (l'heure éventuelle est ignorée), de la plus récente
+    /// Les pertes des jours <paramref name="fromDay"/> à <paramref name="toDay"/> inclus (l'heure éventuelle est ignorée), de la plus récente
     /// à la plus ancienne ; à jour égal, la dernière saisie d'abord. Des bornes inversées donnent une liste vide.
     /// <para>
     /// Le coût (non arrondi) est calculé aux prix en vigueur à la date de la perte (voir <see cref="PriceAsOf"/> : le prix courant tient lieu de prix

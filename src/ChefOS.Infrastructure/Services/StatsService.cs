@@ -16,10 +16,12 @@ namespace ChefOS.Infrastructure.Services;
 /// déclarées, écart entre la consommation réelle et la consommation théorique de deux inventaires clôturés).
 /// Tout est lu en une fois, pour toute la période (et l'intervalle des inventaires) : ingrédients, historique des prix, recettes et leurs lignes, ventes,
 /// commandes, pertes, inventaires et lignes de tickets ; aucune requête par plat. Le contexte est filtré par restaurant.
-/// Les jours sont des jours du calendrier UTC. Les montants ne sont pas arrondis.
+/// Les jours sont ceux du restaurant (son fuseau) : une ligne de commande compte pour le jour local de sa création. Les montants ne sont pas arrondis.
 /// </summary>
-public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
+public class StatsService(IDbContextFactory<ChefOsDbContext> factory, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
     private const string InvalidPeriodMessage = "La période est invalide";
     private const string PeriodTooLongMessage = "Période trop longue (366 jours maximum)";
 
@@ -56,7 +58,7 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
     /// <b>Écart d'inventaire</b> : entre l'inventaire clôturé le plus récent à la date de début ou avant (A) et le premier inventaire clôturé à la date de fin ou
     /// après (B) ; sans les deux (ou si A et B tombent le même jour, l'intervalle étant alors vide), il n'y a ni écart ni coût réel. L'intervalle ]A, B] est
     /// indépendant de la période. Achats = lignes non ignorées des tickets appliqués, avec ingrédient, datés dans ]A, B] ; la date d'un ticket est sa date lue,
-    /// ou à défaut le jour UTC de sa création (comme la date du prix qu'il a posé). Consommation théorique = décomposition des ventes et des pertes de ]A, B].
+    /// ou à défaut le jour local de sa création (comme la date du prix qu'il a posé). Consommation théorique = décomposition des ventes et des pertes de ]A, B].
     /// Valorisation au prix du jour B.
     /// Seuls les ingrédients comptés aux deux inventaires ont une ligne d'écart (un ingrédient non compté à l'un serait pris pour un stock nul et ferait inventer des
     /// pertes) ; ceux qui ont bougé dans l'intervalle ou n'ont été comptés qu'à un des deux sont nommés dans <see cref="VarianceReport.NotCountedIngredients"/>.
@@ -80,9 +82,10 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
             throw new DomainValidationException(PeriodTooLongMessage);
 
         await using var db = await factory.CreateDbContextAsync();
+        var calendar = await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock);
 
         var window = await FindVarianceWindowAsync(db, from, to);
-        var data = await LoadAsync(db, from, to, window);
+        var data = await LoadAsync(db, calendar, from, to, window);
 
         var sales = data.Sales;
         var periodSales = sales.Where(s => s.Day >= from && s.Day <= to).ToList();
@@ -148,11 +151,15 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
         return closingDay > openingDay ? new VarianceWindow(openingDay, closingDay, opening, closing) : null;
     }
 
-    private static async Task<Dataset> LoadAsync(ChefOsDbContext db, DateTime from, DateTime to, VarianceWindow? window)
+    private static async Task<Dataset> LoadAsync(ChefOsDbContext db, RestaurantCalendar calendar, DateTime from, DateTime to, VarianceWindow? window)
     {
         // Les ventes, pertes et prix sont lus une fois pour la période et pour l'intervalle des inventaires, qui peut la déborder des deux côtés.
         var start = window is null ? from : Min(from, window.After.AddDays(1));
         var endExclusive = (window is null ? to : Max(to, window.Through)).AddDays(1);
+
+        // Les commandes sont des instants : on les cherche entre minuit local du premier jour et minuit local du lendemain du dernier.
+        var startInstant = calendar.UtcBounds(start).FromUtc;
+        var endInstant = calendar.UtcBounds(endExclusive).FromUtc;
 
         var ingredients = await db.Ingredients.AsNoTracking().ToListAsync();
         var history = (await db.IngredientPrices.AsNoTracking().Where(p => p.Date < endExclusive).ToListAsync()).ToLookup(p => p.IngredientId);
@@ -166,14 +173,14 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
         var orderLines = await (
                 from line in db.OrderLines.AsNoTracking()
                 join order in db.Orders.AsNoTracking() on line.OrderId equals order.Id
-                where order.Status != OrderStatus.Annulee && order.CreatedAt >= start && order.CreatedAt < endExclusive && line.Quantity > 0
+                where order.Status != OrderStatus.Annulee && order.CreatedAt >= startInstant && order.CreatedAt < endInstant && line.Quantity > 0
                 select new { order.CreatedAt, line.RecipeId, line.Quantity, line.UnitPriceInclVat, line.VatRate })
             .ToListAsync();
 
         // Un plat supprimé entre deux lectures n'a plus de nom ni de coût : ses ventes sont écartées partout, pour que les totaux restent cohérents.
         var sales = entries
             .Select(e => new Sale(e.RecipeId, UtcDays.Of(e.Date), e.IsWeeklyTotal, FromOrder: false, e.Quantity, Revenue(e.Quantity, e.UnitPriceInclVat, e.VatRate)))
-            .Concat(orderLines.Select(l => new Sale(l.RecipeId, UtcDays.Of(l.CreatedAt), IsWeeklyTotal: false, FromOrder: true, l.Quantity, Revenue(l.Quantity, l.UnitPriceInclVat, l.VatRate))))
+            .Concat(orderLines.Select(l => new Sale(l.RecipeId, calendar.DayOf(l.CreatedAt), IsWeeklyTotal: false, FromOrder: true, l.Quantity, Revenue(l.Quantity, l.UnitPriceInclVat, l.VatRate))))
             .Where(s => recipeIds.Contains(s.RecipeId))
             .ToList();
 
@@ -186,16 +193,19 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory)
         {
             var firstDay = window.After.AddDays(1);
             var lastDayExclusive = window.Through.AddDays(1);
+            var firstInstant = calendar.UtcBounds(firstDay).FromUtc;
+            var lastInstantExclusive = calendar.UtcBounds(lastDayExclusive).FromUtc;
             var lines = await (
                     from line in db.ReceiptLines.AsNoTracking()
                     join receipt in db.Receipts.AsNoTracking() on line.ReceiptId equals receipt.Id
                     where receipt.Status == ReceiptStatus.Applied
-                          && (receipt.ReceiptDate ?? receipt.CreatedAt) >= firstDay && (receipt.ReceiptDate ?? receipt.CreatedAt) < lastDayExclusive
+                          && ((receipt.ReceiptDate != null && receipt.ReceiptDate >= firstDay && receipt.ReceiptDate < lastDayExclusive)
+                              || (receipt.ReceiptDate == null && receipt.CreatedAt >= firstInstant && receipt.CreatedAt < lastInstantExclusive))
                           && !line.IsIgnored && line.IngredientId != null
-                    select new { line.IngredientId, line.Quantity, line.Unit, line.LineTotalExclVat, line.RawLabel, Date = receipt.ReceiptDate ?? receipt.CreatedAt })
+                    select new { line.IngredientId, line.Quantity, line.Unit, line.LineTotalExclVat, line.RawLabel, receipt.ReceiptDate, receipt.CreatedAt })
                 .ToListAsync();
             purchases = lines
-                .Select(l => new PurchaseLine(l.IngredientId!.Value, l.Quantity, l.Unit, l.LineTotalExclVat, l.RawLabel, UtcDays.Of(l.Date)))
+                .Select(l => new PurchaseLine(l.IngredientId!.Value, l.Quantity, l.Unit, l.LineTotalExclVat, l.RawLabel, l.ReceiptDate is { } readDay ? UtcDays.Of(readDay) : calendar.DayOf(l.CreatedAt)))
                 .ToList();
         }
 

@@ -12,10 +12,14 @@ namespace ChefOS.Infrastructure.Services;
 /// <c>Nouvelle → EnPreparation → Prete → Servie</c> (ou <c>Annulee</c> tant que la commande n'est pas servie), prix figés à la prise de commande.
 /// Les clés étrangères de la base sont à colonne unique : la vérification qu'un plat ou une commande appartient bien au restaurant courant
 /// se fait ici, via le contexte filtré par restaurant (qui estampille aussi les ajouts).
-/// Le jour d'une commande est le jour du calendrier UTC de sa création.
+/// Le jour d'une commande est le jour, dans le fuseau du restaurant, de sa création.
 /// </summary>
-public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
+public class OrderService(IDbContextFactory<ChefOsDbContext> factory, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
+    private DateTime Now => _clock.GetUtcNow().UtcDateTime;
+
     private const string NoLineMessage = "Ajoutez au moins un plat";
     private const string QuantityMessage = "La quantité doit être d'au moins 1";
     private const string QuantityTooHighMessage = "Quantité trop élevée";
@@ -62,7 +66,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
             await using var db = await factory.CreateDbContextAsync();
             await using var transaction = await db.Database.BeginTransactionAsync();
 
-            var order = AddNumberedOrder(db, input.Source, input.TableOrCustomer, input.Note, lines.Select(l => l.ToEntity()).ToList(), await NextNumberAsync(db));
+            var order = AddNumberedOrder(db, input.Source, input.TableOrCustomer, input.Note, lines.Select(l => l.ToEntity()).ToList(), await NextNumberAsync(db), Now);
 
             try
             {
@@ -115,7 +119,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
         throw new DomainValidationException(NumberMessage);
     }
 
-    private static async Task<int> InsertFrozenAsync(ChefOsDbContext db, OrderSource source, string? table, string? note, IReadOnlyList<FrozenOrderLine> lines, DateTime? now)
+    private async Task<int> InsertFrozenAsync(ChefOsDbContext db, OrderSource source, string? table, string? note, IReadOnlyList<FrozenOrderLine> lines, DateTime? now)
     {
         var ids = lines.Select(l => l.RecipeId).Distinct().ToList();
         if (await db.Recipes.CountAsync(r => r.Kind == RecipeKind.Dish && ids.Contains(r.Id)) != ids.Count)
@@ -125,16 +129,15 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
         {
             RecipeId = l.RecipeId, Quantity = l.Quantity, UnitPriceInclVat = l.UnitPriceInclVat, VatRate = l.VatRate, Note = NullIfBlank(l.Note)
         }).ToList();
-        var order = AddNumberedOrder(db, source, table, note, entities, await NextNumberAsync(db), now);
+        var order = AddNumberedOrder(db, source, table, note, entities, await NextNumberAsync(db), now ?? Now);
         await db.SaveChangesAsync();
         return order.Id;
     }
 
     private static async Task<int> NextNumberAsync(ChefOsDbContext db) => (await db.Orders.MaxAsync(o => (int?)o.Number) ?? 0) + 1;
 
-    private static Order AddNumberedOrder(ChefOsDbContext db, OrderSource source, string? table, string? note, List<OrderLine> lines, int number, DateTime? at = null)
+    private Order AddNumberedOrder(ChefOsDbContext db, OrderSource source, string? table, string? note, List<OrderLine> lines, int number, DateTime now)
     {
-        var now = at ?? DateTime.UtcNow;
         var order = new Order
         {
             Number = number,
@@ -260,17 +263,16 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
     }
 
     /// <summary>
-    /// Les commandes créées le jour UTC de <paramref name="dayUtc"/> (de 00:00 inclus à 24:00 exclu), annulées comprises, triées par numéro, précédées des commandes
+    /// Les commandes créées le jour (étiquette de jour, lue sans fuseau) <paramref name="day"/> du restaurant (de 00:00 locale incluse à 24:00 exclue), annulées comprises, triées par numéro, précédées des commandes
     /// encore à traiter (nouvelles, en préparation ou prêtes) créées un jour plus tôt, triées par date de création : une commande oubliée la veille ne disparaît pas du
     /// tableau. Une commande servie ou annulée d'un jour précédent n'y figure pas.
     /// Le total est la somme des quantités × prix figés des lignes, non arrondie.
     /// </summary>
-    public async Task<IReadOnlyList<OrderSummary>> ListForDayAsync(DateTime dayUtc)
+    public async Task<IReadOnlyList<OrderSummary>> ListForDayAsync(DateTime day)
     {
-        var start = UtcDays.Of(dayUtc);
-        var end = start.AddDays(1);
-
         await using var db = await factory.CreateDbContextAsync();
+        var calendar = await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock);
+        var (start, end) = calendar.UtcBounds(UtcDays.Of(day));
 
         var orders = await db.Orders.AsNoTracking()
             .Include(o => o.Lines.OrderBy(l => l.Id))
@@ -321,9 +323,9 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory)
     /// Passe le statut de <paramref name="from"/> à <paramref name="to"/> en une instruction, uniquement si la commande est encore à <paramref name="from"/> :
     /// si un autre appel l'a déjà changé, aucune ligne n'est modifiée et le changement est refusé.
     /// </summary>
-    private static async Task ChangeStatusAsync(ChefOsDbContext db, int orderId, OrderStatus from, OrderStatus to)
+    private async Task ChangeStatusAsync(ChefOsDbContext db, int orderId, OrderStatus from, OrderStatus to)
     {
-        var changedAt = DateTime.UtcNow;
+        var changedAt = Now;
         var changed = await db.Orders
             .Where(o => o.Id == orderId && o.Status == from)
             .ExecuteUpdateAsync(set => set

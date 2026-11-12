@@ -11,8 +11,10 @@ namespace ChefOS.Infrastructure.Services;
 /// Les clés étrangères de la base sont à colonne unique : la vérification qu'un fournisseur ou un ingrédient appartient
 /// bien au restaurant courant se fait ici, via le contexte filtré par restaurant.
 /// </summary>
-public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
+public class IngredientService(IDbContextFactory<ChefOsDbContext> factory, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
     private const string DefaultCategory = "Divers";
     private const string UnknownIngredientMessage = "Ingrédient introuvable";
     private const string UnknownSupplierMessage = "Fournisseur introuvable";
@@ -96,7 +98,7 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory)
         if (priceChanged)
         {
             db.IngredientPrices.Add(NewPriceEntry(
-                ingredient.Id, price!.Value, PriceSource.Manual, ingredient.SupplierId, DateTime.UtcNow));
+                ingredient.Id, price!.Value, PriceSource.Manual, ingredient.SupplierId, _clock.GetUtcNow().UtcDateTime));
             await db.SaveChangesAsync();
         }
 

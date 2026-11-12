@@ -49,6 +49,21 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
     // Propriété d'instance : EF la réévalue à chaque requête, donc chaque contexte filtre sur son propre restaurant.
     private int? CurrentRestaurantId => tenant.CurrentRestaurantId;
 
+    /// <summary>
+    /// Le fuseau IANA du restaurant courant ; « Europe/Brussels » sans restaurant courant. <c>Restaurants</c> n'a pas de filtre de restaurant :
+    /// on filtre donc explicitement sur l'identifiant courant.
+    /// </summary>
+    public async Task<string> CurrentTimeZoneIdAsync(CancellationToken ct = default)
+    {
+        var id = CurrentRestaurantId;
+        if (id is null)
+            return DefaultTimeZoneId;
+
+        return await Restaurants.AsNoTracking().Where(r => r.Id == id).Select(r => r.TimeZoneId).FirstOrDefaultAsync(ct) ?? DefaultTimeZoneId;
+    }
+
+    private const string DefaultTimeZoneId = "Europe/Brussels";
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);

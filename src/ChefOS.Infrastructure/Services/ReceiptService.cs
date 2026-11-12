@@ -16,8 +16,10 @@ namespace ChefOS.Infrastructure.Services;
 /// Une lecture qui échoue est journalisée (avertissement, avec l'exception d'origine et l'identifiant du ticket) ; ni le contenu du fichier
 /// ni la clé de l'API n'y figurent.
 /// </summary>
-public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceiptReader reader, ILogger<ReceiptService> logger)
+public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceiptReader reader, ILogger<ReceiptService> logger, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
     private const int MaxFileBytes = 10 * 1024 * 1024;
 
     private const string UnsupportedTypeMessage = "Format non pris en charge (JPEG, PNG, WebP ou PDF)";
@@ -56,7 +58,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
 
         await using var db = await factory.CreateDbContextAsync();
 
-        var receipt = new Receipt { Status = ReceiptStatus.Pending, CreatedAt = DateTime.UtcNow };
+        var receipt = new Receipt { Status = ReceiptStatus.Pending, CreatedAt = _clock.GetUtcNow().UtcDateTime };
         db.Receipts.Add(receipt);
 
         // L'identifiant du ticket n'existe qu'après le premier enregistrement : une transaction évite un ticket sans fichier.
@@ -133,7 +135,8 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         var readDay = extraction.Date is { } day
             ? DateTime.SpecifyKind(day.ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc)
             : (DateTime?)null;
-        receipt.ReceiptDate = readDay is { } readable && !UtcDays.IsInTheFuture(readable) ? readable : null;
+        var calendar = await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock, ct);
+        receipt.ReceiptDate = readDay is { } readable && !calendar.IsInTheFuture(readable) ? readable : null;
         receipt.InvoiceNumber = NullIfBlank(extraction.InvoiceNumber);
         receipt.AmountsIncludeVat = extraction.AmountsIncludeVat;
         receipt.Total = extraction.Total;
@@ -215,7 +218,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     /// à jour (elle garde son identifiant et ce que le lecteur y avait lu) ; sans identifiant, c'est une ligne ajoutée à la main ; les lignes
     /// du ticket absentes du brouillon sont supprimées. Un ingrédient différent de celui enregistré est un choix manuel (origine effacée) ;
     /// la mention « TVA à vérifier » ne reste que si ni le taux ni le total de la ligne n'ont été modifiés. Un ticket en échec ou pas encore lu, complété
-    /// avec au moins une ligne, passe à <see cref="ReceiptStatus.Extracted"/>. Une date postérieure à demain (UTC) est refusée (voir <see cref="UtcDays.IsInTheFuture"/>).
+    /// avec au moins une ligne, passe à <see cref="ReceiptStatus.Extracted"/>. Une date postérieure à demain (fuseau du restaurant) est refusée (voir <see cref="RestaurantCalendar.IsInTheFuture"/>).
     /// Tout est enregistré d'un coup ou pas du tout.
     /// </summary>
     public async Task SaveDraftAsync(ReceiptDraftInput input)
@@ -227,7 +230,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
             throw new DomainValidationException(AlreadyAppliedMessage);
 
         var receiptDate = ToUtc(input.ReceiptDate);
-        if (receiptDate is { } day && UtcDays.IsInTheFuture(day))
+        if (receiptDate is { } day && (await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock)).IsInTheFuture(day))
             throw new DomainValidationException(FutureDateMessage);
 
         var lines = NormalizeLines(input.Lines);
@@ -294,7 +297,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     /// Tout ou rien : une fois les lignes validées, une seule transaction réserve le ticket (passage atomique de « lu » à « appliqué », une seule
     /// exécution l'emporte), écrit les prix, les prix de ligne et les alias, puis valide. Tout échec annule tout, statut compris : le ticket reste
     /// « lu » et peut être appliqué à nouveau sans doublon d'historique. Deux applications simultanées : l'une réussit, l'autre est refusée
-    /// (« déjà appliqué »). Sont aussi refusés, avant toute écriture, un ticket daté d'après-demain ou plus tard (voir <see cref="UtcDays.IsInTheFuture"/> :
+    /// (« déjà appliqué »). Sont aussi refusés, avant toute écriture, un ticket daté d'après-demain ou plus tard (voir <see cref="RestaurantCalendar.IsInTheFuture"/> :
     /// il rendrait « en retard » tous les tickets suivants) et un ticket sans aucune ligne à appliquer (vide, ou toutes les lignes ignorées).
     /// </summary>
     public async Task<ApplyResult> ApplyAsync(int receiptId)
@@ -303,7 +306,8 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
 
         var receipt = await RequireReceiptAsync(db, receiptId, includeLines: true);
         RequireApplicable(receipt.Status);
-        if (receipt.ReceiptDate is { } receiptDay && UtcDays.IsInTheFuture(receiptDay))
+        var calendar = await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock);
+        if (receipt.ReceiptDate is { } receiptDay && calendar.IsInTheFuture(receiptDay))
             throw new DomainValidationException(FutureDateMessage);
 
         // Lectures et validations d'abord : aucune écriture tant que toutes les lignes ne sont pas bonnes.
@@ -340,7 +344,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
 
         // Réservation du ticket : « lu » -> « appliqué » en une instruction. Si un autre appel l'a déjà pris (double clic, deux onglets), cette
         // instruction attend sa fin puis ne trouve plus de ticket « lu » : aucune ligne modifiée, refus. Annulée avec la transaction en cas d'échec.
-        DateTime? appliedAt = DateTime.UtcNow;
+        DateTime? appliedAt = calendar.UtcNow;
         var claimed = await db.Receipts
             .Where(r => r.Id == receiptId && r.Status == ReceiptStatus.Extracted)
             .ExecuteUpdateAsync(set => set

@@ -10,8 +10,10 @@ namespace ChefOS.Infrastructure.Services;
 /// retiré de la carte et ne doit ni peser sur la moyenne ni apparaître dans les plats à surveiller.
 /// Les chiffres de la semaine viennent de <see cref="StatsService"/> : ce sont les mêmes que ceux de la page des statistiques.
 /// </summary>
-public class DashboardService(RecipeService recipes, StatsService stats, IDbContextFactory<ChefOsDbContext> factory, ITenantContext tenant)
+public class DashboardService(RecipeService recipes, StatsService stats, IDbContextFactory<ChefOsDbContext> factory, ITenantContext tenant, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
     /// <summary>Nombre de jours des chiffres de la semaine, aujourd'hui compris.</summary>
     private const int WeekDays = 7;
 
@@ -57,12 +59,13 @@ public class DashboardService(RecipeService recipes, StatsService stats, IDbCont
     }
 
     /// <summary>
-    /// Chiffre d'affaires HT et marge brute des 7 derniers jours, aujourd'hui compris (de J-6 à J, jours UTC), ventes saisies et commandes additionnées
+    /// Chiffre d'affaires HT et marge brute des 7 derniers jours, aujourd'hui compris (de J-6 à J, jours du restaurant), ventes saisies et commandes additionnées
     /// (voir <see cref="StatsService.GetAsync"/> pour les règles de calcul).
     /// </summary>
     public async Task<SevenDayFigures> GetLastSevenDaysAsync()
     {
-        var to = UtcDays.Of(DateTime.UtcNow);
+        await using var db = await factory.CreateDbContextAsync();
+        var to = (await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock)).Today;
         var from = to.AddDays(1 - WeekDays);
 
         var period = await stats.GetAsync(from, to);
@@ -78,7 +81,7 @@ public class DashboardService(RecipeService recipes, StatsService stats, IDbCont
     /// </summary>
     public async Task<IReadOnlyList<PriceChange>> GetRecentPriceChangesAsync(int days = 30, decimal minChange = 0.05m)
     {
-        var since = DateTime.UtcNow.AddDays(-days);
+        var since = _clock.GetUtcNow().UtcDateTime.AddDays(-days);
 
         await using var db = await factory.CreateDbContextAsync();
 
