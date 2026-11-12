@@ -92,8 +92,8 @@ public sealed class MolliePaymentGatewayTests
     [InlineData("a@b.co.uk", "a***@b***.uk")]
     [InlineData("pas-un-mail", "***")]
     [InlineData("", "***")]
-    public void EmailSender_MasksRecipient(string address, string expected) =>
-        Assert.Equal(expected, ChefOS.Infrastructure.Notifications.LoggingEmailSender.Mask(address));
+    public void EmailTransport_MasksRecipient(string address, string expected) =>
+        Assert.Equal(expected, ChefOS.Infrastructure.Notifications.LoggingEmailTransport.Mask(address));
 
     [Theory]
     [InlineData(49.5, "49.50")]
@@ -219,7 +219,7 @@ public sealed class MolliePaymentGatewayTests
     }
 
     [Fact]
-    public void Registration_DefaultIsDemo_WithServicesAndEmail()
+    public void Registration_DefaultIsDemo_WithServices()
     {
         using var provider = Build(("Payments:BaseUrl", "https://vitrine.test"));
         using var scope = provider.CreateScope();
@@ -229,7 +229,6 @@ public sealed class MolliePaymentGatewayTests
         Assert.Same(gateway, scope.ServiceProvider.GetRequiredService<DemoPaymentGateway>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ReservationService>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<PaymentService>());
-        Assert.IsType<ChefOS.Infrastructure.Notifications.LoggingEmailSender>(scope.ServiceProvider.GetRequiredService<ChefOS.Infrastructure.Notifications.IEmailSender>());
     }
 
     [Fact]

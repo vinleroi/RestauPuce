@@ -1,5 +1,6 @@
 using ChefOS.Core.Common;
 using ChefOS.Core.Vitrine;
+using ChefOS.Infrastructure.Notifications;
 using ChefOS.Infrastructure.Payments;
 using Microsoft.EntityFrameworkCore;
 using static ChefOS.Tests.Infrastructure.ReservationHarness;
@@ -218,17 +219,18 @@ public class PaymentServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task Payment_Confirmation_LogsConfirmationEmail()
+    public async Task Payment_Confirmation_EnqueuesConfirmationEmail()
     {
         var h = await ReservationHarness.CreateAsync(postgres);
         var start = await h.CreateAsync(Request(2));
-        Assert.Empty(h.Email.Sent);
+        Assert.Empty(await h.OutboxAsync());
 
         await h.PayAsync(start.Token);
         await h.Payments.SyncAsync((await h.PaymentsOfAsync((await h.LoadAsync(start.Token)).Id)).Single().GatewayPaymentId!); // rejeu
 
-        var sent = Assert.Single(h.Email.Sent);
+        var sent = Assert.Single(await h.OutboxAsync());
         Assert.Equal("dupont@example.com", sent.To);
         Assert.Contains("confirmée", sent.Subject);
+        Assert.Equal((EmailKind.ReservationConfirmed, h.RestaurantId), (sent.Kind, sent.RestaurantId));
     }
 }

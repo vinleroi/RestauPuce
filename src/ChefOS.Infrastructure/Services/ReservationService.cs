@@ -63,8 +63,8 @@ public record ServiceDayView(string ServiceName, int Capacity, int BookedCovers,
 /// Le restaurant courant est celui du contexte filtré (la vitrine est scopée par son lien).
 /// </summary>
 public partial class ReservationService(
-    IDbContextFactory<ChefOsDbContext> factory, TimeProvider clock, PaymentService payments, IEmailSender email,
-    OrderService? orders = null, ILogger<ReservationService>? logger = null)
+    IDbContextFactory<ChefOsDbContext> factory, TimeProvider clock, PaymentService payments,
+    OrderService? orders = null, ILogger<ReservationService>? logger = null, EmailDispatchSignal? signal = null)
 {
     private const string ClosedMessage = "Les réservations en ligne sont fermées";
     private const string ClosedDayMessage = "Le restaurant est fermé ce jour-là";
@@ -228,7 +228,7 @@ public partial class ReservationService(
 
         if (due.Kind is null)
         {
-            await TrySendAsync(mail, $"Votre réservation chez {restaurant.Name} est confirmée",
+            await TrySendAsync(EmailKind.ReservationConfirmed, restaurant.Id, mail, $"Votre réservation chez {restaurant.Name} est confirmée",
                 $"Bonjour {name}, votre table pour {request.PartySize} personne(s) le {request.Date:dd/MM/yyyy} à {request.Time:HH\\:mm} est confirmée.");
             return new ReservationStart(token, null, 0m, ReservationStatus.Confirmed);
         }
@@ -668,15 +668,22 @@ public partial class ReservationService(
 
     // ── Aides ────────────────────────────────────────────────────────────────
 
-    private async Task TrySendAsync(string to, string subject, string body)
+    /// <summary>
+    /// Provisoire : met en file un e-mail en texte simple, après le commit de l'événement (les vrais gabarits, écrits dans la transaction, viendront
+    /// ensuite), puis réveille le dispatcher. Un échec est journalisé sans faire échouer la réservation.
+    /// </summary>
+    private async Task TrySendAsync(EmailKind kind, int restaurantId, string to, string subject, string body)
     {
         try
         {
-            await email.SendAsync(to, subject, body);
+            await using var db = await factory.CreateDbContextAsync();
+            EmailOutbox.Enqueue(db, new Notifications.EmailMessage(kind, to, subject, body, string.Empty, RestaurantId: restaurantId), Now);
+            await db.SaveChangesAsync();
+            signal?.Notify();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger?.LogWarning("Envoi de l'e-mail impossible : {Reason}", ex.Message);
+            logger?.LogWarning("Mise en file de l'e-mail impossible : {Reason}", ex.Message);
         }
     }
 

@@ -380,9 +380,8 @@ public class DemoSeederTests(PostgresFixture postgres)
         var factory = new TestContextFactory(options, restaurantId);
         var clock = new FakeTimeProvider(new DateTimeOffset(Now));
         var gateway = new DemoPaymentGateway("https://vitrine.test", factory, clock);
-        var email = new RecordingEmailSender();
-        var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance, email);
-        var service = new ReservationService(factory, clock, payments, email);
+        var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance);
+        var service = new ReservationService(factory, clock, payments);
 
         var today = RestaurantClock.Today(Now, "Europe/Brussels");
         var daysWithSlots = 0;

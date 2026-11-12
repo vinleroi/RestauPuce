@@ -33,6 +33,8 @@ if (string.IsNullOrWhiteSpace(connectionString))
 builder.Services.AddChefOsInfrastructure(connectionString);
 // Réservations et paiements : passerelle choisie par la section « Payments » (Demo par défaut, en base, partagée avec le back).
 builder.Services.AddChefOsPayments(builder.Configuration);
+// E-mails : file en base envoyée en arrière-plan (section « Email » : Log par défaut, Smtp vers Mailpit en développement).
+builder.Services.AddChefOsEmail(builder.Configuration);
 // Carte des vins publique (lecture seule ici) : l'assistant de rédaction n'est utilisé que par le back, Demo par défaut.
 builder.Services.AddChefOsWineDescriber(builder.Configuration);
 

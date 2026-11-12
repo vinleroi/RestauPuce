@@ -1,6 +1,7 @@
 using ChefOS.Core.Common;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Vitrine;
+using ChefOS.Infrastructure.Notifications;
 using ChefOS.Infrastructure.Payments;
 using ChefOS.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
@@ -126,7 +127,9 @@ public class ReservationServiceTests(PostgresFixture postgres)
         var reservation = await h.LoadAsync(start.Token);
         Assert.NotNull(reservation.ConfirmedAt);
         Assert.Empty(await h.PaymentsOfAsync(reservation.Id));
-        Assert.Equal("dupont@example.com", Assert.Single(h.Email.Sent).To);
+        var email = Assert.Single(await h.OutboxAsync());
+        Assert.Equal(("dupont@example.com", EmailKind.ReservationConfirmed, h.RestaurantId), (email.To, email.Kind, email.RestaurantId));
+        Assert.Equal(OutgoingEmailStatus.Pending, email.Status);
     }
 
     [Fact]
@@ -137,7 +140,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(async i =>
         {
             // un service (donc des contextes) par tâche
-            var (_, service) = Services(h.Options, h.RestaurantId, h.Clock, h.Gateway, h.Email);
+            var (_, service) = Services(h.Options, h.RestaurantId, h.Clock, h.Gateway);
             try
             {
                 await service.CreateAsync(Request(partySize: 1, name: $"Client {i}", email: $"c{i}@example.com"), ReturnBase, Webhook);
@@ -162,7 +165,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
         var h = await CreateAsync(postgres, capacity: 12);
         var results = await Task.WhenAll(Enumerable.Range(0, 10).Select(async i =>
         {
-            var (_, service) = Services(h.Options, h.RestaurantId, h.Clock, h.Gateway, h.Email);
+            var (_, service) = Services(h.Options, h.RestaurantId, h.Clock, h.Gateway);
             try
             {
                 await service.CreateAsync(Request(partySize: 2 + i % 3), ReturnBase, Webhook);
@@ -512,7 +515,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
 
         var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(async _ =>
         {
-            var (_, service) = Services(h.Options, h.RestaurantId, h.Clock, h.Gateway, h.Email);
+            var (_, service) = Services(h.Options, h.RestaurantId, h.Clock, h.Gateway);
             try
             {
                 await service.SeatAsync(id, ReservationStatus.Confirmed);
@@ -629,7 +632,7 @@ public class ReservationServiceTests(PostgresFixture postgres)
             await db.SaveChangesAsync();
         }
 
-        var (otherPayments, other) = Services(h.Options, otherId, h.Clock, h.Gateway, h.Email);
+        var (otherPayments, other) = Services(h.Options, otherId, h.Clock, h.Gateway);
 
         Assert.Null(await other.GetByTokenAsync(start.Token));
         await RefusedAsync(other.CancelByCustomerAsync(start.Token));

@@ -5,6 +5,7 @@ using ChefOS.Core.Restaurants;
 using ChefOS.Core.Sales;
 using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Identity;
+using ChefOS.Infrastructure.Notifications;
 using ChefOS.Infrastructure.Payments;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -43,6 +44,8 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
     public DbSet<WineReference> WineReferences => Set<WineReference>();
     /// <summary>Paiements de la passerelle de démonstration : table globale, sans filtre de restaurant.</summary>
     public DbSet<DemoGatewayPayment> DemoGatewayPayments => Set<DemoGatewayPayment>();
+    /// <summary>File d'e-mails des deux sites : table globale, sans filtre de restaurant, exposée par aucune page.</summary>
+    public DbSet<OutgoingEmail> OutgoingEmails => Set<OutgoingEmail>();
     public DbSet<WineListItem> WineListItems => Set<WineListItem>();
     public DbSet<WineListItemPairing> WineListItemPairings => Set<WineListItemPairing>();
 
@@ -96,6 +99,7 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
         builder.Entity<WineListItem>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
         builder.Entity<WineListItemPairing>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
         // WineReference : bibliothèque partagée, pas de RestaurantId, donc pas de filtre.
+        // OutgoingEmail : file globale (son RestaurantId ne sert qu'au suivi), pas de filtre.
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

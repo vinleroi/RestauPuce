@@ -53,18 +53,6 @@ public sealed class FaultyGateway(DemoPaymentGateway inner) : IPaymentGateway
     }
 }
 
-public sealed class RecordingEmailSender : IEmailSender
-{
-    public List<(string To, string Subject)> Sent { get; } = [];
-
-    public Task SendAsync(string to, string subject, string body, CancellationToken ct = default)
-    {
-        lock (Sent)
-            Sent.Add((to, subject));
-        return Task.CompletedTask;
-    }
-}
-
 /// <summary>
 /// Restaurant de test : vitrine publiée, réservations ouvertes, service « Dîner » le vendredi 2026-11-06 (18:00–22:00, pas de 30 min),
 /// horloge figée au lundi 2026-11-02 09:00 UTC. Un créneau à 19:00 locale est à 18:00 UTC (hiver, UTC+1).
@@ -81,7 +69,6 @@ public sealed class ReservationHarness
     public required FakeTimeProvider Clock { get; init; }
     public required DemoPaymentGateway Demo { get; init; }
     public required FaultyGateway Gateway { get; init; }
-    public required RecordingEmailSender Email { get; init; }
     public required PaymentService Payments { get; init; }
     public required ReservationService Reservations { get; init; }
 
@@ -106,24 +93,30 @@ public sealed class ReservationHarness
         var clock = new FakeTimeProvider(new DateTimeOffset(2026, 11, 2, 9, 0, 0, TimeSpan.Zero));
         var demo = new DemoPaymentGateway("https://vitrine.test", new TestContextFactory(options, null), clock);
         var gateway = new FaultyGateway(demo);
-        var email = new RecordingEmailSender();
-        var (payments, reservations) = Services(options, restaurantId, clock, gateway, email);
+        var (payments, reservations) = Services(options, restaurantId, clock, gateway);
         return new ReservationHarness
         {
-            Options = options, RestaurantId = restaurantId, Clock = clock, Demo = demo, Gateway = gateway, Email = email,
+            Options = options, RestaurantId = restaurantId, Clock = clock, Demo = demo, Gateway = gateway,
             Payments = payments, Reservations = reservations
         };
     }
 
     public static (PaymentService, ReservationService) Services(DbContextOptions<ChefOsDbContext> options, int restaurantId,
-        TimeProvider clock, IPaymentGateway gateway, IEmailSender email)
+        TimeProvider clock, IPaymentGateway gateway)
     {
         var factory = new TestContextFactory(options, restaurantId);
-        var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance, email);
-        return (payments, new ReservationService(factory, clock, payments, email));
+        var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance);
+        return (payments, new ReservationService(factory, clock, payments));
     }
 
     public ChefOsDbContext Open(int? restaurantId = null) => new(Options, new FixedTenantContext(restaurantId ?? RestaurantId));
+
+    /// <summary>Les e-mails mis en file (table globale), dans l'ordre d'écriture.</summary>
+    public async Task<List<OutgoingEmail>> OutboxAsync()
+    {
+        await using var db = Open();
+        return await db.OutgoingEmails.AsNoTracking().OrderBy(e => e.Id).ToListAsync();
+    }
 
     public async Task<int> AddDishAsync(string name, decimal price = 20m, decimal vat = 0.12m, bool show = true, bool archived = false)
     {

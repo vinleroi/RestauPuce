@@ -1,10 +1,13 @@
 using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Identity;
+using ChefOS.Infrastructure.Notifications;
 using ChefOS.Infrastructure.Seeding;
 using ChefOS.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace ChefOS.Tests.Infrastructure;
 
@@ -50,5 +53,36 @@ public class InfrastructureRegistrationTests
         using var scope = provider.CreateScope();
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<DemoSeeder>());
+    }
+
+    [Theory]
+    [InlineData(null, typeof(LoggingEmailTransport))]
+    [InlineData("Log", typeof(LoggingEmailTransport))]
+    [InlineData("smtp", typeof(SmtpEmailTransport))]
+    public void AddChefOsEmail_ChoosesTheTransport_AndRegistersTheDispatcherInBothSites(string? sender, Type expected)
+    {
+        // Le dispatcher est un singleton : il ne peut pas dépendre de la fabrique de contextes scoped (restaurant courant) ; la validation le vérifie.
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<ITenantContext>(new FixedTenantContext(null));
+        services.AddChefOsInfrastructure(ConnectionString);
+        var settings = new Dictionary<string, string?> { ["Email:Sender"] = sender, ["Email:Smtp:Security"] = "SslOnConnect" };
+        services.AddChefOsEmail(new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
+
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
+
+        Assert.IsType(expected, provider.GetRequiredService<IEmailTransport>());
+        Assert.Same(provider.GetRequiredService<EmailDispatchSignal>(), provider.GetRequiredService<EmailDispatchSignal>());
+        Assert.Single(provider.GetServices<IHostedService>().OfType<OutgoingEmailDispatcher>());
+        var options = provider.GetRequiredService<IOptions<EmailOptions>>().Value;
+        Assert.Equal(("ChefOS", 587, SmtpSecurity.SslOnConnect), (options.FromName, options.Smtp.Port, options.Smtp.Security));
+    }
+
+    [Fact]
+    public void EmailOptions_Defaults_AreLogAndStartTls()
+    {
+        var options = new EmailOptions();
+
+        Assert.Equal((EmailOptions.LogSender, "ChefOS", 587, SmtpSecurity.StartTls), (options.Sender, options.FromName, options.Smtp.Port, options.Smtp.Security));
     }
 }

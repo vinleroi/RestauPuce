@@ -10,5 +10,12 @@ services:
     volumes:
       - chefos-pg:/var/lib/postgresql/data
 
+  # E-mails de développement : rien ne sort, tout est visible sur http://localhost:8025 (même image que MailpitFixture des tests).
+  mailpit:
+    image: axllent/mailpit:v1.33.1
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+
 volumes:
   chefos-pg:

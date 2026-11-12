@@ -19,7 +19,7 @@ public record PaymentStart(int PaymentId, string CheckoutUrl);
 /// ou <c>Open → Failed | Expired | Canceled</c>.
 /// </summary>
 public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPaymentGateway gateway, TimeProvider clock, ILogger<PaymentService> logger,
-    IEmailSender? email = null)
+    EmailDispatchSignal? signal = null)
 {
     private const string InitFailedMessage = "Le paiement n'a pas pu être initialisé, réessayez";
     private const string UnknownReservationMessage = "Réservation introuvable";
@@ -231,7 +231,7 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
         }
 
         if (confirmed)
-            await TrySendConfirmationAsync(db, reservation, timeZone, localDate);
+            await TrySendConfirmationAsync(reservation, timeZone, localDate);
 
         if (refund)
         {
@@ -249,20 +249,28 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
         return await CurrentStatusAsync(db, payment.Id, ct);
     }
 
-    private async Task TrySendConfirmationAsync(ChefOsDbContext db, Reservation reservation, string timeZone, DateOnly localDate)
+    /// <summary>
+    /// Provisoire : met en file la confirmation en texte simple, après le commit (les vrais gabarits, écrits dans la transaction, viendront ensuite),
+    /// puis réveille le dispatcher. Un contexte neuf : celui de l'appelant ne doit rien enregistrer d'autre. Un échec est journalisé sans faire échouer le paiement.
+    /// </summary>
+    private async Task TrySendConfirmationAsync(Reservation reservation, string timeZone, DateOnly localDate)
     {
-        if (email is null || string.IsNullOrWhiteSpace(reservation.CustomerEmail))
+        if (string.IsNullOrWhiteSpace(reservation.CustomerEmail))
             return;
         try
         {
+            await using var db = await factory.CreateDbContextAsync();
             var name = await db.Restaurants.Where(r => r.Id == reservation.RestaurantId).Select(r => r.Name).FirstAsync();
             var time = RestaurantClock.ToLocal(reservation.StartsAtUtc, timeZone).Time;
-            await email.SendAsync(reservation.CustomerEmail, $"Votre réservation chez {name} est confirmée",
-                $"Bonjour {reservation.CustomerName}, votre paiement est reçu : votre table pour {reservation.PartySize} personne(s) le {localDate:dd/MM/yyyy} à {time:HH\\:mm} est confirmée.");
+            EmailOutbox.Enqueue(db, new EmailMessage(EmailKind.ReservationConfirmed, reservation.CustomerEmail, $"Votre réservation chez {name} est confirmée",
+                $"Bonjour {reservation.CustomerName}, votre paiement est reçu : votre table pour {reservation.PartySize} personne(s) le {localDate:dd/MM/yyyy} à {time:HH\\:mm} est confirmée.",
+                string.Empty, RestaurantId: reservation.RestaurantId), Now);
+            await db.SaveChangesAsync();
+            signal?.Notify();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning("Envoi de l'e-mail de confirmation impossible : {Reason}", ex.Message);
+            logger.LogWarning("Mise en file de l'e-mail de confirmation impossible : {Reason}", ex.Message);
         }
     }
 

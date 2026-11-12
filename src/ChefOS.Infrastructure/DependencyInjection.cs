@@ -27,6 +27,9 @@ public static class DependencyInjection
     public static IServiceCollection AddChefOsInfrastructure(this IServiceCollection services, string connectionString)
     {
         services.AddDbContextFactory<ChefOsDbContext>(options => options.UseNpgsql(connectionString), ServiceLifetime.Scoped);
+        // Contextes des services d'arrière-plan (singletons), sans restaurant courant : la fabrique ci-dessus est scoped (restaurant de la requête).
+        services.TryAddSingleton(provider => new GlobalContextFactory(new DbContextOptionsBuilder<ChefOsDbContext>()
+            .UseNpgsql(connectionString).UseApplicationServiceProvider(provider).Options));
 
         services.TryAddSingleton(TimeProvider.System);
         services.AddScoped<WineLibrarySeeder>();
@@ -61,7 +64,7 @@ public static class DependencyInjection
     }
 
     /// <summary>
-    /// Enregistre <see cref="PaymentService"/>, <see cref="ReservationService"/>, l'envoi d'e-mails (<see cref="LoggingEmailSender"/>, qui journalise) et la passerelle
+    /// Enregistre <see cref="PaymentService"/>, <see cref="ReservationService"/> et la passerelle
     /// choisie par la section <c>Payments</c> (voir <see cref="PaymentOptions"/>) : <see cref="DemoPaymentGateway"/> par défaut (en base, table globale partagée entre le back et la vitrine ; scoped, aussi disponible
     /// sous son type pour la page de démonstration) ; avec <c>Gateway = Mollie</c>, <see cref="MolliePaymentGateway"/> (HttpClient typé, clé <c>Mollie:ApiKey</c> ou, à défaut,
     /// <c>MOLLIE_API_KEY</c>), ou une passerelle qui échoue avec un message explicite sans clé. Choix lu à l'enregistrement : redémarrage pour le changer.
@@ -72,7 +75,6 @@ public static class DependencyInjection
         var section = configuration.GetSection(PaymentOptions.SectionName);
         services.Configure<PaymentOptions>(section);
         services.AddLogging();
-        services.TryAddSingleton<IEmailSender, LoggingEmailSender>();
         services.AddScoped<PaymentService>();
         services.AddScoped<ReservationService>();
 
@@ -103,6 +105,35 @@ public static class DependencyInjection
             client.Timeout = TimeSpan.FromSeconds(30);
         });
         services.AddTransient<IPaymentGateway>(provider => provider.GetRequiredService<MolliePaymentGateway>());
+
+        return services;
+    }
+
+    /// <summary>
+    /// Enregistre la file d'e-mails (section <c>Email</c>, voir <see cref="EmailOptions"/>) : le réveil <see cref="EmailDispatchSignal"/> (singleton),
+    /// le transport choisi par <c>Sender</c> (<see cref="LoggingEmailTransport"/> par défaut, <see cref="SmtpEmailTransport"/> avec <c>Smtp</c>) et le service
+    /// d'arrière-plan <see cref="OutgoingEmailDispatcher"/>, à appeler dans les deux sites. Le dispatcher est un singleton : il reçoit une fabrique de contextes
+    /// sans restaurant courant (la file est globale), pas la fabrique scoped. Choix du transport lu à l'enregistrement : redémarrage pour le changer.
+    /// Suppose <see cref="AddChefOsInfrastructure"/> déjà appelé.
+    /// </summary>
+    public static IServiceCollection AddChefOsEmail(this IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(EmailOptions.SectionName);
+        services.Configure<EmailOptions>(section);
+        services.AddLogging();
+        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<EmailDispatchSignal>();
+
+        var options = section.Get<EmailOptions>() ?? new EmailOptions();
+        if (string.Equals(options.Sender?.Trim(), EmailOptions.SmtpSender, StringComparison.OrdinalIgnoreCase))
+            services.TryAddSingleton<IEmailTransport, SmtpEmailTransport>();
+        else
+            services.TryAddSingleton<IEmailTransport, LoggingEmailTransport>();
+
+        services.AddHostedService(provider => new OutgoingEmailDispatcher(
+            provider.GetRequiredService<GlobalContextFactory>(), provider.GetRequiredService<IEmailTransport>(),
+            provider.GetRequiredService<EmailDispatchSignal>(), provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ILogger<OutgoingEmailDispatcher>>()));
 
         return services;
     }
@@ -188,6 +219,15 @@ public static class DependencyInjection
     /// </summary>
     private static void AddAnthropicClient(IServiceCollection services, string key) =>
         services.TryAddSingleton(_ => new AnthropicClient { ApiKey = key, MaxRetries = 1, Timeout = TimeSpan.FromMinutes(5) });
+
+    /// <summary>
+    /// Contextes sans restaurant courant, pour les singletons d'arrière-plan : seules les tables globales y sont lisibles (les filtres de restaurant
+    /// ne laissent rien passer). Le fournisseur de services de l'application est celui de la racine (journaux d'EF).
+    /// </summary>
+    private sealed class GlobalContextFactory(DbContextOptions<ChefOsDbContext> options) : IDbContextFactory<ChefOsDbContext>
+    {
+        public ChefOsDbContext CreateDbContext() => new(options, new FixedTenantContext(null));
+    }
 
     /// <summary>Au démarrage, hors développement, rappelle que les paiements sont simulés.</summary>
     private sealed class DemoModeWarning(IServiceProvider services, ILogger<DemoModeWarning> logger) : IHostedService
