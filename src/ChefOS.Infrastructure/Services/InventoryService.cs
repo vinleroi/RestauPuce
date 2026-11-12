@@ -251,8 +251,9 @@ public class InventoryService(IDbContextFactory<ChefOsDbContext> factory, TimePr
 
         // Un prix postérieur au dernier inventaire ne sert à rien (la liste est triée : le premier est le plus récent).
         var lastDayEnd = DateTime.SpecifyKind(counts[0].Date.Date.AddDays(1), DateTimeKind.Utc);
-        var history = (await db.IngredientPrices.AsNoTracking()
-                .Where(p => ingredientIds.Contains(p.IngredientId) && p.Date < lastDayEnd)
+        var calendar = await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock);
+        var history = calendar.PriceHistory(await db.IngredientPrices.AsNoTracking()
+                .Where(p => ingredientIds.Contains(p.IngredientId) && p.Date < lastDayEnd.AddDays(1))
                 .ToListAsync())
             .ToLookup(p => p.IngredientId);
 

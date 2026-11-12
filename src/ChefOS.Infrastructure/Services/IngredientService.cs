@@ -119,7 +119,8 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory, TimeP
     {
         await using var db = await factory.CreateDbContextAsync();
 
-        await AddPriceEntryAsync(db, ingredientId, pricePerBaseUnit, source, supplierId, dateUtc);
+        var calendar = await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock);
+        await AddPriceEntryAsync(db, calendar, ingredientId, pricePerBaseUnit, source, supplierId, dateUtc);
 
         // Un seul SaveChanges : le prix courant et son entrée d'historique sont enregistrés ensemble ou pas du tout.
         await db.SaveChangesAsync();
@@ -134,7 +135,7 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory, TimeP
     /// ne serait pas la dernière par date, et la variation affichée serait inversée.
     /// </summary>
     internal static async Task<bool> AddPriceEntryAsync(
-        ChefOsDbContext db, int ingredientId, decimal pricePerBaseUnit, PriceSource source, int? supplierId, DateTime dateUtc)
+        ChefOsDbContext db, RestaurantCalendar calendar, int ingredientId, decimal pricePerBaseUnit, PriceSource source, int? supplierId, DateTime dateUtc)
     {
         var price = NormalizePrice(pricePerBaseUnit);
         if (dateUtc.Kind != DateTimeKind.Utc)
@@ -143,18 +144,30 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory, TimeP
         var ingredient = await RequireIngredientAsync(db, ingredientId);
         await RequireSupplierAsync(db, supplierId);
 
-        // Lu avant d'ajouter l'entrée : on compare à l'historique existant, pas à la nouvelle ligne.
-        var latestDate = await db.IngredientPrices
-            .Where(p => p.IngredientId == ingredientId)
+        // Lu avant d'ajouter l'entrée : on compare à l'historique existant, pas à la nouvelle ligne. Les dates se comparent en « jours » (voir
+        // RestaurantCalendar.PriceDate) : une entrée manuelle est lue en heure locale du restaurant, une entrée de ticket est déjà un jour.
+        var latestManual = await db.IngredientPrices
+            .Where(p => p.IngredientId == ingredientId && p.Source == PriceSource.Manual)
             .MaxAsync(p => (DateTime?)p.Date);
-        var replacesCurrent = latestDate is null || dateUtc.Date >= latestDate.Value.Date;
+        var latestReceipt = await db.IngredientPrices
+            .Where(p => p.IngredientId == ingredientId && p.Source != PriceSource.Manual)
+            .MaxAsync(p => (DateTime?)p.Date);
+        DateTime? latestDate = (latestManual, latestReceipt) switch
+        {
+            (null, null) => null,
+            (null, { } r) => r,
+            ({ } m, null) => calendar.PriceDate(m, PriceSource.Manual),
+            ({ } m, { } r) => Max(calendar.PriceDate(m, PriceSource.Manual), r)
+        };
+        var newDate = calendar.PriceDate(dateUtc, source);
+        var replacesCurrent = latestDate is null || newDate.Date >= latestDate.Value.Date;
         if (replacesCurrent)
             ingredient.CurrentPricePerBaseUnit = price;
 
         // Une entrée qui remplace le prix courant doit aussi être la plus récente par date. Ici elle est du même jour que la dernière entrée mais
-        // plus tôt dans la journée : elle passe 1 µs après elle (PostgreSQL ne garde pas moins).
-        var entryDate = replacesCurrent && latestDate is { } latest && latest > dateUtc
-            ? DateTime.SpecifyKind(latest.AddTicks(TimeSpan.TicksPerMicrosecond), DateTimeKind.Utc)
+        // plus tôt dans la journée : elle passe 1 µs après elle (PostgreSQL ne garde pas moins). Le décalage se calcule en jours locaux, puis se reporte sur l'instant stocké.
+        var entryDate = replacesCurrent && latestDate is { } latest && latest > newDate
+            ? DateTime.SpecifyKind(dateUtc + (latest - newDate) + TimeSpan.FromTicks(TimeSpan.TicksPerMicrosecond), DateTimeKind.Utc)
             : dateUtc;
 
         db.IngredientPrices.Add(NewPriceEntry(ingredient.Id, price, source, supplierId, entryDate));
@@ -246,6 +259,8 @@ public class IngredientService(IDbContextFactory<ChefOsDbContext> factory, TimeP
         if (supplierId is { } id && !await db.Suppliers.AnyAsync(s => s.Id == id))
             throw new DomainValidationException(UnknownSupplierMessage);
     }
+
+    private static DateTime Max(DateTime a, DateTime b) => a > b ? a : b;
 
     private static IngredientPrice NewPriceEntry(
         int ingredientId, decimal price, PriceSource source, int? supplierId, DateTime dateUtc) => new()

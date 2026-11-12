@@ -1,3 +1,4 @@
+using ChefOS.Core.Ingredients;
 using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Data;
 
@@ -52,6 +53,26 @@ public sealed class RestaurantCalendar
     /// dont les prix n'iraient plus qu'à l'historique.
     /// </summary>
     public bool IsInTheFuture(DateTime day) => day.Date > Today.AddDays(1);
+
+    /// <summary>
+    /// La date d'une entrée de prix, comparable à une étiquette de jour. Une entrée manuelle est un instant : on la lit en heure locale du restaurant
+    /// (marquée UTC, comme une étiquette), donc un prix saisi à 23 h 30 UTC compte à partir du lendemain à Bruxelles. Une entrée venue d'un ticket est déjà un jour.
+    /// </summary>
+    public DateTime PriceDate(DateTime date, PriceSource source) =>
+        source == PriceSource.Manual ? DateTime.SpecifyKind(ToLocal(date), DateTimeKind.Utc) : date;
+
+    /// <summary>
+    /// L'historique de prix prêt pour <see cref="ChefOS.Core.Sales.PriceAsOf"/>, qui compare des étiquettes de jour : les entrées manuelles sont copiées
+    /// à leur date locale (voir <see cref="PriceDate"/>), les autres gardées telles quelles.
+    /// </summary>
+    public IEnumerable<IngredientPrice> PriceHistory(IEnumerable<IngredientPrice> prices) =>
+        prices.Select(p => p.Source == PriceSource.Manual
+            ? new IngredientPrice
+            {
+                Id = p.Id, RestaurantId = p.RestaurantId, IngredientId = p.IngredientId, SupplierId = p.SupplierId, Source = p.Source,
+                PricePerBaseUnit = p.PricePerBaseUnit, Date = PriceDate(p.Date, p.Source)
+            }
+            : p);
 
     /// <summary>Le calendrier du restaurant courant du contexte, à l'instant donné par <paramref name="clock"/>.</summary>
     public static async Task<RestaurantCalendar> ForCurrentRestaurantAsync(ChefOsDbContext db, TimeProvider clock, CancellationToken ct = default) =>

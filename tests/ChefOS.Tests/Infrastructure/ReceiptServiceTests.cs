@@ -1130,7 +1130,8 @@ public class ReceiptServiceTests(PostgresFixture postgres)
         await service.ApplyAsync(id);
 
         var entry = Assert.Single(await ingredients.GetPriceHistoryAsync(sel));
-        Assert.Equal(createdAt, entry.Date);
+        // Un ticket sans date lue est situé au jour local de sa création (Bruxelles) : l'entrée est une étiquette de jour.
+        Assert.Equal(new RestaurantCalendar("Europe/Brussels", createdAt).Today, entry.Date);
         Assert.Equal(DateTimeKind.Utc, entry.Date.Kind);
     }
 
@@ -1457,7 +1458,8 @@ public class ReceiptServiceTests(PostgresFixture postgres)
 
         // Le ticket qui a fixé le prix courant est la dernière entrée de l'historique : il passe 1 µs après la saisie de l'après-midi (et non avant elle).
         Assert.Equal([0.009m, 0.002m, 0.003m], history.Select(p => p.PricePerBaseUnit));
-        Assert.Equal(manualAfternoon.AddTicks(TimeSpan.TicksPerMicrosecond), history[2].Date);
+        // Le ticket est un jour : il passe 1 µs après la saisie, lue en heure locale (15 h 30 UTC = 16 h 30 à Bruxelles en hiver).
+        Assert.Equal(manualAfternoon.AddHours(1).AddTicks(TimeSpan.TicksPerMicrosecond), history[2].Date);
     }
 
     [Fact]

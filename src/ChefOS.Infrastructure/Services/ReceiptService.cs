@@ -337,7 +337,8 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
         }
 
         var supplierId = receipt.SupplierId;
-        var priceDate = DateTime.SpecifyKind(receipt.ReceiptDate ?? receipt.CreatedAt, DateTimeKind.Utc);
+        // Un ticket sans date lue est situé au jour local de sa création : l'entrée de prix est un jour, pas un instant.
+        var priceDate = DateTime.SpecifyKind(receipt.ReceiptDate ?? calendar.DayOf(receipt.CreatedAt), DateTimeKind.Utc);
 
         // Écritures : une transaction, un seul SaveChanges pour les données ; rien n'est visible tant qu'elle n'est pas validée.
         await using var transaction = await db.Database.BeginTransactionAsync();
@@ -369,7 +370,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
             var oldPrice = ingredient.CurrentPricePerBaseUnit;
 
             var replacesCurrent = await IngredientService.AddPriceEntryAsync(
-                db, ingredient.Id, unitPrice, PriceSource.Receipt, supplierId, priceDate);
+                db, calendar, ingredient.Id, unitPrice, PriceSource.Receipt, supplierId, priceDate);
 
             applied.Add(new AppliedPrice(
                 ingredient.Id, ingredient.Name, ingredient.BaseUnit, oldPrice, unitPrice, replacesCurrent));

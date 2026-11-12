@@ -260,8 +260,8 @@ public class IngredientServiceTests(PostgresFixture postgres)
 
         Assert.Equal(0.012m, (await service.GetAsync(created.Id))!.CurrentPricePerBaseUnit);
         var history = await service.GetPriceHistoryAsync(created.Id);
-        // Le ticket, daté de minuit, passe 1 µs après la saisie du soir : il est la dernière entrée, comme le prix courant qu'il a fixé.
-        Assert.Equal([manualEvening, manualEvening.AddTicks(TimeSpan.TicksPerMicrosecond)], history.Select(p => p.Date));
+        // Le ticket, daté de minuit, passe 1 µs après la saisie du soir lue en heure locale (18 h UTC = 19 h à Bruxelles en hiver) : il est la dernière entrée, comme le prix courant qu'il a fixé.
+        Assert.Equal([manualEvening, manualEvening.AddHours(1).AddTicks(TimeSpan.TicksPerMicrosecond)], history.Select(p => p.Date));
         Assert.Equal([0.010m, 0.012m], history.Select(p => p.PricePerBaseUnit));
         Assert.Equal([PriceSource.Manual, PriceSource.Receipt], history.Select(p => p.Source));
     }

@@ -145,7 +145,7 @@ public class WasteService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
         var wastedIngredientIds = entries.Where(e => e.IngredientId is not null).Select(e => e.IngredientId!.Value).Distinct().ToList();
 
         var ingredientQuery = db.Ingredients.AsNoTracking();
-        var priceQuery = db.IngredientPrices.AsNoTracking().Where(p => p.Date < endExclusive);   // un prix postérieur à la dernière perte ne sert à rien
+        var priceQuery = db.IngredientPrices.AsNoTracking().Where(p => p.Date < endExclusive.AddDays(1));   // un prix postérieur à la dernière perte ne sert à rien
         if (!needsRecipes)
         {
             ingredientQuery = ingredientQuery.Where(i => wastedIngredientIds.Contains(i.Id));
@@ -153,7 +153,8 @@ public class WasteService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
         }
 
         var ingredients = await ingredientQuery.ToListAsync();
-        var history = (await priceQuery.ToListAsync()).ToLookup(p => p.IngredientId);
+        var calendar = await RestaurantCalendar.ForCurrentRestaurantAsync(db, _clock);
+        var history = calendar.PriceHistory(await priceQuery.ToListAsync()).ToLookup(p => p.IngredientId);
         var recipes = needsRecipes
             ? await db.Recipes.AsNoTracking().Include(r => r.Lines.OrderBy(l => l.Id)).ToListAsync()
             : [];

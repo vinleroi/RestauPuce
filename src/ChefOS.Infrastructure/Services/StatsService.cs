@@ -162,7 +162,8 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
         var endInstant = calendar.UtcBounds(endExclusive).FromUtc;
 
         var ingredients = await db.Ingredients.AsNoTracking().ToListAsync();
-        var history = (await db.IngredientPrices.AsNoTracking().Where(p => p.Date < endExclusive).ToListAsync()).ToLookup(p => p.IngredientId);
+        // Un jour de marge côté base : une entrée manuelle est lue en heure locale, qui peut dépasser l'instant de plusieurs heures (PriceAsOf tranche).
+        var history = calendar.PriceHistory(await db.IngredientPrices.AsNoTracking().Where(p => p.Date < endExclusive.AddDays(1)).ToListAsync()).ToLookup(p => p.IngredientId);
         var recipes = await db.Recipes.AsNoTracking().Include(r => r.Lines.OrderBy(l => l.Id)).ToListAsync();
         var recipeIds = recipes.Select(r => r.Id).ToHashSet();
 
