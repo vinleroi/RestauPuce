@@ -38,7 +38,9 @@
         <MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="py-6">
             @if (!redirectingToOnboarding)
             {
-                @Body
+                <PageErrorBoundary>
+                    @Body
+                </PageErrorBoundary>
             }
         </MudContainer>
     </MudMainContent>

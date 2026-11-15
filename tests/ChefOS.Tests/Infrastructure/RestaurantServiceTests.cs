@@ -161,6 +161,31 @@ public class RestaurantServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task UpdateSettings_ByANonOwner_IsRefused()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var service = CreateService(options);
+        var ownerId = await AddUserAsync(options, "patron");
+        var chefId = await AddUserAsync(options, "chef");
+        var outsiderId = await AddUserAsync(options, "inconnu");
+        var created = await service.CreateAsync(ownerId, new CreateRestaurantInput("Bistro", null, null));
+        await using (var db = new TestContextFactory(options, null).CreateDbContext())
+        {
+            db.Memberships.Add(new Membership { UserId = chefId, RestaurantId = created.Id, Role = MembershipRole.Chef });
+            await db.SaveChangesAsync();
+        }
+
+        foreach (var userId in new[] { chefId, outsiderId })
+        {
+            var ex = await Assert.ThrowsAsync<DomainValidationException>(
+                () => service.UpdateSettingsAsync(created.Id, userId, SettingsFor(created) with { Name = "Piraté" }));
+            Assert.Equal("Seul le propriétaire peut modifier les paramètres du restaurant", ex.Message);
+        }
+
+        Assert.Equal("Bistro", (await service.GetAsync(created.Id))!.Name);
+    }
+
+    [Fact]
     public async Task UpdateSettings_PersistsAllFields()
     {
         var options = await postgres.CreateDatabaseAsync();
@@ -168,7 +193,7 @@ public class RestaurantServiceTests(PostgresFixture postgres)
         var userId = await AddUserAsync(options, "chef");
         var created = await service.CreateAsync(userId, new CreateRestaurantInput("Bistro", null, null));
 
-        await service.UpdateSettingsAsync(created.Id, new RestaurantSettingsInput(
+        await service.UpdateSettingsAsync(created.Id, userId, new RestaurantSettingsInput(
             "Bistro du Port", "bistro-du-port", "2 quai aux Briques", "BE0987654321", 0.06m, 0.21m, 0.30m));
 
         var stored = await service.GetAsync(created.Id);
@@ -191,7 +216,7 @@ public class RestaurantServiceTests(PostgresFixture postgres)
         var created = await service.CreateAsync(userId, new CreateRestaurantInput("Bistro", null, null));
 
         // Le slug du restaurant lui-même n'est pas « déjà pris » : seul le nom change ici.
-        await service.UpdateSettingsAsync(created.Id, SettingsFor(created) with { Name = "Bistro Rénové" });
+        await service.UpdateSettingsAsync(created.Id, userId, SettingsFor(created) with { Name = "Bistro Rénové" });
 
         var stored = await service.GetAsync(created.Id);
         Assert.NotNull(stored);
@@ -209,7 +234,7 @@ public class RestaurantServiceTests(PostgresFixture postgres)
         var brasserie = await service.CreateAsync(userId, new CreateRestaurantInput("Brasserie", null, null));
 
         var ex = await Assert.ThrowsAsync<DomainValidationException>(
-            () => service.UpdateSettingsAsync(brasserie.Id, SettingsFor(brasserie) with { Slug = bistro.Slug }));
+            () => service.UpdateSettingsAsync(brasserie.Id, userId, SettingsFor(brasserie) with { Slug = bistro.Slug }));
 
         Assert.Equal(TakenSlugMessage, ex.Message);
         Assert.Equal("brasserie", (await service.GetAsync(brasserie.Id))!.Slug);
@@ -224,7 +249,7 @@ public class RestaurantServiceTests(PostgresFixture postgres)
         var created = await service.CreateAsync(userId, new CreateRestaurantInput("Bistro", null, null));
 
         var ex = await Assert.ThrowsAsync<DomainValidationException>(
-            () => service.UpdateSettingsAsync(created.Id, SettingsFor(created) with { Slug = "Mon Resto!" }));
+            () => service.UpdateSettingsAsync(created.Id, userId, SettingsFor(created) with { Slug = "Mon Resto!" }));
 
         Assert.Equal(InvalidSlugMessage, ex.Message);
     }
@@ -245,7 +270,7 @@ public class RestaurantServiceTests(PostgresFixture postgres)
         var created = await service.CreateAsync(userId, new CreateRestaurantInput("Bistro", null, null));
 
         var ex = await Assert.ThrowsAsync<DomainValidationException>(
-            () => service.UpdateSettingsAsync(created.Id, SettingsFor(created) with { Slug = slug }));
+            () => service.UpdateSettingsAsync(created.Id, userId, SettingsFor(created) with { Slug = slug }));
 
         Assert.Equal(InvalidSlugMessage, ex.Message);
     }
@@ -261,7 +286,7 @@ public class RestaurantServiceTests(PostgresFixture postgres)
         var created = await service.CreateAsync(userId, new CreateRestaurantInput("Bistro", null, null));
 
         await Assert.ThrowsAsync<DomainValidationException>(
-            () => service.UpdateSettingsAsync(created.Id, SettingsFor(created) with { Name = name }));
+            () => service.UpdateSettingsAsync(created.Id, userId, SettingsFor(created) with { Name = name }));
     }
 
     [Theory]
@@ -279,7 +304,7 @@ public class RestaurantServiceTests(PostgresFixture postgres)
         var created = await service.CreateAsync(userId, new CreateRestaurantInput("Bistro", null, null));
 
         var ex = await Assert.ThrowsAsync<DomainValidationException>(() => service.UpdateSettingsAsync(
-            created.Id,
+            created.Id, userId,
             SettingsFor(created) with
             {
                 DefaultFoodVatRate = (decimal)food,
@@ -300,7 +325,7 @@ public class RestaurantServiceTests(PostgresFixture postgres)
         var userId = await AddUserAsync(options, "chef");
         var created = await service.CreateAsync(userId, new CreateRestaurantInput("Bistro", null, null));
 
-        await service.UpdateSettingsAsync(created.Id, SettingsFor(created) with
+        await service.UpdateSettingsAsync(created.Id, userId, SettingsFor(created) with
         {
             DefaultFoodVatRate = (decimal)food,
             DefaultDrinkVatRate = (decimal)drink,

@@ -129,11 +129,14 @@ else
         Navigation.NavigateTo("settings", replace: true);
     }
 
+    private async Task<string?> CurrentUserIdAsync() =>
+        (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User.FindFirstValue(ClaimTypes.NameIdentifier);
+
     // Les réglages sont réservés au propriétaire ; les autres membres les consultent sans pouvoir les modifier.
+    // Ici, simple confort d'affichage : c'est RestaurantService.UpdateSettingsAsync qui refuse l'enregistrement.
     private async Task<bool> IsOwnerAsync(int restaurantId)
     {
-        var user = (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User;
-        if (user.FindFirstValue(ClaimTypes.NameIdentifier) is not { } userId)
+        if (await CurrentUserIdAsync() is not { } userId)
             return false;
 
         var memberships = await RestaurantService.GetMembershipsAsync(userId);
@@ -148,9 +151,12 @@ else
         _busy = true;
         try
         {
+            if (await CurrentUserIdAsync() is not { } userId)
+                return;
+
             var input = _form.ToInput();
             var nameChanged = input.Name.Trim() != _restaurant.Name;
-            await RestaurantService.UpdateSettingsAsync(_restaurant.Id, input);
+            await RestaurantService.UpdateSettingsAsync(_restaurant.Id, userId, input);
 
             _restaurant = await RestaurantService.GetAsync(_restaurant.Id);
             if (_restaurant is not null)

@@ -67,8 +67,13 @@ public partial class RestaurantService(IDbContextFactory<ChefOsDbContext> factor
         return await db.Restaurants.AsNoTracking().FirstOrDefaultAsync(r => r.Id == restaurantId);
     }
 
-    public async Task UpdateSettingsAsync(int restaurantId, RestaurantSettingsInput input)
+    /// <summary>
+    /// Enregistre les réglages du restaurant. Réservé au propriétaire : le service le vérifie lui-même, la page n'est pas la seule barrière.
+    /// </summary>
+    public async Task UpdateSettingsAsync(int restaurantId, string userId, RestaurantSettingsInput input)
     {
+        await RequireOwnerAsync(restaurantId, userId);
+
         var name = RequireName(input.Name);
         RequireRate(input.DefaultFoodVatRate, "Le taux de TVA nourriture");
         RequireRate(input.DefaultDrinkVatRate, "Le taux de TVA boissons");
@@ -95,6 +100,14 @@ public partial class RestaurantService(IDbContextFactory<ChefOsDbContext> factor
         restaurant.FoodCostAlertThreshold = input.FoodCostAlertThreshold;
 
         await db.SaveChangesAsync();
+    }
+
+    private async Task RequireOwnerAsync(int restaurantId, string userId)
+    {
+        await using var db = await factory.CreateDbContextAsync();
+
+        if (!await db.Memberships.AnyAsync(m => m.UserId == userId && m.RestaurantId == restaurantId && m.Role == MembershipRole.Owner))
+            throw new DomainValidationException("Seul le propriétaire peut modifier les paramètres du restaurant");
     }
 
     /// <summary>Slug dérivé du nom, suffixé -2, -3… jusqu'à trouver un slug libre.</summary>

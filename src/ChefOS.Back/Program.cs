@@ -134,3 +134,6 @@ app.MapVitrineImageEndpoint();
 }
 
 app.Run();
+
+/// <summary>Repère du back pour les tests d'intégration (<c>WebApplicationFactory&lt;BackProgram&gt;</c>) : la vitrine a son propre <c>Program</c>.</summary>
+public partial class BackProgram;

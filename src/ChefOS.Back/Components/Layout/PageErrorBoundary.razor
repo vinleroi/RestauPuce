@@ -1,0 +1,43 @@
+@inherits ErrorBoundaryBase
+@implements IDisposable
+
+@inject NavigationManager Navigation
+@inject ILogger<PageErrorBoundary> Logger
+
+@* Enveloppe le contenu d'une page : une erreur inattendue affiche ce message au lieu de la barre d'erreur générique du navigateur. *@
+@if (CurrentException is null)
+{
+    @ChildContent
+}
+else
+{
+    <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="my-4">
+        <MudText>Une erreur inattendue est survenue. Vos dernières modifications n'ont peut-être pas été enregistrées.</MudText>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Class="mt-3" OnClick="Reload">Recharger</MudButton>
+    </MudAlert>
+}
+
+@code {
+    protected override void OnInitialized() => Navigation.LocationChanged += OnLocationChanged;
+
+    protected override Task OnErrorAsync(Exception exception)
+    {
+        Logger.LogError(exception, "Erreur inattendue sur la page {Uri}", Navigation.Uri);
+        return Task.CompletedTask;
+    }
+
+    // Le layout est conservé d'une page à l'autre : sans cela, l'erreur resterait affichée sur toutes les pages suivantes.
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        if (CurrentException is not null)
+            _ = InvokeAsync(Recover);
+    }
+
+    private void Reload()
+    {
+        Recover();
+        Navigation.Refresh(forceReload: true);
+    }
+
+    public void Dispose() => Navigation.LocationChanged -= OnLocationChanged;
+}
