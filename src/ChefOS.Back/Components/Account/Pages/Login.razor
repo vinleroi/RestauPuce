@@ -10,6 +10,7 @@
 @inject ILogger<Login> Logger
 @inject NavigationManager NavigationManager
 @inject IdentityRedirectManager RedirectManager
+@inject RegistrationPolicy Registration
 
 <PageTitle>Connexion — ChefOS</PageTitle>
 
@@ -47,9 +48,12 @@
                     <p>
                         <a href="Account/ForgotPassword">Mot de passe oublié ?</a>
                     </p>
-                    <p>
-                        <a href="@(NavigationManager.GetUriWithQueryParameters("Account/Register", new Dictionary<string, object?> { ["ReturnUrl"] = ReturnUrl }))">Créer un compte</a>
-                    </p>
+                    @if (registrationOpen)
+                    {
+                        <p>
+                            <a href="@(NavigationManager.GetUriWithQueryParameters("Account/Register", new Dictionary<string, object?> { ["ReturnUrl"] = ReturnUrl }))">Créer un compte</a>
+                        </p>
+                    }
                     <p>
                         <a href="Account/ResendEmailConfirmation">Renvoyer l'e-mail de confirmation</a>
                     </p>
@@ -68,6 +72,7 @@
 
 @code {
     private string? errorMessage;
+    private bool registrationOpen;
     private EditContext editContext = default!;
 
     [CascadingParameter]
@@ -82,6 +87,7 @@
     protected override async Task OnInitializedAsync()
     {
         Input ??= new();
+        registrationOpen = await Registration.IsOpenAsync();
 
         editContext = new EditContext(Input);
 
@@ -118,6 +124,10 @@
         {
             Logger.LogWarning("User account locked out.");
             RedirectManager.RedirectTo("Account/Lockout");
+        }
+        else if (result.IsNotAllowed)
+        {
+            errorMessage = "Erreur : confirmez d'abord votre adresse e-mail grâce au lien que nous vous avons envoyé.";
         }
         else
         {

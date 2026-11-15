@@ -64,14 +64,18 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ITenantContext, ClaimsTenantContext>();
 builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
-builder.Services.AddIdentityCore<ApplicationUser>(options => options.SignIn.RequireConfirmedAccount = false)
+builder.Services.AddIdentityCore<ApplicationUser>(options =>
+        // Vrai par défaut : Identity n'envoie le lien « mot de passe oublié » qu'à une adresse confirmée (faux en développement).
+        options.SignIn.RequireConfirmedAccount = builder.Configuration.GetValue("Accounts:RequireConfirmedEmail", true))
     .AddEntityFrameworkStores<ChefOsDbContext>()
     .AddSignInManager()
     .AddDefaultTokenProviders()
     .AddErrorDescriber<FrenchIdentityErrorDescriber>()
     .AddClaimsPrincipalFactory<ChefOsClaimsPrincipalFactory>();
 
-builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
+// E-mails des comptes : dans la file commune (la fabrique de contextes est scoped).
+builder.Services.AddScoped<IEmailSender<ApplicationUser>, IdentityOutboxEmailSender>();
+builder.Services.AddScoped<RegistrationPolicy>();
 
 var app = builder.Build();
 

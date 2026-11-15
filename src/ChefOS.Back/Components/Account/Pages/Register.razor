@@ -14,11 +14,19 @@
 @inject ILogger<Register> Logger
 @inject NavigationManager NavigationManager
 @inject IdentityRedirectManager RedirectManager
+@inject RegistrationPolicy Registration
 
 <PageTitle>Créer un compte — ChefOS</PageTitle>
 
 <h1>Créer un compte</h1>
 
+@if (!registrationOpen)
+{
+    <p role="alert">@RegistrationPolicy.ClosedMessage</p>
+    <p><a href="Account/Login">Retour à la connexion</a></p>
+}
+else
+{
 <div class="row">
     <div class="col-lg-6">
         <StatusMessage Message="@Message" />
@@ -53,9 +61,11 @@
         </section>
     </div>
 </div>
+}
 
 @code {
     private IEnumerable<IdentityError>? identityErrors;
+    private bool registrationOpen;
 
     [SupplyParameterFromForm]
     private InputModel Input { get; set; } = default!;
@@ -65,13 +75,21 @@
 
     private string? Message => identityErrors is null ? null : $"Erreur : {string.Join(" ", identityErrors.Select(error => error.Description))}";
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         Input ??= new();
+        registrationOpen = await Registration.IsOpenAsync();
     }
 
     public async Task RegisterUser(EditContext editContext)
     {
+        // Un POST direct (sans passer par l'affichage du formulaire) est refusé aussi.
+        if (!await Registration.IsOpenAsync())
+        {
+            registrationOpen = false;
+            return;
+        }
+
         var user = CreateUser();
 
         await UserStore.SetUserNameAsync(user, Input.Email, CancellationToken.None);
@@ -94,7 +112,7 @@
             NavigationManager.ToAbsoluteUri("Account/ConfirmEmail").AbsoluteUri,
             new Dictionary<string, object?> { ["userId"] = userId, ["code"] = code, ["returnUrl"] = ReturnUrl });
 
-        await EmailSender.SendConfirmationLinkAsync(user, Input.Email, HtmlEncoder.Default.Encode(callbackUrl));
+        await EmailSender.SendConfirmationLinkAsync(user, Input.Email, callbackUrl);
 
         if (UserManager.Options.SignIn.RequireConfirmedAccount)
         {

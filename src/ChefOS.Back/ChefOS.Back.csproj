@@ -14,6 +14,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="ChefOS.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\ChefOS.Core\ChefOS.Core.csproj" />
     <ProjectReference Include="..\ChefOS.Infrastructure\ChefOS.Infrastructure.csproj" />
   </ItemGroup>

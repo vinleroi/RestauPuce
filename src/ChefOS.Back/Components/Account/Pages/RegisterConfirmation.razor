@@ -1,13 +1,9 @@
 ﻿@page "/Account/RegisterConfirmation"
 
-@using System.Text
 @using Microsoft.AspNetCore.Identity
-@using Microsoft.AspNetCore.WebUtilities
 @using ChefOS.Infrastructure.Identity
 
 @inject UserManager<ApplicationUser> UserManager
-@inject IEmailSender<ApplicationUser> EmailSender
-@inject NavigationManager NavigationManager
 @inject IdentityRedirectManager RedirectManager
 
 <PageTitle>Confirmation d'inscription — ChefOS</PageTitle>
@@ -16,20 +12,9 @@
 
 <StatusMessage Message="@statusMessage" />
 
-@if (emailConfirmationLink is not null)
-{
-    <p>
-        Cette application n'envoie pas encore de véritables e-mails (voir <a href="https://aka.ms/aspaccountconf">cette documentation</a> pour en configurer l'envoi).
-        Normalement, ce lien vous serait envoyé par e-mail : <a href="@emailConfirmationLink">Cliquez ici pour confirmer votre compte</a>
-    </p>
-}
-else
-{
-    <p role="alert">Vérifiez votre boîte e-mail pour confirmer votre compte.</p>
-}
+<p role="alert">Vérifiez votre boîte e-mail pour confirmer votre compte.</p>
 
 @code {
-    private string? emailConfirmationLink;
     private string? statusMessage;
 
     [CascadingParameter]
@@ -54,16 +39,6 @@ else
         {
             HttpContext.Response.StatusCode = StatusCodes.Status404NotFound;
             statusMessage = "Erreur : aucun utilisateur ne correspond à cette adresse e-mail";
-        }
-        else if (EmailSender is IdentityNoOpEmailSender)
-        {
-            // Once you add a real email sender, you should remove this code that lets you confirm the account
-            var userId = await UserManager.GetUserIdAsync(user);
-            var code = await UserManager.GenerateEmailConfirmationTokenAsync(user);
-            code = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(code));
-            emailConfirmationLink = NavigationManager.GetUriWithQueryParameters(
-                NavigationManager.ToAbsoluteUri("Account/ConfirmEmail").AbsoluteUri,
-                new Dictionary<string, object?> { ["userId"] = userId, ["code"] = code, ["returnUrl"] = ReturnUrl });
         }
     }
 }
