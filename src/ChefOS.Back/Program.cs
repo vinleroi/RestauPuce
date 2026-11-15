@@ -54,6 +54,8 @@ if (string.IsNullOrWhiteSpace(connectionString))
     throw new InvalidOperationException("La chaîne de connexion « ChefOs » n'est pas configurée.");
 
 builder.Services.AddChefOsInfrastructure(connectionString);
+// Derrière le proxy : en-têtes transférés (ReverseProxy:KnownNetworks), clés de protection des données en base, /healthz et /healthz/ready.
+builder.Services.AddChefOsHosting(builder.Configuration, "ChefOS.Back");
 builder.Services.AddChefOsDemoSeeder();
 // Réservations et paiements : le back installe, annule et rembourse (passerelle choisie par la section « Payments », Demo par défaut).
 builder.Services.AddChefOsPayments(builder.Configuration);
@@ -83,16 +85,13 @@ builder.Services.AddScoped<RegistrationPolicy>();
 
 var app = builder.Build();
 
+// En premier : le schéma et l'adresse transmis par le proxy valent pour HSTS, la redirection HTTPS et les cookies.
+app.UseChefOsHosting();
+
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseMigrationsEndPoint();
-
-    // Base de dev à jour et « Le Petit Bistro » au premier lancement (le seeder ne fait rien si un restaurant existe).
-    // Hors requête, ClaimsTenantContext ne voit aucun restaurant : seuls Identity, Restaurant et Membership sont touchés ici.
-    await using var scope = app.Services.CreateAsyncScope();
-    await scope.ServiceProvider.GetRequiredService<ChefOsDbContext>().Database.MigrateAsync();
-    await scope.ServiceProvider.GetRequiredService<DemoSeeder>().SeedAsync();
 }
 else
 {
@@ -122,17 +121,28 @@ app.MapActiveRestaurantEndpoint();
 app.MapReceiptFileEndpoint();
 app.MapVitrineImageEndpoint();
 
-// Bibliothèque de vins partagée : upsert idempotent à chaque démarrage, quel que soit l'environnement.
-// Une base pas encore migrée ne doit pas empêcher l'hôte de démarrer : l'échec est journalisé.
+// La base au démarrage, dans tous les environnements (la vitrine n'y touche pas) :
+// 1. migrations si Database:MigrateOnStartup (vrai par défaut) ; le verrou de migration d'EF Core empêche deux instances de migrer ensemble,
+//    et un échec arrête le démarrage ;
+// 2. « Le Petit Bistro » si Demo:SeedOnStartup (vrai en développement, faux ailleurs ; une démo hébergée donne le compte par Demo__Email
+//    et Demo__Password) ; le seeder ne fait rien si un restaurant existe. Hors requête, ClaimsTenantContext ne voit aucun restaurant :
+//    seuls Identity, Restaurant et Membership sont touchés ;
+// 3. la bibliothèque de vins partagée : upsert idempotent ; sur une base non migrée, l'échec est journalisé et l'hôte démarre quand même.
+await using (var scope = app.Services.CreateAsyncScope())
 {
-    await using var wineScope = app.Services.CreateAsyncScope();
+    if (app.Configuration.GetValue("Database:MigrateOnStartup", true))
+        await scope.ServiceProvider.GetRequiredService<ChefOsDbContext>().Database.MigrateAsync();
+
+    if (app.Configuration.GetValue("Demo:SeedOnStartup", false))
+        await scope.ServiceProvider.GetRequiredService<DemoSeeder>().SeedAsync();
+
     try
     {
-        await wineScope.ServiceProvider.GetRequiredService<WineLibrarySeeder>().SeedAsync();
+        await scope.ServiceProvider.GetRequiredService<WineLibrarySeeder>().SeedAsync();
     }
     catch (Exception ex)
     {
-        wineScope.ServiceProvider.GetRequiredService<ILogger<WineLibrarySeeder>>()
+        scope.ServiceProvider.GetRequiredService<ILogger<WineLibrarySeeder>>()
             .LogError(ex, "Bibliothèque de vins non chargée (base absente ou non migrée ?).");
     }
 }

@@ -78,7 +78,8 @@ public class DemoSeeder(UserManager<ApplicationUser> users, DbContextOptions<Che
     {
         var settings = demo.Value;
         if (string.IsNullOrWhiteSpace(settings.Email) || string.IsNullOrWhiteSpace(settings.Password))
-            throw new InvalidOperationException("La section de configuration « Demo » (Email, Password) est incomplète.");
+            throw new InvalidOperationException(
+                "La section de configuration « Demo » (Email, Password) est incomplète : hors développement, renseignez les variables d'environnement Demo__Email et Demo__Password.");
 
         // Un utilisateur déjà créé par une tentative précédente (interrompue avant la fin) est réutilisé.
         if (await users.FindByEmailAsync(settings.Email) is { } existing)

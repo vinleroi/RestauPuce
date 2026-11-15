@@ -2,7 +2,6 @@ using System.Globalization;
 using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Hosting;
-using ChefOS.Infrastructure.Wines;
 using ChefOS.Vitrine.Components;
 using ChefOS.Vitrine.Endpoints;
 using ChefOS.Vitrine.Support;
@@ -35,6 +34,9 @@ if (string.IsNullOrWhiteSpace(connectionString))
     throw new InvalidOperationException("La chaîne de connexion « ChefOs » n'est pas configurée.");
 
 builder.Services.AddChefOsInfrastructure(connectionString);
+// Derrière le proxy : en-têtes transférés (ReverseProxy:KnownNetworks), clés de protection des données en base, /healthz et /healthz/ready.
+// La vitrine ne migre pas et ne charge pas la bibliothèque de vins : le back installe le schéma, et /healthz/ready attend qu'il l'ait fait.
+builder.Services.AddChefOsHosting(builder.Configuration, "ChefOS.Vitrine");
 // Réservations et paiements : passerelle choisie par la section « Payments » (Demo par défaut, en base, partagée avec le back).
 builder.Services.AddChefOsPayments(builder.Configuration);
 // E-mails : file en base envoyée en arrière-plan (section « Email » : Log par défaut, Smtp vers Mailpit en développement).
@@ -53,6 +55,9 @@ builder.Services.AddSingleton<AttemptLimiter>();
 builder.Services.AddScoped<CircuitAttempts>();
 
 var app = builder.Build();
+
+// En premier : le schéma et l'adresse transmis par le proxy valent pour HSTS, la redirection HTTPS et les cookies.
+app.UseChefOsHosting();
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
@@ -84,21 +89,6 @@ app.MapStaticAssets();
 app.MapVitrineEndpoints();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
-
-// Bibliothèque de vins partagée : upsert idempotent à chaque démarrage, quel que soit l'environnement.
-// Une base pas encore migrée ne doit pas empêcher l'hôte de démarrer : l'échec est journalisé.
-{
-    await using var wineScope = app.Services.CreateAsyncScope();
-    try
-    {
-        await wineScope.ServiceProvider.GetRequiredService<WineLibrarySeeder>().SeedAsync();
-    }
-    catch (Exception ex)
-    {
-        wineScope.ServiceProvider.GetRequiredService<ILogger<WineLibrarySeeder>>()
-            .LogError(ex, "Bibliothèque de vins non chargée (base absente ou non migrée ?).");
-    }
-}
 
 app.Run();
 

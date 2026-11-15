@@ -233,8 +233,9 @@ public static class DependencyInjection
     /// <summary>
     /// Contextes sans restaurant courant, pour les singletons d'arrière-plan : seules les tables globales y sont lisibles (les filtres de restaurant
     /// ne laissent rien passer). Le fournisseur de services de l'application est celui de la racine (journaux d'EF).
+    /// Aussi utilisée par l'hébergement (clés de protection des données, contrôle de santé de la base).
     /// </summary>
-    private sealed class GlobalContextFactory(DbContextOptions<ChefOsDbContext> options) : IDbContextFactory<ChefOsDbContext>
+    internal sealed class GlobalContextFactory(DbContextOptions<ChefOsDbContext> options) : IDbContextFactory<ChefOsDbContext>
     {
         public ChefOsDbContext CreateDbContext() => new(options, new FixedTenantContext(null));
     }

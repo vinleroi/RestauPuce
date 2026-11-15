@@ -85,7 +85,18 @@ public sealed class VitrineSite : IAsyncDisposable
             hiddenImageId = image.Id;
         }
 
-        var factory = new WebApplicationFactory<VitrineProgram>().WithWebHostBuilder(builder =>
+        var factory = CreateFactory(connection, gateway, configureServices);
+
+        return new VitrineSite
+        {
+            Factory = factory, Options = options, Bistro = bistro, Other = other, Hidden = hidden,
+            BistroImageId = imageId, HiddenImageId = hiddenImageId, BistroWineId = wineId, BistroDishId = dishId
+        };
+    }
+
+    /// <summary>La vitrine (environnement Development) sur une base donnée : passerelle Demo par défaut, e-mails journalisés, aucun appel externe.</summary>
+    public static WebApplicationFactory<VitrineProgram> CreateFactory(string connection, string? gateway = null, Action<IServiceCollection>? configureServices = null) =>
+        new WebApplicationFactory<VitrineProgram>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:ChefOs", connection);
             builder.UseSetting("Payments:Gateway", gateway ?? "Demo");
@@ -95,13 +106,6 @@ public sealed class VitrineSite : IAsyncDisposable
             if (configureServices is not null)
                 builder.ConfigureTestServices(configureServices);
         });
-
-        return new VitrineSite
-        {
-            Factory = factory, Options = options, Bistro = bistro, Other = other, Hidden = hidden,
-            BistroImageId = imageId, HiddenImageId = hiddenImageId, BistroWineId = wineId, BistroDishId = dishId
-        };
-    }
 
     private static async Task<Restaurant> AddRestaurantAsync(DbContextOptions<ChefOsDbContext> options, string name, bool published)
     {

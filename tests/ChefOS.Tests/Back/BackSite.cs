@@ -51,20 +51,7 @@ public sealed class BackSite : IAsyncDisposable
             await db.SaveChangesAsync();
         }
 
-        var factory = new WebApplicationFactory<BackProgram>().WithWebHostBuilder(builder =>
-        {
-            builder.UseEnvironment(environment);
-            builder.UseSetting("ConnectionStrings:ChefOs", connection);
-            builder.UseSetting("Email:Sender", "Log");
-            builder.UseSetting("Payments:Gateway", "Demo");
-            // Adresse https : la configuration de Production est vérifiée au démarrage (ProductionConfiguration).
-            builder.UseSetting("Vitrine:BaseUrl", "https://vitrine.test");
-            builder.UseSetting("Accounts:RequireConfirmedEmail", "false");
-            builder.UseSetting("Demo:SeedOnStartup", "false");
-            // Jamais d'appel à Anthropic : lecteur de tickets et assistant de vins de démonstration.
-            builder.UseSetting("Receipts:Reader", "Demo");
-            builder.UseSetting("Wines:Describer", "Demo");
-        });
+        var factory = CreateFactory(connection, environment);
 
         ApplicationUser bistroOwner, brasserieOwner, shared;
         using (var scope = factory.Services.CreateScope())
@@ -95,6 +82,28 @@ public sealed class BackSite : IAsyncDisposable
             BistroReceiptId = bistroReceipt, BrasserieReceiptId = brasserieReceipt
         };
     }
+
+    /// <summary>
+    /// L'hôte du back sur une base donnée, configuré comme en production (adresse https de la vitrine, e-mails journalisés, passerelle Demo,
+    /// pas de seed) ; <paramref name="settings"/> complète ou remplace ces réglages. Aucun appel externe.
+    /// </summary>
+    public static WebApplicationFactory<BackProgram> CreateFactory(string connection, string environment = "Development", params (string Key, string Value)[] settings) =>
+        new WebApplicationFactory<BackProgram>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment(environment);
+            builder.UseSetting("ConnectionStrings:ChefOs", connection);
+            builder.UseSetting("Email:Sender", "Log");
+            builder.UseSetting("Payments:Gateway", "Demo");
+            // Adresse https : la configuration de Production est vérifiée au démarrage (ProductionConfiguration).
+            builder.UseSetting("Vitrine:BaseUrl", "https://vitrine.test");
+            builder.UseSetting("Accounts:RequireConfirmedEmail", "false");
+            builder.UseSetting("Demo:SeedOnStartup", "false");
+            // Jamais d'appel à Anthropic : lecteur de tickets et assistant de vins de démonstration.
+            builder.UseSetting("Receipts:Reader", "Demo");
+            builder.UseSetting("Wines:Describer", "Demo");
+            foreach (var (key, value) in settings)
+                builder.UseSetting(key, value);
+        });
 
     private static async Task<ApplicationUser> AddUserAsync(UserManager<ApplicationUser> users, string email)
     {

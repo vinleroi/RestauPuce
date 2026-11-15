@@ -7,13 +7,14 @@ using ChefOS.Core.Vitrine;
 using ChefOS.Infrastructure.Identity;
 using ChefOS.Infrastructure.Notifications;
 using ChefOS.Infrastructure.Payments;
+using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 
 namespace ChefOS.Infrastructure.Data;
 
 public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantContext tenant)
-    : IdentityDbContext<ApplicationUser>(options)
+    : IdentityDbContext<ApplicationUser>(options), IDataProtectionKeyContext
 {
     public DbSet<Restaurant> Restaurants => Set<Restaurant>();
     public DbSet<Membership> Memberships => Set<Membership>();
@@ -46,6 +47,11 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
     public DbSet<DemoGatewayPayment> DemoGatewayPayments => Set<DemoGatewayPayment>();
     /// <summary>File d'e-mails des deux sites : table globale, sans filtre de restaurant, exposée par aucune page.</summary>
     public DbSet<OutgoingEmail> OutgoingEmails => Set<OutgoingEmail>();
+    /// <summary>
+    /// Clés de protection des données des deux sites (cookies de connexion, jetons anti-falsification, circuits Blazor) : table globale,
+    /// sans filtre de restaurant, exposée par aucune page. Lue et écrite par la fabrique de contextes sans restaurant (voir <c>HostingExtensions</c>).
+    /// </summary>
+    public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
     public DbSet<WineListItem> WineListItems => Set<WineListItem>();
     public DbSet<WineListItemPairing> WineListItemPairings => Set<WineListItemPairing>();
 
@@ -100,6 +106,7 @@ public class ChefOsDbContext(DbContextOptions<ChefOsDbContext> options, ITenantC
         builder.Entity<WineListItemPairing>().HasQueryFilter(e => e.RestaurantId == CurrentRestaurantId);
         // WineReference : bibliothèque partagée, pas de RestaurantId, donc pas de filtre.
         // OutgoingEmail : file globale (son RestaurantId ne sert qu'au suivi), pas de filtre.
+        // DataProtectionKey : clés communes aux deux sites, pas de restaurant, pas de filtre.
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
