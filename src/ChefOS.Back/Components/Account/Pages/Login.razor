@@ -125,13 +125,9 @@
             Logger.LogWarning("User account locked out.");
             RedirectManager.RedirectTo("Account/Lockout");
         }
-        else if (result.IsNotAllowed)
-        {
-            errorMessage = "Erreur : confirmez d'abord votre adresse e-mail grâce au lien que nous vous avons envoyé.";
-        }
         else
         {
-            errorMessage = "Erreur : adresse e-mail ou mot de passe incorrect.";
+            errorMessage = LoginFailure.MessageFor(result);
         }
     }
 

@@ -15,6 +15,7 @@
 @inject NavigationManager NavigationManager
 @inject IdentityRedirectManager RedirectManager
 @inject ILogger<ExternalLogin> Logger
+@inject RegistrationPolicy Registration
 
 <PageTitle>Register</PageTitle>
 
@@ -130,7 +131,13 @@
             return;
         }
 
-        // If the user does not have an account, then ask the user to create an account.
+        // Pas de compte lié : créer un compte est une inscription, donc soumise à la même règle que /Account/Register.
+        if (!await Registration.IsOpenAsync())
+        {
+            RedirectManager.RedirectToWithStatus("Account/Login", RegistrationPolicy.ClosedMessage, HttpContext);
+            return;
+        }
+
         if (externalLoginInfo.Principal.HasClaim(c => c.Type == ClaimTypes.Email))
         {
             Input.Email = externalLoginInfo.Principal.FindFirstValue(ClaimTypes.Email) ?? "";
@@ -142,6 +149,13 @@
         if (externalLoginInfo is null)
         {
             RedirectManager.RedirectToWithStatus("Account/Login", "Error loading external login information during confirmation.", HttpContext);
+            return;
+        }
+
+        // Un POST direct est refusé aussi.
+        if (!await Registration.IsOpenAsync())
+        {
+            RedirectManager.RedirectToWithStatus("Account/Login", RegistrationPolicy.ClosedMessage, HttpContext);
             return;
         }
 
