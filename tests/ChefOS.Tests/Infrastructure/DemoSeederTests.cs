@@ -446,7 +446,9 @@ public class DemoSeederTests(PostgresFixture postgres)
 
         // Le tableau de bord du restaurant de démo : même assemblage que les hôtes, avec le restaurant courant du bistro.
         var factory = new TestContextFactory(options, restaurantId);
-        var dashboard = new DashboardService(new RecipeService(factory), new StatsService(factory), factory, new FixedTenantContext(restaurantId));
+        // À l'horloge du seed : avec l'horloge système, la fenêtre de 7 jours glisserait hors des ventes semées au fil des jours.
+        var dashboard = new DashboardService(new RecipeService(factory), new StatsService(factory), factory, new FixedTenantContext(restaurantId),
+            new FakeTimeProvider(new DateTimeOffset(Now)));
         var summary = await dashboard.GetSummaryAsync();
 
         Assert.True(summary.DishCount >= 10);
