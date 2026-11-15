@@ -136,13 +136,14 @@ public record ReceiptLineInput(
     int? IngredientId,
     bool IsIgnored);
 
-/// <summary><paramref name="Lines"/> remplace les lignes du ticket, dans cet ordre. <paramref name="ReceiptDate"/> : seul le jour du calendrier compte (enregistré à minuit UTC).</summary>
+/// <summary><paramref name="Lines"/> remplace les lignes du ticket, dans cet ordre. <paramref name="Version"/> : la version lue avec le ticket (<see cref="ChefOS.Core.Receipts.Receipt.Version"/>) ; si le ticket a changé depuis, l'enregistrement est refusé. <paramref name="ReceiptDate"/> : seul le jour du calendrier compte (enregistré à minuit UTC).</summary>
 public record ReceiptDraftInput(
     int ReceiptId,
     int? SupplierId,
     DateTime? ReceiptDate,
     string? InvoiceNumber,
-    IReadOnlyList<ReceiptLineInput> Lines);
+    IReadOnlyList<ReceiptLineInput> Lines,
+    uint? Version = null);
 
 /// <summary>
 /// Prix appliqué à un ingrédient. <paramref name="ReplacedCurrent"/> est faux quand le ticket est plus ancien que le dernier prix connu :
@@ -182,6 +183,7 @@ public record OrderLineSummary(int RecipeId, string DishName, int Quantity, stri
 
 /// <summary>
 /// <paramref name="Note"/> : la note de la commande (allergie, heure de passage…), saisie à la prise de commande ; null quand il n'y en a pas.
+/// <paramref name="Version"/> : le jeton de version lu, à renvoyer à <see cref="OrderService.UpdateLinesAsync"/>.
 /// <paramref name="TotalInclVat"/> : somme des quantités × prix figés des lignes (non arrondie).
 /// </summary>
 public record OrderSummary(
@@ -193,7 +195,8 @@ public record OrderSummary(
     string? TableOrCustomer,
     string? Note,
     decimal TotalInclVat,
-    IReadOnlyList<OrderLineSummary> Lines);
+    IReadOnlyList<OrderLineSummary> Lines,
+    uint Version = 0);
 
 // ── Pertes et inventaires ────────────────────────────────────────────────────
 

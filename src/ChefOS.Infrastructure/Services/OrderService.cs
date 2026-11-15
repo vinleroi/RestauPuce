@@ -25,6 +25,7 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
     private const string QuantityTooHighMessage = "Quantité trop élevée";
     private const string UnknownDishMessage = "Plat introuvable";
     private const string UnknownOrderMessage = "Commande introuvable";
+    private const string ModifiedElsewhereMessage = "La commande a été modifiée sur un autre appareil, rechargez";
     private const string StatusChangedMessage = "La commande a déjà changé de statut";
     private const string NumberMessage = "Impossible d'attribuer un numéro de commande, réessayez";
     private const string ServedCannotBeEditedMessage = "Une commande servie ne peut plus être modifiée";
@@ -32,7 +33,6 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
     private const string AlreadyServedMessage = "Cette commande est déjà servie";
     private const string CancelledCannotAdvanceMessage = "Une commande annulée ne peut plus avancer";
     private const string ServedCannotBeCancelledMessage = "Une commande servie ne peut pas être annulée";
-    private const string ModifiedElsewhereMessage = "La commande a été modifiée sur un autre appareil, rechargez";
 
     private const string OrderNumberIndex = "IX_Orders_Number";
 
@@ -161,9 +161,13 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
     /// ou annulée entre-temps est refusée. Si les lignes ont quand même changé sous les pieds de l'appelant, il en est averti en français.
     /// </summary>
     /// <exception cref="DomainValidationException">
-    /// Commande inconnue, servie ou annulée ; lignes invalides (voir <see cref="CreateAsync"/>) ; commande modifiée sur un autre appareil pendant l'enregistrement.
+    /// Commande inconnue, servie ou annulée ; <see cref="ConcurrentEditException"/> si la commande a changé depuis la lecture (<paramref name="expectedVersion"/>) ; lignes invalides (voir <see cref="CreateAsync"/>) ; commande modifiée sur un autre appareil pendant l'enregistrement.
     /// </exception>
-    public async Task UpdateLinesAsync(int orderId, IReadOnlyList<OrderLineInput> lines)
+    /// <param name="expectedVersion">
+    /// La version lue avec la commande (<see cref="OrderSummary.Version"/>) ; la réservation n'a lieu que si la commande ne l'a pas quittée. Sans version
+    /// (null), seule la protection pendant l'enregistrement s'applique.
+    /// </param>
+    public async Task UpdateLinesAsync(int orderId, IReadOnlyList<OrderLineInput> lines, uint? expectedVersion = null)
     {
         await using var db = await factory.CreateDbContextAsync();
         await using var transaction = await db.Database.BeginTransactionAsync();
@@ -171,7 +175,8 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
         // Verrou de la commande : « ni servie ni annulée » en une instruction (qui ne change rien d'autre). Une modification concurrente tient la ligne :
         // cette instruction attend sa fin, puis réévalue la condition sur la commande telle qu'elle est devenue.
         var claimed = await db.Orders
-            .Where(o => o.Id == orderId && o.Status != OrderStatus.Servie && o.Status != OrderStatus.Annulee)
+            .Where(o => o.Id == orderId && o.Status != OrderStatus.Servie && o.Status != OrderStatus.Annulee
+                        && (expectedVersion == null || o.Version == expectedVersion))
             .ExecuteUpdateAsync(set => set.SetProperty(o => o.Note, o => o.Note));
         if (claimed != 1)
         {
@@ -179,12 +184,14 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
                 .Where(o => o.Id == orderId)
                 .Select(o => (OrderStatus?)o.Status)
                 .FirstOrDefaultAsync();
-            throw new DomainValidationException(status switch
+            throw status switch
             {
-                null => UnknownOrderMessage,
-                OrderStatus.Servie => ServedCannotBeEditedMessage,
-                _ => CancelledCannotBeEditedMessage
-            });
+                null => new DomainValidationException(UnknownOrderMessage),
+                OrderStatus.Servie => new DomainValidationException(ServedCannotBeEditedMessage),
+                OrderStatus.Annulee => new DomainValidationException(CancelledCannotBeEditedMessage),
+                // Ni servie ni annulée : la commande existe mais sa version n'est plus celle que l'appelant a lue.
+                _ => new ConcurrentEditException()
+            };
         }
 
         RequireLines(lines);
@@ -315,7 +322,8 @@ public class OrderService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
                 o.TableOrCustomer,
                 o.Note,
                 o.Lines.Sum(l => l.Quantity * l.UnitPriceInclVat),
-                o.Lines.Select(l => new OrderLineSummary(l.RecipeId, names[l.RecipeId], l.Quantity, l.Note)).ToList()))
+                o.Lines.Select(l => new OrderLineSummary(l.RecipeId, names[l.RecipeId], l.Quantity, l.Note)).ToList(),
+                o.Version))
             .ToList();
     }
 

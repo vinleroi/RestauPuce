@@ -128,6 +128,9 @@ public sealed class ReceiptReviewForm
 
     public string? InvoiceNumber { get; set; }
 
+    /// <summary>La version du ticket au chargement : renvoyée à l'enregistrement pour refuser d'écraser une modification faite entre-temps.</summary>
+    public uint Version { get; private init; }
+
     public List<ReceiptReviewLine> Lines { get; } = [];
 
     /// <summary>Lignes qui seront appliquées (non ignorées).</summary>
@@ -143,7 +146,8 @@ public sealed class ReceiptReviewForm
         {
             SupplierId = receipt.SupplierId,
             ReceiptDate = receipt.ReceiptDate?.Date,
-            InvoiceNumber = receipt.InvoiceNumber
+            InvoiceNumber = receipt.InvoiceNumber,
+            Version = receipt.Version
         };
         form.Lines.AddRange(receipt.Lines.Select(ReceiptReviewLine.From));
         return form;
@@ -155,7 +159,8 @@ public sealed class ReceiptReviewForm
         SupplierId,
         ReceiptDate,
         InvoiceNumber,
-        Lines.Select(l => new ReceiptLineInput(l.Id, l.RawLabel, l.Quantity, l.Unit, l.LineTotalExclVat, l.VatRate, l.IngredientId, l.IsIgnored)).ToList());
+        Lines.Select(l => new ReceiptLineInput(l.Id, l.RawLabel, l.Quantity, l.Unit, l.LineTotalExclVat, l.VatRate, l.IngredientId, l.IsIgnored)).ToList(),
+        Version);
 
     /// <summary>Chiffre chaque ligne telle qu'elle est saisie, sans accès à la base : une entrée par ligne, dans le même ordre.</summary>
     public IReadOnlyList<ReceiptLineEvaluation> Evaluate(IReadOnlyDictionary<int, Ingredient> ingredients) =>

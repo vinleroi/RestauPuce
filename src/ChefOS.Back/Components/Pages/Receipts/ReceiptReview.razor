@@ -621,7 +621,7 @@ else
         _busy = true;
         try
         {
-            await ReceiptService.DeleteAsync(Id);
+            await ReceiptService.DeleteAsync(Id, _form.Version);
             Snackbar.Add("Ticket supprimé", Severity.Success);
             Navigation.NavigateTo("/receipts");
         }

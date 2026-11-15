@@ -284,7 +284,7 @@ else
             }
             else
             {
-                await OrderService.UpdateLinesAsync(_existing.Id, _draft.ToLineInputs());
+                await OrderService.UpdateLinesAsync(_existing.Id, _draft.ToLineInputs(), _existing.Version);
                 Snackbar.Add($"Commande n° {_existing.Number} modifiée", Severity.Success);
             }
 

@@ -9,6 +9,12 @@ public class DomainValidationException(string message, string? field = null) : E
     public string? Field { get; } = field;
 }
 
+/// <summary>
+/// Une commande ou un ticket a été modifié (ou supprimé) par quelqu'un d'autre entre la lecture de l'écran et l'enregistrement :
+/// le jeton de version (<c>xmin</c>) ne correspond plus. L'enregistrement est refusé plutôt que d'écraser l'autre modification.
+/// </summary>
+public sealed class ConcurrentEditException() : DomainValidationException("Modifié entre-temps : rechargez la page");
+
 /// <summary>Zones d'un formulaire de réservation auxquelles une <see cref="DomainValidationException"/> peut se rapporter.</summary>
 public static class ValidationFields
 {

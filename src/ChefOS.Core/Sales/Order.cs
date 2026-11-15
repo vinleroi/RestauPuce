@@ -15,5 +15,7 @@ public class Order : ITenantScoped
     public string? TableOrCustomer { get; set; }
     public string? Note { get; set; }
     public DateTime StatusChangedAt { get; set; }
+    /// <summary>Jeton de concurrence : la colonne système <c>xmin</c> de PostgreSQL, qui change à chaque modification de la ligne.</summary>
+    public uint Version { get; set; }
     public List<OrderLine> Lines { get; set; } = new();
 }

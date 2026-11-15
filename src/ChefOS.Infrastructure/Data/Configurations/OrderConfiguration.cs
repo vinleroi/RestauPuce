@@ -13,6 +13,9 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(o => o.Source).HasConversion<string>();
         builder.Property(o => o.Status).HasConversion<string>();
 
+        // Jeton de version : colonne système xmin (aucune colonne ajoutée).
+        builder.Property(o => o.Version).IsRowVersion();
+
         // Le numéro de commande est séquentiel par restaurant.
         builder.HasIndex(o => new { o.RestaurantId, o.Number })
             .IsUnique()

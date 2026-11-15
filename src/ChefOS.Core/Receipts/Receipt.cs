@@ -17,5 +17,7 @@ public class Receipt : ITenantScoped
     public string? ErrorMessage { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? AppliedAt { get; set; }
+    /// <summary>Jeton de concurrence : la colonne système <c>xmin</c> de PostgreSQL, qui change à chaque modification de la ligne.</summary>
+    public uint Version { get; set; }
     public List<ReceiptLine> Lines { get; set; } = [];
 }

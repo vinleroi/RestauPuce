@@ -173,7 +173,7 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
             });
         }
 
-        await db.SaveChangesAsync(ct);
+        await SaveGuardedAsync(db, ct);
     }
 
     /// <summary>Tickets du restaurant courant, du plus récent au plus ancien, sans leurs lignes ni leur fichier.</summary>
@@ -219,13 +219,16 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     /// du ticket absentes du brouillon sont supprimées. Un ingrédient différent de celui enregistré est un choix manuel (origine effacée) ;
     /// la mention « TVA à vérifier » ne reste que si ni le taux ni le total de la ligne n'ont été modifiés. Un ticket en échec ou pas encore lu, complété
     /// avec au moins une ligne, passe à <see cref="ReceiptStatus.Extracted"/>. Une date postérieure à demain (fuseau du restaurant) est refusée (voir <see cref="RestaurantCalendar.IsInTheFuture"/>).
-    /// Tout est enregistré d'un coup ou pas du tout.
+    /// Tout est enregistré d'un coup ou pas du tout. Si le ticket a changé depuis la lecture de l'écran (<see cref="ReceiptDraftInput.Version"/>), l'enregistrement est refusé (<see cref="ConcurrentEditException"/>).
     /// </summary>
     public async Task SaveDraftAsync(ReceiptDraftInput input)
     {
         await using var db = await factory.CreateDbContextAsync();
 
         var receipt = await RequireReceiptAsync(db, input.ReceiptId, includeLines: true);
+        // Le ticket a changé (appliqué, relu, modifié dans un autre onglet) depuis la lecture de l'écran : rien n'est écrasé.
+        if (input.Version is { } readVersion && readVersion != receipt.Version)
+            throw new ConcurrentEditException();
         if (receipt.Status == ReceiptStatus.Applied)
             throw new DomainValidationException(AlreadyAppliedMessage);
 
@@ -285,7 +288,10 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
             receipt.ErrorMessage = null;
         }
 
-        await db.SaveChangesAsync();
+        // L'en-tête est toujours réécrit : l'UPDATE du ticket porte la condition « version inchangée » même quand seules des lignes ont bougé,
+        // donc un ticket appliqué, relu ou supprimé entre la lecture ci-dessus et cet enregistrement refuse l'écriture.
+        db.Entry(receipt).Property(r => r.InvoiceNumber).IsModified = true;
+        await SaveGuardedAsync(db);
     }
 
     /// <summary>
@@ -403,17 +409,19 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     }
 
     /// <summary>Supprime le ticket, ses lignes et son fichier ; refusé une fois appliqué (ses prix sont dans l'historique).</summary>
-    public async Task DeleteAsync(int receiptId)
+    public async Task DeleteAsync(int receiptId, uint? expectedVersion = null)
     {
         await using var db = await factory.CreateDbContextAsync();
 
         var receipt = await RequireReceiptAsync(db, receiptId, includeLines: false);
+        if (expectedVersion is { } readVersion && readVersion != receipt.Version)
+            throw new ConcurrentEditException();
         if (receipt.Status == ReceiptStatus.Applied)
             throw new DomainValidationException(AppliedCannotBeDeletedMessage);
 
         // Les lignes et le fichier suivent par cascade en base.
         db.Receipts.Remove(receipt);
-        await db.SaveChangesAsync();
+        await SaveGuardedAsync(db);
     }
 
     private static async Task<Receipt> RequireReceiptAsync(
@@ -471,7 +479,20 @@ public class ReceiptService(IDbContextFactory<ChefOsDbContext> factory, IReceipt
     {
         receipt.Status = ReceiptStatus.Failed;
         receipt.ErrorMessage = message;
-        await db.SaveChangesAsync(ct);
+        await SaveGuardedAsync(db, ct);
+    }
+
+    /// <summary>Enregistre ; si le ticket (ou une de ses lignes) a été modifié ou supprimé par un autre appel depuis sa lecture, c'est un <see cref="ConcurrentEditException"/>.</summary>
+    private static async Task SaveGuardedAsync(ChefOsDbContext db, CancellationToken ct = default)
+    {
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            throw new ConcurrentEditException();
+        }
     }
 
     /// <summary>
