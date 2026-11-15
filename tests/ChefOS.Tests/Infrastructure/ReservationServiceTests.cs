@@ -704,4 +704,71 @@ public class ReservationServiceTests(PostgresFixture postgres)
         Assert.Equal(ReservationStatus.PendingPayment, ok.Status);
         await RefusedAsync(h.Reservations.CreateManualAsync(Request(note: Long(1001)), true));
     }
+
+    // ── Corrections : synchronisation bornée, créneaux manuels ───────────────
+
+    private static async Task<List<Payment>> OpenDepositsAsync(ReservationHarness h, int count)
+    {
+        for (var i = 0; i < count; i++)
+            await h.CreateAsync(Request(2, name: $"Attente {i}", email: $"w{i}@example.com"));
+        await using var db = h.Open();
+        return await db.Payments.AsNoTracking().Where(p => p.Status == PaymentStatus.Open).OrderBy(p => p.Id).ToListAsync();
+    }
+
+    [Fact]
+    public async Task ListForDay_StopsSyncingAfterFourSeconds()
+    {
+        var h = await CreateAsync(postgres, capacity: 20);
+        await OpenDepositsAsync(h, 3);
+        h.Gateway.StatusDelay = TimeSpan.FromSeconds(3);
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var services = await h.Reservations.ListForDayAsync(Friday);
+        watch.Stop();
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"ListForDayAsync a duré {watch.Elapsed}");
+        Assert.Equal(3, Assert.Single(services).Reservations.Count);
+        Assert.True(h.Gateway.StatusCalls.Count < 3);
+    }
+
+    [Fact]
+    public async Task ListForDay_SyncsNewestPaymentsFirst()
+    {
+        var h = await CreateAsync(postgres, capacity: 20);
+        var open = await OpenDepositsAsync(h, 3);
+
+        await h.Reservations.ListForDayAsync(Friday);
+
+        Assert.Equal(open.OrderByDescending(p => p.Id).Select(p => p.GatewayPaymentId), h.Gateway.StatusCalls);
+    }
+
+    [Fact]
+    public async Task ManualSlots_FollowTheServiceGrid()
+    {
+        var h = await CreateAsync(postgres, capacity: 1);
+        await h.CreateAsync(Request(1)); // le service est plein : la grille ne tient compte ni de la capacité ni du délai
+
+        var slots = await h.Reservations.GetManualSlotsAsync(Friday, "Dîner");
+
+        Assert.Equal(Enumerable.Range(0, 8).Select(i => new TimeOnly(18, 0).AddMinutes(30 * i)), slots);
+        Assert.Empty(await h.Reservations.GetManualSlotsAsync(Friday, "Inconnu"));
+        Assert.Empty(await h.Reservations.GetManualSlotsAsync(Friday.AddDays(1), "Dîner"));
+    }
+
+    [Fact]
+    public async Task ManualSlots_EveningServiceStopsBeforeItsEnd()
+    {
+        var h = await CreateAsync(postgres);
+        await using (var db = h.Open())
+        {
+            db.ServiceSchedules.Add(new ServiceSchedule
+            {
+                DayOfWeek = DayOfWeek.Friday, Name = "Soir", StartLocal = new TimeOnly(19, 0), EndLocal = new TimeOnly(22, 0),
+                Capacity = 10, SlotMinutes = 30
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(Enumerable.Range(0, 6).Select(i => new TimeOnly(19, 0).AddMinutes(30 * i)), await h.Reservations.GetManualSlotsAsync(Friday, "Soir"));
+    }
 }

@@ -174,7 +174,7 @@ else if (_summary is not null)
             return;
 
         var profile = await VitrineService.FindProfileAsync() ?? new VitrineProfile();
-        var view = ReservationDayView.From(services, now, profile.FreeCancellationHours);
+        var view = ReservationDayView.From(services, now);
         _nextGroup = view.NextGroup(profile.GroupThreshold);
         _reservations = view;
     }

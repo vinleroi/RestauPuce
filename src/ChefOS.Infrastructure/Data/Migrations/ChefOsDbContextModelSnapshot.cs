@@ -858,7 +858,7 @@ namespace ChefOS.Infrastructure.Data.Migrations
 
                     b.HasIndex("ReservationId");
 
-                    b.HasIndex("RestaurantId");
+                    b.HasIndex("RestaurantId", "GatewayPaymentId");
 
                     b.ToTable("Payments");
                 });

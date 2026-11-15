@@ -15,7 +15,7 @@ public sealed class ReservationCardView
 {
     private const int CollapsedAboveGuests = 4;
 
-    internal ReservationCardView(ReservationDetail detail, DateTime utcNow, int freeCancellationHours)
+    internal ReservationCardView(ReservationDetail detail, DateTime utcNow)
     {
         Detail = detail;
         Id = detail.Id;
@@ -47,7 +47,7 @@ public sealed class ReservationCardView
         var paid = detail.Payments.FirstOrDefault(p => p.Status == PaymentStatus.Paid);
         CanOfferRefundOnCancel = paid is not null;
         RefundOnCancelLabel = paid?.Kind == PaymentKind.Prepayment ? "Rembourser le prépaiement" : "Rembourser l'acompte";
-        RefundOnCancelByDefault = CanOfferRefundOnCancel && utcNow <= detail.StartsAtUtc.AddHours(-freeCancellationHours);
+        RefundOnCancelByDefault = CanOfferRefundOnCancel && utcNow <= detail.FreeCancellationUntilUtc; // le délai figé à la réservation, pas la règle actuelle du restaurant
 
         Guests = detail.Guests.OrderBy(g => g.Position).Select(GuestText).ToList();
         GuestsCollapsedByDefault = detail.Guests.Count > CollapsedAboveGuests;
@@ -90,7 +90,7 @@ public sealed class ReservationCardView
 
     public string RefundOnCancelLabel { get; }
 
-    /// <summary>Case cochée d'office : le client annule dans le délai gratuit.</summary>
+    /// <summary>Case cochée d'office : le délai gratuit figé sur la réservation (<c>FreeCancellationUntilUtc</c>) n'est pas dépassé.</summary>
     public bool RefundOnCancelByDefault { get; }
 
     /// <summary>« Marie Dupont : Carbonnade, Dame blanche ».</summary>
@@ -133,7 +133,7 @@ public sealed class ReservationCardView
 /// <summary>Un service du jour : couverts réservés sur capacité, barre de remplissage et cartes.</summary>
 public sealed class ServiceView
 {
-    internal ServiceView(ServiceDayView service, DateTime utcNow, int freeCancellationHours)
+    internal ServiceView(ServiceDayView service, DateTime utcNow)
     {
         Name = service.ServiceName;
         Capacity = service.Capacity;
@@ -148,7 +148,7 @@ public sealed class ServiceView
         Cards = service.Reservations
             .OrderBy(r => r.Status is ReservationStatus.NoShow or ReservationStatus.Cancelled or ReservationStatus.Expired ? 1 : 0)
             .ThenBy(r => r.StartsAtUtc).ThenBy(r => r.Id)
-            .Select(r => new ReservationCardView(r, utcNow, freeCancellationHours))
+            .Select(r => new ReservationCardView(r, utcNow))
             .ToList();
         FirstStart = service.Reservations.Count == 0 ? (DateTime?)null : service.Reservations.Min(r => r.StartsAtUtc);
     }
@@ -191,9 +191,9 @@ public sealed class ReservationDayView
 
     public int TotalCovers => Services.Sum(s => s.BookedCovers);
 
-    public static ReservationDayView From(IReadOnlyList<ServiceDayView> services, DateTime utcNow, int freeCancellationHours)
+    public static ReservationDayView From(IReadOnlyList<ServiceDayView> services, DateTime utcNow)
     {
-        var views = services.Select(s => new ServiceView(s, utcNow, freeCancellationHours)).ToList();
+        var views = services.Select(s => new ServiceView(s, utcNow)).ToList();
         var ordered = views.Where(v => v.FirstStart is not null).OrderBy(v => v.FirstStart)
             .Concat(views.Where(v => v.FirstStart is null))
             .ToList();

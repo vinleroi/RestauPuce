@@ -350,6 +350,20 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory, 
         var timeZone = await db.Restaurants.Where(r => r.Id == profile.RestaurantId).Select(r => r.TimeZoneId).FirstAsync();
         var names = disappearing.Select(s => s.Name).Distinct().ToList();
 
+        // Les mêmes verrous qu'une réservation (service + jour) : une réservation en cours de validation est vue (ou attendue) par le contrôle ci-dessous.
+        // Ils sont pris dans un ordre fixe (nom, puis date) pour que deux enregistrements simultanés ne s'interbloquent pas.
+        // Limite acceptée : seules les dates jusqu'à MaxDaysAhead sont verrouillées ; une réservation manuelle faite au même instant au-delà n'est pas couverte.
+        var today = RestaurantClock.Today(now, timeZone);
+        var lockKeys = disappearing
+            .SelectMany(service => Enumerable.Range(0, profile.MaxDaysAhead + 1)
+                .Select(offset => today.AddDays(offset))
+                .Where(date => date.DayOfWeek == service.DayOfWeek)
+                .Select(date => (service.Name, Date: date)))
+            .Distinct()
+            .OrderBy(k => k.Name, StringComparer.Ordinal).ThenBy(k => k.Date);
+        foreach (var (name, date) in lockKeys)
+            await ReservationCapacity.LockAsync(db, profile.RestaurantId, name, date, CancellationToken.None);
+
         var upcoming = await db.Reservations.AsNoTracking()
             .Where(r => r.StartsAtUtc > now && names.Contains(r.ServiceName)
                 && (r.Status == ReservationStatus.Confirmed || r.Status == ReservationStatus.Seated
@@ -380,6 +394,19 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory, 
     private static string DayName(DayOfWeek day) => DayNames[(int)day];
 
     // ── Fermetures ───────────────────────────────────────────────────────────
+
+    /// <summary>Réservations actives (<c>Confirmed</c> et <c>PendingPayment</c>) du jour local : le back les signale avant une fermeture exceptionnelle.</summary>
+    public async Task<int> CountActiveReservationsOnAsync(DateOnly date)
+    {
+        await using var db = await factory.CreateDbContextAsync();
+        var profile = await RequireProfileAsync(db, track: false);
+        var timeZone = await db.Restaurants.Where(r => r.Id == profile.RestaurantId).Select(r => r.TimeZoneId).FirstAsync();
+        var from = RestaurantClock.ToUtc(date, TimeOnly.MinValue, timeZone);
+        var to = RestaurantClock.ToUtc(date.AddDays(1), TimeOnly.MinValue, timeZone);
+
+        return await db.Reservations.CountAsync(r => r.StartsAtUtc >= from && r.StartsAtUtc < to
+            && (r.Status == ReservationStatus.Confirmed || r.Status == ReservationStatus.PendingPayment));
+    }
 
     public async Task<IReadOnlyList<ClosureDay>> GetClosuresAsync()
     {

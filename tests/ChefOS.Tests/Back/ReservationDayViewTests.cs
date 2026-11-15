@@ -12,12 +12,13 @@ public class ReservationDayViewTests
         int id, int hourUtc = 11, int party = 2, ReservationStatus status = ReservationStatus.Confirmed, string name = "Dupont",
         IReadOnlyList<GuestDetail>? guests = null, IReadOnlyList<PaymentDetail>? payments = null, decimal due = 0m, int minute = 0, string? note = null) =>
         new(id, new DateTime(2026, 11, 7, hourUtc, minute, 0, DateTimeKind.Utc), new TimeOnly(hourUtc + 1, minute), party, name, "a@b.be", "0470 00 00 00",
-            note, status, due, 0m, false, null, guests ?? [], payments ?? []);
+            note, status, due, 0m, false, null, guests ?? [], payments ?? [],
+            new DateTime(2026, 11, 7, hourUtc, minute, 0, DateTimeKind.Utc).AddHours(-24));
 
     private static ServiceDayView Service(string name, int capacity, int booked, params ReservationDetail[] reservations) =>
         new(name, capacity, booked, reservations);
 
-    private static ReservationDayView View(params ServiceDayView[] services) => ReservationDayView.From(services, Now, freeCancellationHours: 24);
+    private static ReservationDayView View(params ServiceDayView[] services) => ReservationDayView.From(services, Now);
 
     [Fact]
     public void Services_FollowTheirFirstReservation_EmptyOnesLast()
@@ -201,17 +202,31 @@ public class ReservationDayViewTests
     }
 
     [Fact]
-    public void Cancel_RefundIsCheckedByDefault_InsideTheFreeCancellationWindow()
+    public void Cancel_RefundIsCheckedByDefault_InsideTheFrozenDeadline()
     {
-        // Dans 3 jours : dans le délai gratuit de 24 h. À 11:00 UTC alors qu'il est 10:00 : hors délai.
+        // Délai figé à la réservation : avant 2026-11-08 09:00 UTC, on rembourse par défaut ; après, non.
         var paid = new[] { new PaymentDetail(1, PaymentKind.Deposit, 20m, PaymentStatus.Paid, null) };
-        var tomorrow = new ReservationDetail(1, Now.AddDays(3), new TimeOnly(12, 0), 2, "A", "", "", null, ReservationStatus.Confirmed, 0m, 0m, false, null, [], paid);
-        var soon = Res(2, payments: paid);
+        var before = Res(1, payments: paid) with { FreeCancellationUntilUtc = Now.AddHours(1) };
+        var after = Res(2, payments: paid) with { FreeCancellationUntilUtc = Now.AddHours(-1) };
 
-        var view = View(Service("S", 10, 4, tomorrow, soon));
+        var view = View(Service("S", 10, 4, before, after));
 
         Assert.True(view.Services[0].Cards.Single(c => c.Id == 1).RefundOnCancelByDefault);
         Assert.False(view.Services[0].Cards.Single(c => c.Id == 2).RefundOnCancelByDefault);
+    }
+
+    [Fact]
+    public void RefundDefault_UsesTheFrozenDeadline()
+    {
+        // Figé à 48 h avant le service (déjà dépassé), alors que la règle actuelle (2 h) laisserait encore 24 h : case décochée.
+        var paid = new[] { new PaymentDetail(1, PaymentKind.Deposit, 20m, PaymentStatus.Paid, null) };
+        var startsAt = Now.AddHours(24);
+        var reservation = new ReservationDetail(1, startsAt, new TimeOnly(12, 0), 2, "A", "", "", null, ReservationStatus.Confirmed, 0m, 0m, false, null, [], paid,
+            FreeCancellationUntilUtc: startsAt.AddHours(-48));
+
+        var card = View(Service("S", 10, 2, reservation)).Services[0].Cards[0];
+
+        Assert.False(card.RefundOnCancelByDefault);
     }
 
     [Fact]

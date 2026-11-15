@@ -449,6 +449,52 @@ public class VitrineServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task RenameCheck_WaitsForTheServiceLock()
+    {
+        var (options, restaurant, service) = await SetUpAsync();
+        await service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Soir", 19, 22)]);
+
+        // Une réservation en cours (transaction ouverte) tient le verrou du service et du jour.
+        await using var holder = new ChefOsDbContext(options, new FixedTenantContext(restaurant));
+        await using var transaction = await holder.Database.BeginTransactionAsync();
+        await ReservationCapacity.LockAsync(holder, restaurant, "Soir", DateOnly.FromDateTime(NextFridayDinner), CancellationToken.None);
+
+        var rename = service.SaveSchedulesAsync([Schedule(DayOfWeek.Friday, "Dîner", 19, 22)]);
+        await Task.Delay(1000);
+        Assert.False(rename.IsCompleted, "le contrôle aurait dû attendre le verrou du service");
+
+        holder.Reservations.Add(new Reservation
+        {
+            PublicToken = Guid.NewGuid().ToString("N"), StartsAtUtc = NextFridayDinner, ServiceName = "Soir", PartySize = 2, CustomerName = "Dupont",
+            CustomerEmail = "d@example.com", CustomerPhone = "0470 12 34 56", Status = ReservationStatus.Confirmed, CreatedAt = Today.UtcDateTime,
+            FreeCancellationUntilUtc = NextFridayDinner.AddHours(-24)
+        });
+        await holder.SaveChangesAsync();
+        await transaction.CommitAsync();
+
+        var ex = await Assert.ThrowsAsync<DomainValidationException>(() => rename);
+        Assert.Contains("a des réservations à venir", ex.Message);
+        Assert.Equal("Soir", Assert.Single(await service.GetSchedulesAsync()).Name);
+    }
+
+    [Fact]
+    public async Task CountActiveReservationsOn_CountsConfirmedAndPendingOnly()
+    {
+        var (options, restaurant, service) = await SetUpAsync();
+        var day = new DateOnly(2026, 11, 6);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner.AddHours(1), ReservationStatus.PendingPayment);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner, ReservationStatus.Cancelled);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner, ReservationStatus.Expired);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner, ReservationStatus.Seated);
+        await AddReservationAsync(options, restaurant, "Soir", NextFridayDinner.AddDays(1));
+
+        Assert.Equal(2, await service.CountActiveReservationsOnAsync(day));
+        Assert.Equal(1, await service.CountActiveReservationsOnAsync(day.AddDays(1)));
+        Assert.Equal(0, await service.CountActiveReservationsOnAsync(day.AddDays(2)));
+    }
+
+    [Fact]
     public async Task SaveSchedules_RemovingAServiceWithUpcomingBookings_Refused()
     {
         var (options, restaurant, service) = await SetUpAsync();

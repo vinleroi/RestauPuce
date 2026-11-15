@@ -12,7 +12,6 @@
 @inject PaymentService PaymentService
 @inject OrderService OrderService
 @inject RestaurantService RestaurantService
-@inject VitrineService VitrineService
 @inject ITenantContext Tenant
 @inject TimeProvider Clock
 @inject IDialogService DialogService
@@ -96,7 +95,6 @@ else
     private IReadOnlyList<ServiceDayView> _services = [];
     private DateOnly _day;
     private string _timeZoneId = "Europe/Brussels";
-    private int _freeCancellationHours = 24;
     private TimeOnly? _refreshedAt;
     private bool _loading = true;
     private bool _busy;
@@ -115,8 +113,6 @@ else
             var restaurant = Tenant.CurrentRestaurantId is { } restaurantId ? await RestaurantService.GetAsync(restaurantId) : null;
             _timeZoneId = restaurant?.TimeZoneId ?? _timeZoneId;
             _day = RestaurantClock.Today(Clock.GetUtcNow().UtcDateTime, _timeZoneId);
-            // Ouvrir l'écran ne crée pas de profil de vitrine : sans réglages, les valeurs par défaut s'appliquent.
-            _freeCancellationHours = (await VitrineService.FindProfileAsync())?.FreeCancellationHours ?? new VitrineProfile().FreeCancellationHours;
             await LoadAsync();
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -153,7 +149,7 @@ else
                 return;
 
             _services = services;
-            _view = ReservationDayView.From(services, Clock.GetUtcNow().UtcDateTime, _freeCancellationHours);
+            _view = ReservationDayView.From(services, Clock.GetUtcNow().UtcDateTime);
             _refreshedAt = RestaurantClock.ToLocal(Clock.GetUtcNow().UtcDateTime, _timeZoneId).Time;
         }
         finally

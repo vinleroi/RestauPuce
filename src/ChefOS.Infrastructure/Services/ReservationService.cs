@@ -51,7 +51,7 @@ public record PaymentDetail(int Id, PaymentKind Kind, decimal Amount, PaymentSta
 public record ReservationDetail(
     int Id, DateTime StartsAtUtc, TimeOnly LocalTime, int PartySize, string CustomerName, string CustomerEmail, string CustomerPhone,
     string? Note, ReservationStatus Status, decimal AmountDue, decimal PreorderTotalInclVat, bool IsManual, int? OrderId,
-    IReadOnlyList<GuestDetail> Guests, IReadOnlyList<PaymentDetail> Payments);
+    IReadOnlyList<GuestDetail> Guests, IReadOnlyList<PaymentDetail> Payments, DateTime FreeCancellationUntilUtc);
 
 /// <summary>Un service du jour : capacité, couverts occupés (confirmés, installés, paiements en attente encore valides) et ses réservations.</summary>
 public record ServiceDayView(string ServiceName, int Capacity, int BookedCovers, IReadOnlyList<ReservationDetail> Reservations);
@@ -82,6 +82,7 @@ public partial class ReservationService(
     private const string CannotCancelMessage = "Cette réservation ne peut plus être annulée";
     private const int OrderNumberRetries = 5;
     private const int MaxSyncedPaymentsPerListing = 10;
+    private static readonly TimeSpan SyncBudget = TimeSpan.FromSeconds(4);
     private const int MaxDishQuantity = 50;
     private const int MaxDishLinesPerGuest = 10;
 
@@ -331,11 +332,20 @@ public partial class ReservationService(
             var open = await db.Payments.AsNoTracking()
                 .Where(p => p.ReservationId == reservation.Id && p.Status == PaymentStatus.Open && p.GatewayPaymentId != null)
                 .Select(p => p.GatewayPaymentId!).ToListAsync();
+            using var budget = new CancellationTokenSource(SyncBudget);
             foreach (var gatewayId in open)
             {
+                if (budget.IsCancellationRequested)
+                    break;
+
                 try
                 {
-                    await payments.SyncAsync(gatewayId);
+                    await payments.SyncAsync(gatewayId, budget.Token);
+                }
+                catch (OperationCanceledException) when (budget.IsCancellationRequested)
+                {
+                    logger?.LogWarning("Lecture des paiements ouverts interrompue : délai de {Seconds} s dépassé", SyncBudget.TotalSeconds);
+                    break;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -481,14 +491,16 @@ public partial class ReservationService(
                 r.CustomerPhone, r.Note, r.Status, r.AmountDue, r.PreorderTotalInclVat, r.IsManual, r.OrderId,
                 r.Guests.Select(g => new GuestDetail(g.Position, g.FirstName, g.LastName,
                     g.Dishes.Select(d => new GuestDishDetail(d.RecipeId, names.GetValueOrDefault(d.RecipeId, "?"), d.Quantity, d.UnitPriceInclVat)).ToList())).ToList(),
-                paymentRows.Where(p => p.ReservationId == r.Id).Select(p => new PaymentDetail(p.Id, p.Kind, p.Amount, p.Status, p.RefundAmount)).ToList())).ToList();
+                paymentRows.Where(p => p.ReservationId == r.Id).Select(p => new PaymentDetail(p.Id, p.Kind, p.Amount, p.Status, p.RefundAmount)).ToList(),
+                Utc(r.FreeCancellationUntilUtc))).ToList();
             return new ServiceDayView(service, schedules.FirstOrDefault(s => s.Name == service)?.Capacity ?? 0, booked, details);
         }).ToList();
     }
 
     /// <summary>
     /// Relit chez la passerelle, « au mieux », les paiements encore ouverts des réservations du jour qui attendent leur paiement ou ont expiré : le back reprend ainsi
-    /// un paiement dont le webhook ne lui est jamais parvenu. Borné à <see cref="MaxSyncedPaymentsPerListing"/> par appel ; un échec est journalisé et n'empêche pas la liste.
+    /// un paiement dont le webhook ne lui est jamais parvenu. Borné à <see cref="MaxSyncedPaymentsPerListing"/> paiements, les plus récents d'abord, et à <see cref="SyncBudget"/> au total
+    /// (le temps est mesuré en temps réel, pas avec l'horloge du service) ; un échec ou un dépassement est journalisé et n'empêche pas la liste.
     /// </summary>
     private async Task TrySyncOpenPaymentsAsync(ChefOsDbContext db, DateTime from, DateTime to)
     {
@@ -498,15 +510,24 @@ public partial class ReservationService(
                 .Where(p => p.Status == PaymentStatus.Open && p.GatewayPaymentId != null
                     && db.Reservations.Any(r => r.Id == p.ReservationId && r.StartsAtUtc >= from && r.StartsAtUtc < to
                         && (r.Status == ReservationStatus.PendingPayment || r.Status == ReservationStatus.Expired)))
-                .OrderBy(p => p.Id)
+                .OrderByDescending(p => p.Id)
                 .Select(p => p.GatewayPaymentId!)
                 .Take(MaxSyncedPaymentsPerListing)
                 .ToListAsync();
+            using var budget = new CancellationTokenSource(SyncBudget);
             foreach (var gatewayId in open)
             {
+                if (budget.IsCancellationRequested)
+                    break;
+
                 try
                 {
-                    await payments.SyncAsync(gatewayId);
+                    await payments.SyncAsync(gatewayId, budget.Token);
+                }
+                catch (OperationCanceledException) when (budget.IsCancellationRequested)
+                {
+                    logger?.LogWarning("Lecture des paiements ouverts interrompue : délai de {Seconds} s dépassé", SyncBudget.TotalSeconds);
+                    break;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {

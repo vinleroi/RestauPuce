@@ -18,6 +18,9 @@ internal sealed class PaymentConfiguration : IEntityTypeConfiguration<Payment>
         builder.Property(p => p.GatewayPaymentId).HasMaxLength(100);
         builder.Property(p => p.CheckoutUrl).HasMaxLength(2000);
 
+        // Le webhook et la synchronisation retrouvent un paiement par son identifiant chez la passerelle, dans un restaurant.
+        builder.HasIndex(p => new { p.RestaurantId, p.GatewayPaymentId });
+
         builder.HasOne<Reservation>()
             .WithMany()
             .HasForeignKey(p => p.ReservationId)

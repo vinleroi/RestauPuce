@@ -19,7 +19,7 @@
             </MudItem>
 
             <MudItem xs="12">
-                <MudSwitch T="bool" Value="_free" ValueChanged="OnFreeChanged" Label="Autre heure (service complet ou hors créneaux proposés)" Color="Color.Primary" />
+                <MudSwitch T="bool" Value="_free" ValueChanged="OnFreeChanged" Label="Autre heure de la grille (service complet ou créneau passé)" Color="Color.Primary" />
             </MudItem>
 
             @if (!_free)
@@ -48,7 +48,7 @@
             else
             {
                 <MudItem xs="12" sm="6">
-                    <MudSelect T="string" @bind-Value="_serviceName" Label="Service" Variant="Variant.Outlined" Margin="Margin.Dense">
+                    <MudSelect T="string" Value="_serviceName" ValueChanged="OnServiceChanged" Label="Service" Variant="Variant.Outlined" Margin="Margin.Dense">
                         @foreach (var service in ServiceNames)
                         {
                             <MudSelectItem T="string" Value="service">@service</MudSelectItem>
@@ -56,7 +56,20 @@
                     </MudSelect>
                 </MudItem>
                 <MudItem xs="12" sm="6">
-                    <MudTimePicker @bind-Time="_time" Label="Heure" Variant="Variant.Outlined" Margin="Margin.Dense" Editable="true" />
+                    @if (_gridSlots.Count == 0)
+                    {
+                        <MudAlert Severity="Severity.Warning" Dense="true">Ce service n'est pas ouvert ce jour-là.</MudAlert>
+                    }
+                    else
+                    {
+                        <MudSelect T="TimeOnly?" @bind-Value="_gridTime" Label="Heure" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                   ToStringFunc="@(time => time?.ToString("HH:mm", Ui.Fr) ?? "")">
+                            @foreach (var time in _gridSlots)
+                            {
+                                <MudSelectItem T="TimeOnly?" Value="@((TimeOnly?)time)">@time.ToString("HH:mm", Ui.Fr)</MudSelectItem>
+                            }
+                        </MudSelect>
+                    }
                 </MudItem>
             }
 
@@ -89,7 +102,8 @@
     private IReadOnlyList<Slot> _slots = [];
     private Slot? _slot;
     private string? _serviceName;
-    private TimeSpan? _time;
+    private IReadOnlyList<TimeOnly> _gridSlots = [];
+    private TimeOnly? _gridTime;
     private string? _name;
     private string? _phone;
     private string? _email;
@@ -97,6 +111,7 @@
 
     // Numéro du dernier chargement des créneaux : une réponse plus ancienne n'écrase pas la plus récente.
     private int _slotsVersion;
+    private int _gridVersion;
 
     [CascadingParameter]
     private IMudDialogInstance MudDialog { get; set; } = default!;
@@ -116,10 +131,38 @@
         await LoadSlotsAsync();
     }
 
-    private Task OnDateChanged(DateTime? date)
+    private async Task OnDateChanged(DateTime? date)
     {
         _date = date;
-        return LoadSlotsAsync();
+        await LoadSlotsAsync();
+        await LoadGridAsync();
+    }
+
+    private async Task OnServiceChanged(string? service)
+    {
+        _serviceName = service;
+        await LoadGridAsync();
+    }
+
+    // Les heures de la grille du service ce jour-là, comme sur la vitrine, mais sans filtre de capacité ni de délai.
+    private async Task LoadGridAsync()
+    {
+        var version = ++_gridVersion;
+        if (_date is not { } date || string.IsNullOrWhiteSpace(_serviceName))
+        {
+            _gridSlots = [];
+            _gridTime = null;
+            return;
+        }
+
+        var slots = await ReservationService.GetManualSlotsAsync(DateOnly.FromDateTime(date), _serviceName);
+        if (version != _gridVersion)
+            return;
+
+        _gridSlots = slots;
+        _gridTime = _gridTime is { } chosen && slots.Contains(chosen) ? chosen : slots.FirstOrDefault();
+        if (slots.Count == 0)
+            _gridTime = null;
     }
 
     private Task OnPartySizeChanged(int? size)
@@ -128,7 +171,12 @@
         return LoadSlotsAsync();
     }
 
-    private void OnFreeChanged(bool free) => _free = free;
+    private async Task OnFreeChanged(bool free)
+    {
+        _free = free;
+        if (free)
+            await LoadGridAsync();
+    }
 
     private async Task LoadSlotsAsync()
     {
@@ -182,14 +230,14 @@
         string service;
         if (_free)
         {
-            if (string.IsNullOrWhiteSpace(_serviceName) || _time is null)
+            if (string.IsNullOrWhiteSpace(_serviceName) || _gridTime is null)
             {
                 Snackbar.Add("Choisissez le service et l'heure", Severity.Warning);
                 return;
             }
 
             service = _serviceName;
-            time = TimeOnly.FromTimeSpan(_time.Value);
+            time = _gridTime.Value;
         }
         else
         {

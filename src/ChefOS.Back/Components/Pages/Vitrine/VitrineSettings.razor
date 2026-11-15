@@ -16,6 +16,7 @@
 @inject IOptions<PublicSiteOptions> Site
 @inject IJSRuntime JS
 @inject ISnackbar Snackbar
+@inject IDialogService DialogService
 
 <PageTitle>Vitrine — ChefOS</PageTitle>
 
@@ -406,7 +407,19 @@ else
         _busy = true;
         try
         {
-            await VitrineService.AddClosureAsync(DateOnly.FromDateTime(date), _closureReason);
+            // Fermer un jour n'annule rien : s'il y a déjà des réservations actives, le chef doit le savoir et confirmer.
+            var day = DateOnly.FromDateTime(date);
+            var active = await VitrineService.CountActiveReservationsOnAsync(day);
+            if (active > 0)
+            {
+                var confirmed = await DialogService.ShowMessageBoxAsync("Fermer ce jour-là ?",
+                    $"{active} réservation(s) active(s) ce jour-là. Elles ne seront pas annulées automatiquement. Fermer quand même ?",
+                    yesText: "Fermer quand même", cancelText: "Retour");
+                if (confirmed != true)
+                    return;
+            }
+
+            await VitrineService.AddClosureAsync(day, _closureReason);
             _closures = await VitrineService.GetClosuresAsync();
             _closureDate = null;
             _closureReason = null;

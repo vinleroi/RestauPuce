@@ -25,14 +25,24 @@ public sealed class FaultyGateway(DemoPaymentGateway inner) : IPaymentGateway
     public List<decimal> RefundAmounts { get; } = [];
     /// <summary>La lecture du statut échoue (passerelle injoignable).</summary>
     public bool FailStatus { get; set; }
+    /// <summary>Attente (annulable) avant chaque lecture de statut : une passerelle lente.</summary>
+    public TimeSpan StatusDelay { get; set; }
+    /// <summary>Identifiants lus chez la passerelle, dans l'ordre des appels.</summary>
+    public List<string> StatusCalls { get; } = [];
     public string Name => inner.Name;
 
     public Task<GatewayPayment> CreateAsync(decimal amount, string description, string redirectUrl, string webhookUrl,
         IDictionary<string, string> metadata, CancellationToken ct) =>
         FailCreate ? throw new InvalidOperationException("Mollie ne répond pas") : inner.CreateAsync(amount, description, redirectUrl, webhookUrl, metadata, ct);
 
-    public Task<GatewayStatus> GetStatusAsync(string id, CancellationToken ct) =>
-        FailStatus ? throw new InvalidOperationException("Mollie ne répond pas") : inner.GetStatusAsync(id, ct);
+    public async Task<GatewayStatus> GetStatusAsync(string id, CancellationToken ct)
+    {
+        lock (StatusCalls)
+            StatusCalls.Add(id);
+        if (StatusDelay > TimeSpan.Zero)
+            await Task.Delay(StatusDelay, ct);
+        return FailStatus ? throw new InvalidOperationException("Mollie ne répond pas") : await inner.GetStatusAsync(id, ct);
+    }
 
     public Task<decimal> GetRefundedAmountAsync(string id, CancellationToken ct) => inner.GetRefundedAmountAsync(id, ct);
 
