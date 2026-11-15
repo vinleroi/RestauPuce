@@ -9,9 +9,9 @@
 @inject SignInManager<ApplicationUser> SignInManager
 @inject IdentityRedirectManager RedirectManager
 
-<PageTitle>Confirm email change</PageTitle>
+<PageTitle>Confirmation du changement d'adresse e-mail — ChefOS</PageTitle>
 
-<h1>Confirm email change</h1>
+<h1>Confirmation du changement d'adresse e-mail</h1>
 
 <StatusMessage Message="@message" />
 
@@ -35,14 +35,14 @@
         if (UserId is null || Email is null || Code is null)
         {
             RedirectManager.RedirectToWithStatus(
-                "Account/Login", "Error: Invalid email change confirmation link.", HttpContext);
+                "Account/Login", "Erreur : le lien de confirmation du changement d'adresse e-mail n'est pas valide.", HttpContext);
             return;
         }
 
         var user = await UserManager.FindByIdAsync(UserId);
         if (user is null)
         {
-            message = "Unable to find user with Id '{userId}'";
+            message = $"Erreur : impossible de charger l'utilisateur {UserId}";
             return;
         }
 
@@ -50,7 +50,7 @@
         var result = await UserManager.ChangeEmailAsync(user, Email, code);
         if (!result.Succeeded)
         {
-            message = "Error changing email.";
+            message = "Erreur lors du changement d'adresse e-mail.";
             return;
         }
 
@@ -59,11 +59,11 @@
         var setUserNameResult = await UserManager.SetUserNameAsync(user, Email);
         if (!setUserNameResult.Succeeded)
         {
-            message = "Error changing user name.";
+            message = "Erreur lors du changement du nom d'utilisateur.";
             return;
         }
 
         await SignInManager.RefreshSignInAsync(user);
-        message = "Thank you for confirming your email change.";
+        message = "Merci d'avoir confirmé le changement de votre adresse e-mail.";
     }
 }
