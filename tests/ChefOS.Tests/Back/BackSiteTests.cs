@@ -3,6 +3,7 @@ using ChefOS.Back.Components.Account;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Identity;
 using ChefOS.Tests.Infrastructure;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -112,6 +113,21 @@ public class BackSiteTests(PostgresFixture postgres)
         // Le ticket du Bistro n'est plus lisible depuis la Brasserie : le claim pilote le filtre.
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/receipts/{site.BistroReceiptId}/file")).StatusCode);
         Assert.Equal(await ActiveRestaurantOfAsync(site, site.Shared), site.Brasserie.Id);
+    }
+
+    [Fact]
+    public async Task BackSite_InProduction_WithoutBaseUrl_FailsToStart()
+    {
+        await using var site = await BackSite.CreateAsync(postgres);
+        var production = site.Factory.WithWebHostBuilder(b =>
+        {
+            b.UseEnvironment("Production");
+            b.UseSetting("Vitrine:BaseUrl", "");
+        });
+
+        var error = Assert.ThrowsAny<Exception>(() => production.CreateClient());
+
+        Assert.Contains("Vitrine:BaseUrl", error.ToString());
     }
 
     [Fact]

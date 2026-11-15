@@ -6,6 +6,7 @@ using ChefOS.Back.Tenancy;
 using ChefOS.Back.Vitrine;
 using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
+using ChefOS.Infrastructure.Hosting;
 using ChefOS.Infrastructure.Identity;
 using ChefOS.Infrastructure.Seeding;
 using ChefOS.Infrastructure.Wines;
@@ -21,6 +22,9 @@ CultureInfo.DefaultThreadCurrentCulture = culture;
 CultureInfo.DefaultThreadCurrentUICulture = culture;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Hors développement, refuse de démarrer si la configuration est incomplète (message en français, sans valeur secrète).
+ProductionConfiguration.EnsureValid(builder.Configuration, builder.Environment);
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();

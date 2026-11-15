@@ -175,6 +175,7 @@ public static class DependencyInjection
         if (string.IsNullOrWhiteSpace(apiKey))
         {
             services.AddSingleton<IReceiptReader, MissingKeyReceiptReader>();
+            services.AddHostedService<MissingReceiptKeyWarning>();
             return services;
         }
 
@@ -236,6 +237,18 @@ public static class DependencyInjection
     private sealed class GlobalContextFactory(DbContextOptions<ChefOsDbContext> options) : IDbContextFactory<ChefOsDbContext>
     {
         public ChefOsDbContext CreateDbContext() => new(options, new FixedTenantContext(null));
+    }
+
+    /// <summary>Au démarrage, signale que la lecture des tickets échouera faute de clé Anthropic (le site démarre quand même). Ne journalise aucune clé.</summary>
+    private sealed class MissingReceiptKeyWarning(ILogger<MissingReceiptKeyWarning> logger) : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            logger.LogWarning("Lecteur de tickets sans clé Anthropic : chaque lecture échouera. Renseignez Anthropic:ApiKey ou ANTHROPIC_API_KEY, ou choisissez Receipts:Reader = Demo");
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     /// <summary>Au démarrage, hors développement, rappelle que les paiements sont simulés.</summary>

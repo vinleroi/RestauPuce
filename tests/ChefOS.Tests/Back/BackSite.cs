@@ -57,7 +57,8 @@ public sealed class BackSite : IAsyncDisposable
             builder.UseSetting("ConnectionStrings:ChefOs", connection);
             builder.UseSetting("Email:Sender", "Log");
             builder.UseSetting("Payments:Gateway", "Demo");
-            builder.UseSetting("Vitrine:BaseUrl", "http://localhost");
+            // Adresse https : la configuration de Production est vérifiée au démarrage (ProductionConfiguration).
+            builder.UseSetting("Vitrine:BaseUrl", "https://vitrine.test");
             builder.UseSetting("Accounts:RequireConfirmedEmail", "false");
             builder.UseSetting("Demo:SeedOnStartup", "false");
             // Jamais d'appel à Anthropic : lecteur de tickets et assistant de vins de démonstration.

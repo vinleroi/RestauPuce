@@ -1,6 +1,7 @@
 using System.Globalization;
 using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
+using ChefOS.Infrastructure.Hosting;
 using ChefOS.Infrastructure.Wines;
 using ChefOS.Vitrine.Components;
 using ChefOS.Vitrine.Endpoints;
@@ -14,6 +15,9 @@ CultureInfo.DefaultThreadCurrentCulture = culture;
 CultureInfo.DefaultThreadCurrentUICulture = culture;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Hors développement, refuse de démarrer si la configuration est incomplète (message en français, sans valeur secrète).
+ProductionConfiguration.EnsureValid(builder.Configuration, builder.Environment);
 
 // Pages statiques (carte, vins, statut) ; la réservation et l'annulation sont interactives (Interactive Server).
 builder.Services.AddRazorComponents()

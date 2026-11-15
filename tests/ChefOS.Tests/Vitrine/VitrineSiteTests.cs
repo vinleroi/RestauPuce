@@ -4,6 +4,7 @@ using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Notifications;
 using ChefOS.Infrastructure.Services;
 using ChefOS.Vitrine.Tenancy;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using ChefOS.Tests.Infrastructure;
@@ -16,6 +17,21 @@ public sealed class VitrineSiteTests(PostgresFixture postgres)
 {
     /// <summary>Blazor encode les caractères non ASCII en entités (« &amp;#xE9; ») : on décode avant de chercher du texte français.</summary>
     private static async Task<string> Html(HttpResponseMessage response) => WebUtility.HtmlDecode(await response.Content.ReadAsStringAsync());
+
+    [Fact]
+    public async Task VitrineSite_InProduction_WithoutGateway_FailsToStart()
+    {
+        await using var site = await VitrineSite.CreateAsync(postgres);
+        var production = site.Factory.WithWebHostBuilder(b =>
+        {
+            b.UseEnvironment("Production");
+            b.UseSetting("Payments:Gateway", "");
+        });
+
+        var error = Assert.ThrowsAny<Exception>(() => production.CreateClient());
+
+        Assert.Contains("Payments:Gateway", error.ToString());
+    }
 
     [Fact]
     public async Task Vitrine_Unpublished_Returns404()
