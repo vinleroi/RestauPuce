@@ -381,7 +381,7 @@ public class DemoSeederTests(PostgresFixture postgres)
         var clock = new FakeTimeProvider(new DateTimeOffset(Now));
         var gateway = new DemoPaymentGateway("https://vitrine.test", factory, clock);
         var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance);
-        var service = new ReservationService(factory, clock, payments);
+        var service = new ReservationService(factory, clock, payments, new ChefOS.Infrastructure.PublicSiteOptions());
 
         var today = RestaurantClock.Today(Now, "Europe/Brussels");
         var daysWithSlots = 0;

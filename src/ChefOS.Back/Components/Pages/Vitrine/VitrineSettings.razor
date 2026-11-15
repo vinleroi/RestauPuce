@@ -5,13 +5,15 @@
 @using ChefOS.Back.Vitrine
 @using ChefOS.Core.Common
 @using ChefOS.Core.Vitrine
+@using ChefOS.Infrastructure
 @using ChefOS.Infrastructure.Data
 @using ChefOS.Infrastructure.Services
+@using Microsoft.Extensions.Options
 
 @inject VitrineService VitrineService
 @inject RestaurantService RestaurantService
 @inject ITenantContext Tenant
-@inject IConfiguration Configuration
+@inject IOptions<PublicSiteOptions> Site
 @inject IJSRuntime JS
 @inject ISnackbar Snackbar
 
@@ -308,7 +310,7 @@ else
 
     private List<VitrineImage> Gallery => _images.Where(i => !i.IsCover).OrderBy(i => i.Position).ToList();
 
-    private string? PublicUrl => VitrineSettingsForm.PublicUrl(Configuration["Vitrine:BaseUrl"] ?? "http://localhost:5108", _slug);
+    private string? PublicUrl => VitrineSettingsForm.PublicUrl(Site.Value.BaseUrl, _slug);
 
     // <input type="color"> n'accepte qu'une valeur #rrggbb complète.
     private string PickerColor => _form.AccentColor is { Length: 7 } color && color[0] == '#' ? color : "#000000";

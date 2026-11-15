@@ -63,7 +63,7 @@ public record ServiceDayView(string ServiceName, int Capacity, int BookedCovers,
 /// Le restaurant courant est celui du contexte filtré (la vitrine est scopée par son lien).
 /// </summary>
 public partial class ReservationService(
-    IDbContextFactory<ChefOsDbContext> factory, TimeProvider clock, PaymentService payments,
+    IDbContextFactory<ChefOsDbContext> factory, TimeProvider clock, PaymentService payments, PublicSiteOptions site,
     OrderService? orders = null, ILogger<ReservationService>? logger = null, EmailDispatchSignal? signal = null)
 {
     private const string ClosedMessage = "Les réservations en ligne sont fermées";
@@ -151,8 +151,9 @@ public partial class ReservationService(
 
     /// <summary>
     /// Enregistre une réservation. Les contrôles faits, une transaction prend le verrou du service, relit le restant et insère : jamais plus de couverts que la capacité.
-    /// Montant 0 : <c>Confirmed</c>. Sinon <c>PendingPayment</c>, validée avant d'appeler la passerelle (hors transaction) ; si la passerelle échoue, la
-    /// réservation passe en <c>Expired</c> (voir <see cref="PaymentService.StartAsync"/>). <paramref name="returnUrlBase"/> : le client revient sur « {returnUrlBase}/{jeton} ».
+    /// Montant 0 : <c>Confirmed</c>, et l'e-mail de confirmation est mis en file dans la même transaction. Sinon <c>PendingPayment</c>, validée avant d'appeler la
+    /// passerelle (hors transaction) ; si la passerelle échoue, la réservation passe en <c>Expired</c> (voir <see cref="PaymentService.StartAsync"/>).
+    /// <paramref name="returnUrlBase"/> : le client revient sur « {returnUrlBase}/{jeton} ».
     /// </summary>
     public async Task<ReservationStart> CreateAsync(ReservationRequest request, string returnUrlBase, string webhookUrl)
     {
@@ -213,6 +214,7 @@ public partial class ReservationService(
             Guests = guests
         };
 
+        bool enqueued;
         await using (var transaction = await db.Database.BeginTransactionAsync())
         {
             await ReservationCapacity.LockAsync(db, profile.RestaurantId, request.ServiceName, request.Date, CancellationToken.None);
@@ -222,16 +224,16 @@ public partial class ReservationService(
                 throw new DomainValidationException(FullMessage, ValidationFields.Slot);
 
             db.Reservations.Add(reservation);
+            enqueued = due.Kind is null
+                       && ReservationMail.Enqueue(db, ReservationMail.Context(restaurant, profile, reservation, site.BaseUrl), ReservationEmails.Confirmed, now);
             await db.SaveChangesAsync();
             await transaction.CommitAsync();
         }
 
+        if (enqueued)
+            signal?.Notify();
         if (due.Kind is null)
-        {
-            await TrySendAsync(EmailKind.ReservationConfirmed, restaurant.Id, mail, $"Votre réservation chez {restaurant.Name} est confirmée",
-                $"Bonjour {name}, votre table pour {request.PartySize} personne(s) le {request.Date:dd/MM/yyyy} à {request.Time:HH\\:mm} est confirmée.");
             return new ReservationStart(token, null, 0m, ReservationStatus.Confirmed);
-        }
 
         // La passerelle est appelée après le commit, hors transaction : un appel réseau ne doit pas tenir le verrou du service.
         var started = await payments.StartAsync(reservation.Id, due.Amount, due.Kind.Value,
@@ -363,7 +365,7 @@ public partial class ReservationService(
     /// <summary>
     /// Annulation par le client. Dans le délai gratuit figé à la réservation (<see cref="Reservation.FreeCancellationUntilUtc"/>) : <c>Cancelled</c> et remboursement intégral automatique d'un paiement réglé (si la passerelle échoue, le paiement
     /// reste <c>RefundPending</c> et le back peut relancer). Hors délai : <c>Cancelled</c>, sans remboursement. Refusée si la réservation est installée, passée ou terminée.
-    /// Annuler une réservation déjà annulée ne change rien.
+    /// Annuler une réservation déjà annulée ne change rien (pas de second e-mail). L'accusé de réception est mis en file avec l'annulation.
     /// </summary>
     public async Task CancelByCustomerAsync(string token)
     {
@@ -379,15 +381,17 @@ public partial class ReservationService(
 
         var free = now <= reservation.FreeCancellationUntilUtc; // la règle figée à la réservation, pas celle d'aujourd'hui
 
-        await CancelAsync(db, reservation.Id, refund: free, now);
+        await CancelAsync(db, reservation.Id, refund: free, now, ReservationEmails.CancelledByCustomer);
     }
 
     /// <summary>
-    /// Passe la réservation en <c>Cancelled</c> et, avec <paramref name="refund"/>, les paiements réglés en <c>RefundPending</c> dans la même transaction ;
-    /// la passerelle n'est appelée qu'après le commit. Un échec laisse le paiement <c>RefundPending</c>, que le back relance.
+    /// Passe la réservation en <c>Cancelled</c> et, avec <paramref name="refund"/>, les paiements réglés en <c>RefundPending</c> dans la même transaction,
+    /// avec l'e-mail <paramref name="email"/> (montants lus avant le passage en <c>RefundPending</c>) ; la passerelle n'est appelée qu'après le commit.
+    /// Un échec laisse le paiement <c>RefundPending</c>, que le back relance.
     /// </summary>
-    private async Task CancelAsync(ChefOsDbContext db, int reservationId, bool refund, DateTime now)
+    private async Task CancelAsync(ChefOsDbContext db, int reservationId, bool refund, DateTime now, Func<ReservationEmailContext, Notifications.EmailMessage> email)
     {
+        bool enqueued;
         await using (var transaction = await db.Database.BeginTransactionAsync())
         {
             var claimed = await db.Reservations
@@ -396,6 +400,7 @@ public partial class ReservationService(
             if (claimed != 1)
                 throw new DomainValidationException(CannotCancelMessage);
 
+            var paid = await db.Payments.Where(p => p.ReservationId == reservationId && p.Status == PaymentStatus.Paid).SumAsync(p => p.Amount);
             if (refund)
             {
                 await db.Payments
@@ -403,9 +408,15 @@ public partial class ReservationService(
                     .ExecuteUpdateAsync(set => set.SetProperty(p => p.Status, PaymentStatus.RefundPending).SetProperty(p => p.RefundAmount, p => p.Amount));
             }
 
+            var context = await ReservationMail.LoadAsync(db, reservationId, site.BaseUrl, paid, refund ? paid : 0m, CancellationToken.None);
+            enqueued = ReservationMail.Enqueue(db, context, email, now);
+            if (enqueued)
+                await db.SaveChangesAsync();
             await transaction.CommitAsync();
         }
 
+        if (enqueued)
+            signal?.Notify();
         if (!refund)
             return;
 
@@ -512,6 +523,7 @@ public partial class ReservationService(
     /// <summary>
     /// Réservation prise par le restaurant (téléphone, comptoir) : <c>Confirmed</c> tout de suite, sans paiement, <c>IsManual</c>. La capacité est vérifiée sous le même verrou ;
     /// la dépasser (ou réserver un jour de fermeture) exige <paramref name="force"/>, et le résultat porte alors un avertissement. Le délai minimal et le passé ne sont pas imposés.
+    /// Avec une adresse e-mail, la confirmation (lien de la réservation, valable même si la vitrine n'est pas publiée) est mise en file dans la même transaction.
     /// </summary>
     public async Task<ManualReservationResult> CreateManualAsync(ReservationRequest request, bool force)
     {
@@ -564,8 +576,11 @@ public partial class ReservationService(
         }
 
         db.Reservations.Add(reservation);
+        var enqueued = ReservationMail.Enqueue(db, ReservationMail.Context(restaurant, profile, reservation, site.BaseUrl), ReservationEmails.Confirmed, now);
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
+        if (enqueued)
+            signal?.Notify();
 
         return new ManualReservationResult(reservation.Id, warnings.Count == 0 ? null : string.Join(" · ", warnings));
     }
@@ -654,8 +669,8 @@ public partial class ReservationService(
     }
 
     /// <summary>
-    /// Annulation par le restaurant d'une réservation en attente ou confirmée. Avec <paramref name="refund"/>, les paiements réglés sont remboursés intégralement
-    /// (un échec de la passerelle laisse le paiement <c>RefundPending</c>, à relancer avec <see cref="PaymentService.RefundAsync"/>).
+    /// Annulation par le restaurant d'une réservation en attente ou confirmée, avec l'e-mail d'annulation au client s'il a une adresse. Avec <paramref name="refund"/>,
+    /// les paiements réglés sont remboursés intégralement (un échec de la passerelle laisse le paiement <c>RefundPending</c>, à relancer avec <see cref="PaymentService.RefundAsync"/>).
     /// </summary>
     public async Task CancelByRestaurantAsync(int reservationId, bool refund)
     {
@@ -663,29 +678,10 @@ public partial class ReservationService(
         if (!await db.Reservations.AnyAsync(r => r.Id == reservationId))
             throw new DomainValidationException(UnknownReservationMessage);
 
-        await CancelAsync(db, reservationId, refund, Now);
+        await CancelAsync(db, reservationId, refund, Now, ReservationEmails.CancelledByRestaurant);
     }
 
     // ── Aides ────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Provisoire : met en file un e-mail en texte simple, après le commit de l'événement (les vrais gabarits, écrits dans la transaction, viendront
-    /// ensuite), puis réveille le dispatcher. Un échec est journalisé sans faire échouer la réservation.
-    /// </summary>
-    private async Task TrySendAsync(EmailKind kind, int restaurantId, string to, string subject, string body)
-    {
-        try
-        {
-            await using var db = await factory.CreateDbContextAsync();
-            EmailOutbox.Enqueue(db, new Notifications.EmailMessage(kind, to, subject, body, string.Empty, RestaurantId: restaurantId), Now);
-            await db.SaveChangesAsync();
-            signal?.Notify();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger?.LogWarning("Mise en file de l'e-mail impossible : {Reason}", ex.Message);
-        }
-    }
 
     private static string Money(decimal amount) => amount.ToString("0.00", System.Globalization.CultureInfo.GetCultureInfo("fr-BE")) + "\u00A0€";
 

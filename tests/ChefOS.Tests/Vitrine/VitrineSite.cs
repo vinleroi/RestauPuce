@@ -89,7 +89,7 @@ public sealed class VitrineSite : IAsyncDisposable
         {
             builder.UseSetting("ConnectionStrings:ChefOs", connection);
             builder.UseSetting("Payments:Gateway", gateway ?? "Demo");
-            builder.UseSetting("Payments:BaseUrl", "http://localhost");
+            builder.UseSetting("Vitrine:BaseUrl", "http://localhost");
             // Le dispatcher d'e-mails tourne aussi ici : jamais de SMTP dans les tests (appsettings.Development.json choisit Mailpit).
             builder.UseSetting("Email:Sender", "Log");
             if (configureServices is not null)

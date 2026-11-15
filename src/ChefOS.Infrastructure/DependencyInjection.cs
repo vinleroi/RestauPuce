@@ -32,6 +32,9 @@ public static class DependencyInjection
             .UseNpgsql(connectionString).UseApplicationServiceProvider(provider).Options));
 
         services.TryAddSingleton(TimeProvider.System);
+        // Adresse publique de la vitrine (section « Vitrine »), lue par les deux sites. Sans configuration dans le conteneur, la valeur par défaut reste.
+        services.AddOptions<PublicSiteOptions>()
+            .Configure<IServiceProvider>((options, provider) => provider.GetService<IConfiguration>()?.GetSection(PublicSiteOptions.SectionName).Bind(options));
         services.AddScoped<WineLibrarySeeder>();
 
         services.AddScoped<RestaurantTime>();
@@ -75,14 +78,20 @@ public static class DependencyInjection
         var section = configuration.GetSection(PaymentOptions.SectionName);
         services.Configure<PaymentOptions>(section);
         services.AddLogging();
-        services.AddScoped<PaymentService>();
-        services.AddScoped<ReservationService>();
+        services.AddScoped(provider => new PaymentService(
+            provider.GetRequiredService<IDbContextFactory<ChefOsDbContext>>(), provider.GetRequiredService<IPaymentGateway>(),
+            provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<ILogger<PaymentService>>(),
+            provider.GetRequiredService<IOptions<PublicSiteOptions>>().Value, provider.GetService<EmailDispatchSignal>()));
+        services.AddScoped(provider => new ReservationService(
+            provider.GetRequiredService<IDbContextFactory<ChefOsDbContext>>(), provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<PaymentService>(), provider.GetRequiredService<IOptions<PublicSiteOptions>>().Value,
+            provider.GetRequiredService<OrderService>(), provider.GetRequiredService<ILogger<ReservationService>>(), provider.GetService<EmailDispatchSignal>()));
 
         var options = section.Get<PaymentOptions>() ?? new PaymentOptions();
         if (!string.Equals(options.Gateway?.Trim(), PaymentOptions.MollieGateway, StringComparison.OrdinalIgnoreCase))
         {
             services.AddHostedService<DemoModeWarning>();
-            services.AddScoped(provider => new DemoPaymentGateway(provider.GetRequiredService<IOptions<PaymentOptions>>().Value.BaseUrl,
+            services.AddScoped(provider => new DemoPaymentGateway(provider.GetRequiredService<IOptions<PublicSiteOptions>>().Value.BaseUrl,
                 provider.GetRequiredService<IDbContextFactory<ChefOsDbContext>>(), provider.GetRequiredService<TimeProvider>()));
             services.AddScoped<IPaymentGateway>(provider => provider.GetRequiredService<DemoPaymentGateway>());
             return services;

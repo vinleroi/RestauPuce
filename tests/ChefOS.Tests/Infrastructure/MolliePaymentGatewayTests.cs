@@ -212,6 +212,7 @@ public sealed class MolliePaymentGatewayTests
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings.ToDictionary(s => s.Key, s => (string?)s.Value)).Build();
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IConfiguration>(configuration); // la section « Vitrine » se lie sur la configuration de l'hôte
         services.AddSingleton<ChefOS.Infrastructure.Data.ITenantContext>(new ChefOS.Infrastructure.Data.FixedTenantContext(null));
         services.AddChefOsInfrastructure("Host=localhost;Port=1;Database=chefos_unused;Username=u;Password=p");
         services.AddChefOsPayments(configuration);
@@ -221,11 +222,12 @@ public sealed class MolliePaymentGatewayTests
     [Fact]
     public void Registration_DefaultIsDemo_WithServices()
     {
-        using var provider = Build(("Payments:BaseUrl", "https://vitrine.test"));
+        using var provider = Build(("Vitrine:BaseUrl", "https://vitrine.test"));
         using var scope = provider.CreateScope();
 
         var gateway = scope.ServiceProvider.GetRequiredService<IPaymentGateway>();
         Assert.IsType<DemoPaymentGateway>(gateway);
+        Assert.Equal("https://vitrine.test", scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<ChefOS.Infrastructure.PublicSiteOptions>>().Value.BaseUrl);
         Assert.Same(gateway, scope.ServiceProvider.GetRequiredService<DemoPaymentGateway>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ReservationService>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<PaymentService>());

@@ -10,7 +10,7 @@
     <meta property="og:site_name" content="@Vitrine.RestaurantName" />
     <meta property="og:title" content="@Title" />
     <meta property="og:description" content="@Description" />
-    @if (Vitrine.CoverImageId is { } cover)
+    @if (Published && Vitrine.CoverImageId is { } cover)
     {
         <meta property="og:image" content="@Nav.ToAbsoluteUri($"{Slug}/images/{cover}")" />
     }
@@ -26,12 +26,19 @@
 
     <header class="topbar @(Solid ? "topbar--solid" : "")">
         <div class="wrap topbar__in">
-            <a class="topbar__brand" href="/@Slug">@Vitrine.RestaurantName</a>
-            <nav class="topbar__nav" aria-label="Navigation principale">
-                <a class="hide-sm" href="/@Slug#carte">La carte</a>
-                <a class="hide-sm" href="/@Slug/vins">Les vins</a>
-                <a class="btn btn--small" href="/@Slug/reserver">Réserver</a>
-            </nav>
+            @if (Published)
+            {
+                <a class="topbar__brand" href="/@Slug">@Vitrine.RestaurantName</a>
+                <nav class="topbar__nav" aria-label="Navigation principale">
+                    <a class="hide-sm" href="/@Slug#carte">La carte</a>
+                    <a class="hide-sm" href="/@Slug/vins">Les vins</a>
+                    <a class="btn btn--small" href="/@Slug/reserver">Réserver</a>
+                </nav>
+            }
+            else
+            {
+                <span class="topbar__brand">@Vitrine.RestaurantName</span>
+            }
         </div>
     </header>
 
@@ -66,14 +73,17 @@
                             <span>E-mail : <a href="mailto:@Vitrine.PublicEmail">@Vitrine.PublicEmail</a></span>
                         }
                     </p>
-                    <p><a href="/@Slug/vins">La carte des vins</a> · <a href="/@Slug/reserver">Réserver une table</a></p>
+                    @if (Published)
+                    {
+                        <p><a href="/@Slug/vins">La carte des vins</a> · <a href="/@Slug/reserver">Réserver une table</a></p>
+                    }
                 </div>
             </div>
             <small>Site propulsé par ChefOS.</small>
         </div>
     </footer>
 
-    @if (ShowFloatingButton)
+    @if (Published && ShowFloatingButton)
     {
         <a class="btn btn--lg fab" href="/@Slug/reserver">Réserver une table</a>
     }
@@ -89,6 +99,11 @@
     /// <summary>Page personnelle (lien d'une réservation) : à ne pas indexer.</summary>
     [Parameter] public bool NoIndex { get; set; }
     [Parameter] public bool ShowFloatingButton { get; set; } = true;
+    /// <summary>
+    /// Faux pour le lien d'une réservation d'une vitrine non publiée : les autres pages du restaurant n'existent pas (404), le cadre n'y renvoie donc pas
+    /// (ni navigation, ni image de partage).
+    /// </summary>
+    [Parameter] public bool Published { get; set; } = true;
     [Parameter] public RenderFragment? ChildContent { get; set; }
 
     private AccentTheme Theme => AccentTheme.From(Vitrine.AccentColor);

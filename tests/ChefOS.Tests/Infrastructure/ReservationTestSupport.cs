@@ -1,5 +1,6 @@
 using ChefOS.Core.Recipes;
 using ChefOS.Core.Vitrine;
+using ChefOS.Infrastructure;
 using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Notifications;
 using ChefOS.Infrastructure.Payments;
@@ -63,6 +64,8 @@ public sealed class ReservationHarness
     public const string Webhook = "https://vitrine.test/webhook";
     public static readonly DateOnly Friday = new(2026, 11, 6);
     public static readonly TimeOnly Seven = new(19, 0);
+    /// <summary>Adresse publique de la vitrine des tests : les liens des e-mails commencent par « https://vitrine.test/{slug}/ ».</summary>
+    public static readonly PublicSiteOptions Site = new() { BaseUrl = "https://vitrine.test" };
 
     public required DbContextOptions<ChefOsDbContext> Options { get; init; }
     public required int RestaurantId { get; init; }
@@ -105,8 +108,8 @@ public sealed class ReservationHarness
         TimeProvider clock, IPaymentGateway gateway)
     {
         var factory = new TestContextFactory(options, restaurantId);
-        var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance);
-        return (payments, new ReservationService(factory, clock, payments));
+        var payments = new PaymentService(factory, gateway, clock, NullLogger<PaymentService>.Instance, Site);
+        return (payments, new ReservationService(factory, clock, payments, Site));
     }
 
     public ChefOsDbContext Open(int? restaurantId = null) => new(Options, new FixedTenantContext(restaurantId ?? RestaurantId));

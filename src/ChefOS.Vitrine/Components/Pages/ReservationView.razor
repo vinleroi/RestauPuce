@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @implements IDisposable
 @inherits SlugPageBase
+@attribute [ReservationLinkPage]
 @using System.Globalization
 @using ChefOS.Core.Common
 @using ChefOS.Vitrine.Components.Pages.Reserve
@@ -13,14 +14,17 @@
 
 @if (Ready)
 {
-    <VitrineFrame Slug="@Slug" Vitrine="Vitrine!" Section="Votre réservation" Solid="true" ShowFloatingButton="false" NoIndex="true">
+    <VitrineFrame Slug="@Slug" Vitrine="Vitrine!" Section="Votre réservation" Solid="true" ShowFloatingButton="false" NoIndex="true" Published="IsPublished">
         <div class="wrap page">
             @if (_loaded && _reservation is null)
             {
                 <div class="page__head">
                     <h1>Réservation introuvable</h1>
                     <p>Ce lien ne correspond à aucune réservation. Vérifiez l'adresse reçue après votre réservation.</p>
-                    <p><a class="btn" href="@Url()">Retour au restaurant</a></p>
+                    @if (IsPublished)
+                    {
+                        <p><a class="btn" href="@Url()">Retour au restaurant</a></p>
+                    }
                 </div>
             }
             else if (_reservation is { } r)
@@ -48,7 +52,13 @@
                 }
                 else if (r.Status == ReservationStatus.Expired)
                 {
-                    <div class="alert" role="status">Le délai de paiement est dépassé : la table n'est plus réservée. <a href="@Url("/reserver")">Faire une nouvelle réservation</a>.</div>
+                    <div class="alert" role="status">
+                        Le délai de paiement est dépassé : la table n'est plus réservée.
+                        @if (IsPublished)
+                        {
+                            <a href="@Url("/reserver")">Faire une nouvelle réservation</a><text>.</text>
+                        }
+                    </div>
                 }
 
                 <div class="card stack">
@@ -104,7 +114,10 @@
                     </section>
                 }
 
-                <p style="margin-top:2rem"><a href="@Url()">← Retour au restaurant</a></p>
+                @if (IsPublished)
+                {
+                    <p style="margin-top:2rem"><a href="@Url()">← Retour au restaurant</a></p>
+                }
             }
         </div>
     </VitrineFrame>
@@ -125,6 +138,17 @@
     private Timer? _poll;
     private int _polls;
     private volatile bool _disposed;
+
+    /// <summary>
+    /// Le restaurant est celui du jeton, publié ou non (spec § 3.3, « le lien fonctionne toujours ») : dans le circuit interactif comme dans la requête
+    /// (le middleware), avec le même <see cref="SlugResolver.EnterReservationLinkAsync"/>, donc l'annulation se fait sur le restaurant de la réservation.
+    /// Un slug qui n'est pas celui du restaurant du jeton ne montre rien (la requête HTTP a déjà été redirigée vers le bon slug).
+    /// </summary>
+    protected override async Task<RestaurantRef?> EnterRestaurantAsync()
+    {
+        var restaurant = await Resolver.EnterReservationLinkAsync(Slug, Token);
+        return restaurant is not null && SlugResolver.IsSameSlug(Slug, restaurant.Slug) ? restaurant : null;
+    }
 
     protected override async Task LoadAsync()
     {

@@ -19,8 +19,10 @@ public record PaymentStart(int PaymentId, string CheckoutUrl);
 /// ou <c>Open → Failed | Expired | Canceled</c>.
 /// </summary>
 public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPaymentGateway gateway, TimeProvider clock, ILogger<PaymentService> logger,
-    EmailDispatchSignal? signal = null)
+    PublicSiteOptions? site = null, EmailDispatchSignal? signal = null)
 {
+    private readonly PublicSiteOptions _site = site ?? new PublicSiteOptions();
+
     private const string InitFailedMessage = "Le paiement n'a pas pu être initialisé, réessayez";
     private const string UnknownReservationMessage = "Réservation introuvable";
     private const string UnknownPaymentMessage = "Paiement introuvable";
@@ -94,6 +96,8 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
     /// (<c>RefundPending</c> puis <c>Refunded</c>), réservation laissée <c>Expired</c> avec une note. Réglé après une annulation : remboursé.</item>
     /// <item>Échoué, expiré ou annulé : la réservation <c>PendingPayment</c> passe en <c>Expired</c> et libère sa place.</item>
     /// </list>
+    /// Une confirmation, ou un remboursement automatique faute de place, met l'e-mail du client en file dans la même transaction : une seule fois,
+    /// puisque seul l'appel qui fait passer le paiement de <c>Open</c> à <c>Paid</c> y arrive.
     /// </summary>
     public async Task<PaymentStatus?> SyncAsync(string gatewayPaymentId, CancellationToken ct = default)
     {
@@ -168,6 +172,7 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
 
         var refund = false;
         var confirmed = false;
+        var enqueued = false;
         await using (var transaction = await db.Database.BeginTransactionAsync(ct))
         {
             // Le verrou du service sérialise cette confirmation avec toute autre prise de places du même service et du même jour.
@@ -227,11 +232,24 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
                         .SetProperty(r => r.Note, r => r.Note == null ? note : r.Note + "\n" + note), ct);
             }
 
+            // L'e-mail est écrit avec l'étape qui confirme l'événement : confirmation, ou paiement tardif remboursé (place reprise entre-temps).
+            // Un paiement reçu après une annulation n'en envoie pas : le client a déjà reçu l'accusé de son annulation.
+            Func<ReservationEmailContext, EmailMessage>? email = confirmed ? ReservationEmails.Confirmed
+                : refund && current.Status != ReservationStatus.Cancelled ? ReservationEmails.LatePaymentRefunded
+                : null;
+            if (email is not null)
+            {
+                var context = await ReservationMail.LoadAsync(db, reservation.Id, _site.BaseUrl, payment.Amount, confirmed ? 0m : payment.Amount, ct);
+                enqueued = ReservationMail.Enqueue(db, context, email, now);
+                if (enqueued)
+                    await db.SaveChangesAsync(ct);
+            }
+
             await transaction.CommitAsync(ct);
         }
 
-        if (confirmed)
-            await TrySendConfirmationAsync(reservation, timeZone, localDate);
+        if (enqueued)
+            signal?.Notify();
 
         if (refund)
         {
@@ -247,31 +265,6 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
         }
 
         return await CurrentStatusAsync(db, payment.Id, ct);
-    }
-
-    /// <summary>
-    /// Provisoire : met en file la confirmation en texte simple, après le commit (les vrais gabarits, écrits dans la transaction, viendront ensuite),
-    /// puis réveille le dispatcher. Un contexte neuf : celui de l'appelant ne doit rien enregistrer d'autre. Un échec est journalisé sans faire échouer le paiement.
-    /// </summary>
-    private async Task TrySendConfirmationAsync(Reservation reservation, string timeZone, DateOnly localDate)
-    {
-        if (string.IsNullOrWhiteSpace(reservation.CustomerEmail))
-            return;
-        try
-        {
-            await using var db = await factory.CreateDbContextAsync();
-            var name = await db.Restaurants.Where(r => r.Id == reservation.RestaurantId).Select(r => r.Name).FirstAsync();
-            var time = RestaurantClock.ToLocal(reservation.StartsAtUtc, timeZone).Time;
-            EmailOutbox.Enqueue(db, new EmailMessage(EmailKind.ReservationConfirmed, reservation.CustomerEmail, $"Votre réservation chez {name} est confirmée",
-                $"Bonjour {reservation.CustomerName}, votre paiement est reçu : votre table pour {reservation.PartySize} personne(s) le {localDate:dd/MM/yyyy} à {time:HH\\:mm} est confirmée.",
-                string.Empty, RestaurantId: reservation.RestaurantId), Now);
-            await db.SaveChangesAsync();
-            signal?.Notify();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger.LogWarning("Mise en file de l'e-mail de confirmation impossible : {Reason}", ex.Message);
-        }
     }
 
     private static Task<int> ConfirmAsync(ChefOsDbContext db, int reservationId, ReservationStatus from, DateTime now, CancellationToken ct) =>

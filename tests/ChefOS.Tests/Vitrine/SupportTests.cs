@@ -1,4 +1,4 @@
-using ChefOS.Infrastructure.Payments;
+using ChefOS.Infrastructure;
 using ChefOS.Vitrine.Support;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -103,7 +103,7 @@ public class PublicUrlsTests
     }
 
     private static PublicUrls Create(string environment) =>
-        new(Options.Create(new PaymentOptions { BaseUrl = "https://vitrine.example/" }), new Env(environment));
+        new(Options.Create(new PublicSiteOptions { BaseUrl = "https://vitrine.example/" }), new Env(environment));
 
     [Fact]
     public void ReturnBase_IsUnderTheRestaurantSlug()

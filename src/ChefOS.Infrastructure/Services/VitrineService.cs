@@ -432,13 +432,14 @@ public partial class VitrineService(IDbContextFactory<ChefOsDbContext> factory, 
     /// Contenu public de la vitrine du restaurant courant, ou null si le profil n'existe pas ou n'est pas publié. La carte regroupe les plats
     /// affichés (non archivés, avec prix de vente) par catégorie (ordre alphabétique, « Autres » en dernier), puis par nom ; les allergènes
     /// viennent d'un seul <see cref="RecipeBook"/>. Les vins publiés sont limités à 3, dans l'ordre de la carte des vins.
+    /// <paramref name="includeUnpublished"/> : aussi pour une vitrine non publiée (seulement pour le lien d'une réservation, retrouvé par son jeton).
     /// </summary>
-    public async Task<PublicVitrine?> GetPublicAsync()
+    public async Task<PublicVitrine?> GetPublicAsync(bool includeUnpublished = false)
     {
         await using var db = await factory.CreateDbContextAsync();
 
         var profile = await db.VitrineProfiles.AsNoTracking().FirstOrDefaultAsync();
-        if (profile is not { IsPublished: true })
+        if (profile is null || (!profile.IsPublished && !includeUnpublished))
             return null;
 
         var restaurant = await db.Restaurants.AsNoTracking().FirstAsync(r => r.Id == profile.RestaurantId);

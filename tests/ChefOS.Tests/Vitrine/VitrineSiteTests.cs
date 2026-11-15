@@ -1,4 +1,10 @@
 using System.Net;
+using ChefOS.Core.Vitrine;
+using ChefOS.Infrastructure.Data;
+using ChefOS.Infrastructure.Notifications;
+using ChefOS.Infrastructure.Services;
+using ChefOS.Vitrine.Tenancy;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using ChefOS.Tests.Infrastructure;
 
@@ -110,7 +116,8 @@ public sealed class VitrineSiteTests(PostgresFixture postgres)
             id = (await gateway.CreateAsync(20m, "d", $"http://localhost/{site.Bistro.Slug}/reservation/abc", "", new Dictionary<string, string>(), default)).Id;
         }
 
-        var reservation = await Html(await site.Client.GetAsync($"/{site.Bistro.Slug}/reservation/jeton-inconnu"));
+        var token = await AddReservationAsync(site, site.Bistro.Id, "jeton-noindex", "Dupont");
+        var reservation = await Html(await site.Client.GetAsync($"/{site.Bistro.Slug}/reservation/{token}"));
         var checkout = await Html(await site.Client.GetAsync($"/paiement-demo/{id}"));
         var home = await Html(await site.Client.GetAsync($"/{site.Bistro.Slug}"));
 
@@ -261,5 +268,134 @@ public sealed class VitrineSiteTests(PostgresFixture postgres)
         Assert.Contains("20", html);
         Assert.Contains(">Payer<", html);
         Assert.Contains("Simuler un échec", html);
+    }
+
+    // ── Lien personnel d'une réservation (« le lien fonctionne toujours ») ──────
+
+    /// <summary>Une réservation confirmée dans trois jours (annulation gratuite encore possible), au jeton donné.</summary>
+    private static async Task<string> AddReservationAsync(VitrineSite site, int restaurantId, string token, string customer, string email = "client@example.com")
+    {
+        await using var db = new ChefOsDbContext(site.Options, new FixedTenantContext(restaurantId));
+        var startsAt = DateTime.UtcNow.AddDays(3);
+        db.Reservations.Add(new Reservation
+        {
+            PublicToken = token, StartsAtUtc = startsAt, ServiceName = "Dîner", PartySize = 2, CustomerName = customer, CustomerEmail = email,
+            CustomerPhone = "0470 12 34 56", Status = ReservationStatus.Confirmed, CreatedAt = DateTime.UtcNow, ConfirmedAt = DateTime.UtcNow,
+            FreeCancellationUntilUtc = startsAt.AddHours(-24), IsManual = true
+        });
+        await db.SaveChangesAsync();
+        return token;
+    }
+
+    [Fact]
+    public async Task ReservationLink_WorksWhenTheVitrineIsUnpublished()
+    {
+        await using var site = await VitrineSite.CreateAsync(postgres);
+        var token = await AddReservationAsync(site, site.Hidden.Id, "jeton-maison-cachee", "Client Discret");
+
+        var response = await site.Client.GetAsync($"/maison-cachee/reservation/{token}");
+        var html = await Html(response);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Votre table est réservée", html);
+        Assert.Contains("Client Discret", html);
+        Assert.Contains("Maison Cachée", html);
+        Assert.Contains("<meta name=\"robots\" content=\"noindex\"", html);
+        // Les autres pages de la vitrine n'existent pas : aucun lien vers elles.
+        Assert.DoesNotContain("href=\"/maison-cachee/reserver\"", html);
+        Assert.DoesNotContain("href=\"/maison-cachee/vins\"", html);
+        Assert.DoesNotContain("/maison-cachee/images/", html);
+    }
+
+    [Fact]
+    public async Task ReservationLink_WithAnOldSlug_RedirectsToTheCurrentSlug()
+    {
+        await using var site = await VitrineSite.CreateAsync(postgres);
+        var token = await AddReservationAsync(site, site.Bistro.Id, "jeton-ancien-slug", "Dupont");
+
+        var response = await site.Client.GetAsync($"/ancien-slug/reservation/{token}");
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal($"/le-bistro-test/reservation/{token}", response.Headers.Location?.OriginalString);
+        Assert.DoesNotContain("Dupont", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task ReservationLink_WithAnUnknownToken_Returns404()
+    {
+        await using var site = await VitrineSite.CreateAsync(postgres);
+
+        foreach (var path in new[] { $"/{site.Bistro.Slug}/reservation/jeton-inconnu", "/slug-inconnu/reservation/jeton-inconnu",
+                     $"/{site.Bistro.Slug}/reservation/{new string('x', 65)}" })
+        {
+            var response = await site.Client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task ReservationLink_OfAnotherRestaurant_RedirectsToItsOwnSlug()
+    {
+        await using var site = await VitrineSite.CreateAsync(postgres);
+        var token = await AddReservationAsync(site, site.Other.Id, "jeton-autre-table", "Client De L'Autre");
+
+        var response = await site.Client.GetAsync($"/{site.Bistro.Slug}/reservation/{token}");
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal($"/{site.Other.Slug}/reservation/{token}", response.Headers.Location?.OriginalString);
+        var underBistro = await Html(response);
+        Assert.DoesNotContain("Client De L'Autre", underBistro);
+        Assert.DoesNotContain("Le Bistro Test", underBistro);
+
+        var own = await Html(await site.Client.GetAsync(response.Headers.Location));
+        Assert.Contains("Client De L'Autre", own);
+        Assert.Contains("Autre Table", own);
+        Assert.DoesNotContain("Le Bistro Test", own);
+    }
+
+    [Fact]
+    public async Task OtherPages_OfAnUnpublishedVitrine_StillReturn404()
+    {
+        await using var site = await VitrineSite.CreateAsync(postgres);
+        var token = await AddReservationAsync(site, site.Hidden.Id, "jeton-cache-404", "Client Discret");
+        Assert.Equal(HttpStatusCode.OK, (await site.Client.GetAsync($"/maison-cachee/reservation/{token}")).StatusCode);
+
+        foreach (var path in new[] { "/maison-cachee", "/maison-cachee/reserver", "/maison-cachee/vins", $"/maison-cachee/images/{site.HiddenImageId}" })
+            Assert.Equal(HttpStatusCode.NotFound, (await site.Client.GetAsync(path)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Cancel_FromTheReservationPageOfAnUnpublishedVitrine_Works()
+    {
+        await using var site = await VitrineSite.CreateAsync(postgres);
+        var token = await AddReservationAsync(site, site.Hidden.Id, "jeton-annulation-cachee", "Client Discret", "discret@example.com");
+
+        // Le rendu de la page (requête HTTP, restaurant fixé par le middleware) propose l'annulation.
+        Assert.Contains("Annuler ma réservation", await Html(await site.Client.GetAsync($"/maison-cachee/reservation/{token}")));
+
+        // Le slug seul (règle « vitrine publiée ») ne donne aucun restaurant : sans le jeton, l'annulation ne trouve pas la réservation.
+        await using (var scope = site.Factory.Services.CreateAsyncScope())
+        {
+            Assert.Null(await scope.ServiceProvider.GetRequiredService<SlugResolver>().EnterAsync("maison-cachee"));
+            await Assert.ThrowsAnyAsync<ChefOS.Core.Common.DomainValidationException>(() =>
+                scope.ServiceProvider.GetRequiredService<ReservationService>().CancelByCustomerAsync(token));
+        }
+
+        // Le circuit de la page fait comme le middleware : le restaurant courant de son scope est celui du jeton, puis le bouton annule.
+        await using (var scope = site.Factory.Services.CreateAsyncScope())
+        {
+            var restaurant = await scope.ServiceProvider.GetRequiredService<SlugResolver>().EnterReservationLinkAsync("maison-cachee", token);
+            Assert.Equal(site.Hidden.Id, restaurant?.Id);
+            await scope.ServiceProvider.GetRequiredService<ReservationService>().CancelByCustomerAsync(token);
+        }
+
+        await using (var db = new ChefOsDbContext(site.Options, new FixedTenantContext(site.Hidden.Id)))
+            Assert.Equal(ReservationStatus.Cancelled, (await db.Reservations.SingleAsync(r => r.PublicToken == token)).Status);
+        await using (var db = new ChefOsDbContext(site.Options, new FixedTenantContext(null)))
+        {
+            var email = await db.OutgoingEmails.AsNoTracking().SingleAsync(e => e.Kind == EmailKind.ReservationCancelledByCustomer);
+            Assert.Equal(("discret@example.com", site.Hidden.Id), (email.To, email.RestaurantId!.Value));
+        }
+        Assert.Contains("Réservation annulée", await Html(await site.Client.GetAsync($"/maison-cachee/reservation/{token}")));
     }
 }
