@@ -115,6 +115,7 @@ public class UiTests
     [InlineData(CostIssueKind.InvalidOutputQuantity, "Quantité produite manquante")]
     [InlineData(CostIssueKind.UnknownItem, "Élément introuvable")]
     [InlineData(CostIssueKind.Cycle, "Boucle de préparations")]
+    [InlineData(CostIssueKind.NoLines, "Aucune ligne : coût inconnu")]
     public void IssueLabel_IsInFrench(CostIssueKind kind, string expected) =>
         Assert.Equal(expected, Ui.IssueLabel(kind));
 

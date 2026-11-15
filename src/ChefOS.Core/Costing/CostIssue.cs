@@ -6,7 +6,8 @@ public enum CostIssueKind
     IncompatibleUnit,
     InvalidOutputQuantity,
     UnknownItem,
-    Cycle
+    Cycle,
+    NoLines
 }
 
 /// <summary>Un problème bloquant le chiffrage complet d'une recette, rattaché à une ligne quand c'est possible.</summary>

@@ -72,20 +72,36 @@ public class DashboardServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task Summary_AverageExcludesZeroFoodCostAndArchivedDishes()
+    public async Task DashboardAverage_IgnoresRecipesWithoutLines()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var base01 = await AddIngredientAsync(options, restaurant, "Base");
+        await AddDishAsync(options, restaurant, "Stoemp", base01, 200m);            // 20 %
+        await AddDishAsync(options, restaurant, "Brouillon", base01, 0m);           // sans ligne : coût inconnu, hors moyenne
+
+        var summary = await service.GetSummaryAsync();
+
+        Assert.Equal(2, summary.DishCount);
+        Assert.Equal(0.20m, summary.AverageFoodCost);
+        Assert.Contains(summary.WatchList, w => w.Name == "Brouillon" && w.Level == FoodCostLevel.Incomplete);
+    }
+
+    [Fact]
+    public async Task Summary_AverageExcludesArchivedDishes()
     {
         var options = await postgres.CreateDatabaseAsync();
         var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
         var service = CreateService(options, restaurant);
         var base01 = await AddIngredientAsync(options, restaurant, "Base");
         await AddDishAsync(options, restaurant, "Stoemp", base01, 200m);
-        await AddDishAsync(options, restaurant, "Brouillon", base01, 0m);           // sans ligne : food cost nul
         var retired = await AddDishAsync(options, restaurant, "Ancien plat", base01, 900m);
         await CreateRecipeService(options, restaurant).SetArchivedAsync(retired.Id, true);
 
         var summary = await service.GetSummaryAsync();
 
-        Assert.Equal(2, summary.DishCount);                                         // le plat archivé n'est pas compté
+        Assert.Equal(1, summary.DishCount);                                         // le plat archivé n'est pas compté
         Assert.Equal(0.20m, summary.AverageFoodCost);
         Assert.Empty(summary.WatchList);                                            // ni surveillé
     }

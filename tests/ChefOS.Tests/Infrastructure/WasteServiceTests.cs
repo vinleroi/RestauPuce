@@ -441,6 +441,20 @@ public class WasteServiceTests(PostgresFixture postgres)
         Assert.Null(items["Fond sans rendement"].Cost);
     }
 
+    [Fact]
+    public async Task WasteOfARecipeWithoutLines_IsFlaggedIncomplete()
+    {
+        var options = await postgres.CreateDatabaseAsync();
+        var restaurant = await TestData.CreateRestaurantAsync(options, "Bistro");
+        var service = CreateService(options, restaurant);
+        var vide = await AddRecipeAsync(options, restaurant, "Plat vide", RecipeKind.Dish, null, null);
+
+        await service.AddAsync(Waste(Nov3, recipeId: vide, quantity: 2m, unit: MeasureUnit.Piece));
+
+        var item = Assert.Single(await service.ListAsync(Nov3, Nov3));
+        Assert.True(item.CostIncomplete);
+    }
+
     // ── Isolation ────────────────────────────────────────────────────────────
 
     [Fact]

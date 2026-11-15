@@ -65,6 +65,31 @@ public class RecipeBookTests
         Assert.Contains(r.Issues, i => i.Kind == CostIssueKind.InvalidOutputQuantity);
     }
 
+    [Fact]
+    public void RecipeWithoutLines_IsIncomplete()
+    {
+        var r = book.Cost(Dish([]));
+        Assert.False(r.IsComplete);
+        Assert.Equal(0m, r.TotalCost);
+        var issue = Assert.Single(r.Issues);
+        Assert.Equal(CostIssueKind.NoLines, issue.Kind);
+        Assert.Equal("Plat test", issue.ItemName);
+        Assert.Null(issue.LineIndex);
+    }
+
+    [Fact]
+    public void ParentOfAnEmptySubRecipe_IsIncomplete()
+    {
+        var empty = Prep(90, "Fond vide", []);
+        var parent = Dish([SubLine(90, 100, MeasureUnit.Ml)], id: 91);
+        var b = new RecipeBook([empty, parent], book.Ingredients);
+
+        var r = b.Cost(91);
+
+        Assert.False(r.IsComplete);
+        Assert.Contains(r.Issues, i => i.Kind == CostIssueKind.NoLines && i.ItemName == "Fond vide" && i.LineIndex == 0);
+    }
+
     [Theory]
     [InlineData(-5.0)]
     [InlineData(null)]

@@ -349,6 +349,20 @@ public class ReceiptReviewFormTests
     }
 
     [Fact]
+    public void LinesWithVatToCheck_CountsOnlyAppliedLines()
+    {
+        var form = FormWith(
+            StoredLine(7, "BEURRE", 5m, MeasureUnit.Kg, 50.60m, Butter, vatToCheck: true),
+            StoredLine(8, "SACS", 1m, MeasureUnit.Piece, 12.40m, vatToCheck: true, ignored: true),
+            StoredLine(9, "OEUFS", 6m, MeasureUnit.Piece, 8.70m, Eggs));
+
+        Assert.Equal(1, form.LinesWithVatToCheck);
+
+        form.Lines[0].LineTotalExclVat = 51m;       // total corrigé : la TVA n'est plus à vérifier
+        Assert.Equal(0, form.LinesWithVatToCheck);
+    }
+
+    [Fact]
     public void ActiveLineCount_ExcludesTheIgnoredLines()
     {
         var form = FormWith(

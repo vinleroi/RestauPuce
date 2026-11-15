@@ -183,6 +183,7 @@ public static class Ui
         CostIssueKind.InvalidOutputQuantity => "Quantité produite manquante",
         CostIssueKind.UnknownItem => "Élément introuvable",
         CostIssueKind.Cycle => "Boucle de préparations",
+        CostIssueKind.NoLines => "Aucune ligne : coût inconnu",
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
     };
 

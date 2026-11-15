@@ -498,6 +498,18 @@ else
             return;
         }
 
+        if (_form.LinesWithVatToCheck > 0)
+        {
+            var confirmed = await DialogService.ShowMessageBoxAsync(
+                "TVA à vérifier",
+                $"{_form.LinesWithVatToCheck} ligne(s) ont une TVA à vérifier. Valider quand même ?",
+                yesText: "Valider",
+                cancelText: "Annuler");
+
+            if (confirmed != true)
+                return;
+        }
+
         _busy = true;
         var saved = false;
         try

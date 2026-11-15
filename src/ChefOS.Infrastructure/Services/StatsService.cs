@@ -220,7 +220,6 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
         // Coûts aux prix du dernier jour de la période, un seul livre pour tous les plats.
         var book = new RecipeBook(data.Recipes, PriceAsOf.WithPricesAt(data.Ingredients, data.History, to));
         var namesById = data.Recipes.ToDictionary(r => r.Id, r => r.Name);
-        var gaps = new RecipeGaps(data.Recipes);
 
         var rows = new List<DishProfit>();
         var menuItems = new List<MenuItem>();
@@ -231,8 +230,8 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
             var cost = book.Cost(group.Key);
             var totalCost = cost.TotalCost * quantity;
 
-            // Une recette sans aucune ligne coûte « 0 » sans être complète : son coût est inconnu.
-            var costIncomplete = !cost.IsComplete || gaps.IsHollow(group.Key);
+            // Une recette sans aucune ligne (ou qui en utilise une) n'est jamais complète : RecipeBook le signale.
+            var costIncomplete = !cost.IsComplete;
 
             rows.Add(new DishProfit(
                 group.Key,
@@ -511,11 +510,6 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
     private sealed class RecipeGaps(IEnumerable<Recipe> recipes)
     {
         private readonly Dictionary<int, Recipe> _recipesById = recipes.ToDictionary(r => r.Id);
-        private readonly Dictionary<int, bool> _hollow = [];
-
-        /// <summary>Vrai si la recette n'a aucune ligne, ou utilise une préparation qui n'en a aucune.</summary>
-        public bool IsHollow(int recipeId) =>
-            _recipesById.TryGetValue(recipeId, out var recipe) && IsHollow(recipe, []);
 
         /// <summary>Les identifiants des recettes sans aucune ligne parmi <paramref name="recipeId"/> et les préparations qu'elle utilise, directement ou non.</summary>
         public HashSet<int> EmptyRecipesUnder(int recipeId)
@@ -537,31 +531,6 @@ public class StatsService(IDbContextFactory<ChefOsDbContext> factory, TimeProvid
             {
                 if (line.SubRecipeId is { } subRecipeId)
                     Collect(subRecipeId, visited, empty);
-            }
-        }
-
-        private bool IsHollow(Recipe recipe, HashSet<int> visiting)
-        {
-            if (_hollow.TryGetValue(recipe.Id, out var known))
-                return known;
-
-            if (recipe.Lines.Count == 0)
-                return _hollow[recipe.Id] = true;
-
-            // Une boucle de préparations est déjà signalée par le chiffrage : ici, elle ne rend pas la recette creuse.
-            if (!visiting.Add(recipe.Id))
-                return false;
-
-            try
-            {
-                var hollow = recipe.Lines.Any(l => l.SubRecipeId is { } subRecipeId
-                                                   && _recipesById.TryGetValue(subRecipeId, out var subRecipe)
-                                                   && IsHollow(subRecipe, visiting));
-                return _hollow[recipe.Id] = hollow;
-            }
-            finally
-            {
-                visiting.Remove(recipe.Id);
             }
         }
     }

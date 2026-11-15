@@ -133,6 +133,9 @@ public sealed class ReceiptReviewForm
     /// <summary>Lignes qui seront appliquées (non ignorées).</summary>
     public int ActiveLineCount => Lines.Count(l => !l.IsIgnored);
 
+    /// <summary>Lignes qui seront appliquées dont la TVA reste « à vérifier ».</summary>
+    public int LinesWithVatToCheck => Lines.Count(l => !l.IsIgnored && l.VatToCheck);
+
     /// <summary>Formulaire du ticket enregistré ; les lignes gardent l'ordre reçu (le service les trie par position).</summary>
     public static ReceiptReviewForm From(Receipt receipt)
     {

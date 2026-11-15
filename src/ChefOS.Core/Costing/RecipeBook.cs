@@ -87,6 +87,11 @@ public sealed class RecipeBook
         try
         {
             var issues = new List<CostIssue>();
+
+            // Une recette sans ligne coûte « 0 » sans que ce soit vrai : son coût est inconnu (règle unique, reprise par les parents).
+            if (recipe.Lines.Count == 0)
+                issues.Add(new CostIssue(CostIssueKind.NoLines, recipe.Name, LineIndex: null));
+
             var lines = new List<LineCost>(recipe.Lines.Count);
             for (var index = 0; index < recipe.Lines.Count; index++)
                 lines.Add(new LineCost(index, CostLine(recipe.Lines[index], index, issues, memo, visiting)));
