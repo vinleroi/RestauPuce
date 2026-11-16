@@ -18,6 +18,8 @@ x-site-environment: &site-environment
   # Adresse publique de la vitrine, lue par les deux sites (liens des e-mails, webhook Mollie).
   Vitrine__BaseUrl: "https://${VITRINE_DOMAIN:?VITRINE_DOMAIN est obligatoire}"
   Email__Sender: "${EMAIL_SENDER:-Smtp}"
+  # Démonstration : la vitrine ne s'en sert que pour la vérification de démarrage (mode e-mail Log).
+  Demo__SeedOnStartup: "${DEMO_SEED_ON_STARTUP:-false}"
   Email__FromAddress: "${EMAIL_FROM_ADDRESS:-}"
   Email__FromName: "${EMAIL_FROM_NAME:-ChefOS}"
   Email__Smtp__Host: "${SMTP_HOST:-}"
@@ -65,7 +67,6 @@ services:
       AllowedHosts: "${BACK_DOMAIN:?BACK_DOMAIN est obligatoire};localhost"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       Receipts__Reader: "${RECEIPTS_READER:-Claude}"
-      Demo__SeedOnStartup: "${DEMO_SEED_ON_STARTUP:-false}"
       Demo__Email: "${DEMO_EMAIL:-}"
       Demo__Password: "${DEMO_PASSWORD:-}"
       Accounts__AllowRegistration: "${ACCOUNTS_ALLOW_REGISTRATION:-false}"
