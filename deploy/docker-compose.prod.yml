@@ -1,0 +1,129 @@
+# Composition de production d'exemple : PostgreSQL, le back, la vitrine et Caddy (HTTPS automatique).
+# Toute la configuration vient du fichier deploy/.env (modèle : deploy/.env.example). Guide : docs/deploiement.md.
+#
+# Depuis le dossier deploy/ :   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Seul Caddy publie des ports (80 et 443). Les deux sites ne sont JAMAIS publiés sur l'hôte : le proxy utilisateur de Docker
+# ferait apparaître chaque visiteur avec l'adresse de la passerelle du réseau, qui est dans le réseau de confiance
+# (ReverseProxy__KnownNetworks__0) : l'adresse réelle du visiteur serait perdue.
+
+name: chefos
+
+x-site-environment: &site-environment
+  # Les conteneurs écoutent en HTTP sur 8080 uniquement : Caddy termine le HTTPS.
+  ASPNETCORE_HTTP_PORTS: "8080"
+  ConnectionStrings__ChefOs: "Host=db;Port=5432;Database=chefos;Username=chefos;Password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD est obligatoire}"
+  Payments__Gateway: "${PAYMENTS_GATEWAY:?PAYMENTS_GATEWAY est obligatoire (Mollie ou Demo)}"
+  MOLLIE_API_KEY: "${MOLLIE_API_KEY:-}"
+  # Adresse publique de la vitrine, lue par les deux sites (liens des e-mails, webhook Mollie).
+  Vitrine__BaseUrl: "https://${VITRINE_DOMAIN:?VITRINE_DOMAIN est obligatoire}"
+  Email__Sender: "${EMAIL_SENDER:-Smtp}"
+  Email__FromAddress: "${EMAIL_FROM_ADDRESS:-}"
+  Email__FromName: "${EMAIL_FROM_NAME:-ChefOS}"
+  Email__Smtp__Host: "${SMTP_HOST:-}"
+  Email__Smtp__Port: "${SMTP_PORT:-587}"
+  Email__Smtp__Security: "${SMTP_SECURITY:-StartTls}"
+  Email__Smtp__Username: "${SMTP_USERNAME:-}"
+  Email__Smtp__Password: "${SMTP_PASSWORD:-}"
+  # Les en-têtes X-Forwarded-* ne sont acceptés que de ce réseau (le sous-réseau fixé plus bas, où se trouve Caddy).
+  ReverseProxy__KnownNetworks__0: "172.30.0.0/16"
+  # Sans cela, EF Core journalise chaque requête SQL.
+  Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command: "Warning"
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chefos
+      POSTGRES_USER: chefos
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD est obligatoire}"
+    volumes:
+      - chefos-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chefos -d chefos"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [chefos]
+
+  back:
+    build:
+      context: ..
+      dockerfile: src/ChefOS.Back/Dockerfile
+    image: chefos-back
+    restart: unless-stopped
+    # Processus d'init (PID 1) : sans lui, un plantage au démarrage (configuration refusée) laisse .NET tourner en boucle
+    # au lieu de s'arrêter, car le PID 1 d'un conteneur ignore le signal d'abandon.
+    init: true
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      <<: *site-environment
+      # Seul le domaine du back est accepté ; « localhost » reste permis pour la sonde de santé lancée dans le conteneur.
+      AllowedHosts: "${BACK_DOMAIN:?BACK_DOMAIN est obligatoire};localhost"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      Receipts__Reader: "${RECEIPTS_READER:-Claude}"
+      Demo__SeedOnStartup: "${DEMO_SEED_ON_STARTUP:-false}"
+      Demo__Email: "${DEMO_EMAIL:-}"
+      Demo__Password: "${DEMO_PASSWORD:-}"
+      Accounts__AllowRegistration: "${ACCOUNTS_ALLOW_REGISTRATION:-false}"
+      Accounts__RequireConfirmedEmail: "true"
+      # Le back applique les migrations AVANT de se mettre à l'écoute : d'où le start_period généreux.
+      Database__MigrateOnStartup: "true"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    networks: [chefos]
+
+  vitrine:
+    build:
+      context: ..
+      dockerfile: src/ChefOS.Vitrine/Dockerfile
+    image: chefos-vitrine
+    restart: unless-stopped
+    init: true
+    depends_on:
+      back:
+        condition: service_healthy
+    environment:
+      <<: *site-environment
+      AllowedHosts: "${VITRINE_DOMAIN:?VITRINE_DOMAIN est obligatoire};localhost"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks: [chefos]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      BACK_DOMAIN: "${BACK_DOMAIN:?BACK_DOMAIN est obligatoire}"
+      VITRINE_DOMAIN: "${VITRINE_DOMAIN:?VITRINE_DOMAIN est obligatoire}"
+      ACME_EMAIL: "${ACME_EMAIL:?ACME_EMAIL est obligatoire}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [chefos]
+
+networks:
+  chefos:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+volumes:
+  chefos-pg:
+  caddy-data:
+  caddy-config:

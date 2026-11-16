@@ -483,3 +483,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Configuration de production (secrets) : jamais versionnée
+deploy/.env

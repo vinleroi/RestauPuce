@@ -78,7 +78,7 @@ Règles par défaut : acompte de 10 € par personne jusqu'à 5 couverts ; au-de
 
 La section `Payments` choisit la passerelle, au démarrage (redémarrez pour en changer) :
 
-- **`Payments:Gateway=Demo`** (par défaut) : paiements simulés, stockés en base. Le bouton « Payer » de la page `/paiement-demo/...` de la vitrine règle le paiement, sans argent réel ni compte ; le back, qui partage la base, peut rembourser. `Payments:BaseUrl` est l'adresse publique de la vitrine (<http://localhost:5108> par défaut), utilisée pour les pages de paiement.
+- **`Payments:Gateway=Demo`** (par défaut) : paiements simulés, stockés en base. Le bouton « Payer » de la page `/paiement-demo/...` de la vitrine règle le paiement, sans argent réel ni compte ; le back, qui partage la base, peut rembourser. `Vitrine:BaseUrl` est l'adresse publique de la vitrine (<http://localhost:5108> en développement), utilisée pour les pages de paiement, le webhook Mollie et les liens des e-mails.
 - **`Payments:Gateway=Mollie`** : paiements réels (ou de test) via [Mollie](https://www.mollie.com/). Rangez la clé de test dans les secrets utilisateur de la vitrine, et du back pour que les annulations remboursent :
 
 ```bash
@@ -100,14 +100,16 @@ En local, Mollie ne peut pas joindre le webhook (`localhost` n'est pas public) :
 
 ### E-mails
 
-**Aucun e-mail n'est envoyé** : les confirmations et annulations sont écrites dans les journaux de l'application. Le lien de suivi (`/<slug>/reservation/<jeton>`) reste la référence du client pour consulter ou annuler sa réservation.
+En développement, les e-mails partent vers Mailpit (`docker compose up -d`, boîte de réception sur <http://localhost:8025>) ; avec `Email:Sender=Log`, ils sont seulement écrits dans les journaux. Le lien de suivi (`/<slug>/reservation/<jeton>`) reste la référence du client pour consulter ou annuler sa réservation.
 
 ### En production
 
-- Hors `Development`, définissez `Payments:Gateway` explicitement : la passerelle `Demo` prévient par un avertissement dans les journaux qu'aucun encaissement réel n'a lieu.
-- Derrière un proxy ou un répartiteur de charge, configurez les `ForwardedHeaders` : sans eux, la limitation de débit de la vitrine voit l'adresse du proxy et non celle du client.
-- L'URL du webhook Mollie doit être publique et en HTTPS (`Payments:BaseUrl` : adresse publique de la vitrine).
-- Pas de données de démo : le seed ne s'exécute qu'en `Development`.
+Le guide pas à pas (serveur, DNS, HTTPS automatique, sauvegarde, mise à jour) est dans **[docs/deploiement.md](docs/deploiement.md)** ; les images Docker et la composition d'exemple sont dans `src/*/Dockerfile` et `deploy/`.
+
+- Hors `Development`, chaque site refuse de démarrer avec « Configuration de production incomplète » si un réglage obligatoire manque (`Payments:Gateway`, `Vitrine:BaseUrl` en https, `Email:Sender`…). La passerelle `Demo`, choisie explicitement, prévient par un avertissement qu'aucun encaissement réel n'a lieu.
+- Derrière un proxy, `ReverseProxy:KnownNetworks` (liste CIDR) désigne les réseaux dont on accepte les en-têtes `X-Forwarded-*`.
+- L'URL du webhook Mollie est construite sur `Vitrine:BaseUrl`, qui doit être l'adresse publique en HTTPS de la vitrine.
+- Pas de données de démo par défaut : le seed ne s'exécute qu'en `Development`, ou avec `Demo:SeedOnStartup=true`.
 
 ## Scan des tickets
 

@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+.git/
+.superpowers/
+.vs/
+.idea/
+.vscode/
+tests/
+docs/
+deploy/
+**/.env
+**/*.user
+**/appsettings.Development.json
+**/Dockerfile
+docker-compose*.yml

@@ -1,0 +1,16 @@
+# Frontal HTTPS : Caddy obtient et renouvelle seul les certificats Let's Encrypt.
+# Les WebSockets (indispensables aux pages interactives Blazor) sont transmis sans réglage supplémentaire.
+# Les domaines et l'e-mail viennent des variables d'environnement du service caddy (voir docker-compose.prod.yml).
+{
+	email {$ACME_EMAIL}
+}
+
+{$BACK_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy back:8080
+}
+
+{$VITRINE_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy vitrine:8080
+}
