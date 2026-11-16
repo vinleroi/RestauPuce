@@ -226,7 +226,7 @@ public partial class ReservationService(
 
             db.Reservations.Add(reservation);
             enqueued = due.Kind is null
-                       && ReservationMail.Enqueue(db, ReservationMail.Context(restaurant, profile, reservation, site.BaseUrl), ReservationEmails.Confirmed, now);
+                       && ReservationMail.Enqueue(db, ReservationMail.Context(restaurant, profile, reservation, site.BaseUrl, now), ReservationEmails.Confirmed, now);
             await db.SaveChangesAsync();
             await transaction.CommitAsync();
         }
@@ -418,7 +418,7 @@ public partial class ReservationService(
                     .ExecuteUpdateAsync(set => set.SetProperty(p => p.Status, PaymentStatus.RefundPending).SetProperty(p => p.RefundAmount, p => p.Amount));
             }
 
-            var context = await ReservationMail.LoadAsync(db, reservationId, site.BaseUrl, paid, refund ? paid : 0m, CancellationToken.None);
+            var context = await ReservationMail.LoadAsync(db, reservationId, site.BaseUrl, now, paid, refund ? paid : 0m, CancellationToken.None);
             enqueued = ReservationMail.Enqueue(db, context, email, now);
             if (enqueued)
                 await db.SaveChangesAsync();
@@ -597,7 +597,7 @@ public partial class ReservationService(
         }
 
         db.Reservations.Add(reservation);
-        var enqueued = ReservationMail.Enqueue(db, ReservationMail.Context(restaurant, profile, reservation, site.BaseUrl), ReservationEmails.Confirmed, now);
+        var enqueued = ReservationMail.Enqueue(db, ReservationMail.Context(restaurant, profile, reservation, site.BaseUrl, now), ReservationEmails.Confirmed, now);
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
         if (enqueued)

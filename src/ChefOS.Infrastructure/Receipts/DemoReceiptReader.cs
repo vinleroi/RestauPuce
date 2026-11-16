@@ -1,15 +1,19 @@
 using ChefOS.Core.Receipts;
 using ChefOS.Core.Units;
+using ChefOS.Core.Vitrine;
 
 namespace ChefOS.Infrastructure.Receipts;
 
 /// <summary>
-/// Lecteur de démonstration : ignore le fichier et renvoie toujours le même ticket Metro, daté du jour, hors TVA, après une pause qui simule la lecture.
+/// Lecteur de démonstration : ignore le fichier et renvoie toujours le même ticket Metro, daté du jour (à Bruxelles), hors TVA, après une pause qui simule la lecture.
 /// Les libellés sont ceux de « Le Petit Bistro » (voir <c>DemoSeeder</c>), avec une hausse d'environ 10 % sur le beurre,
 /// des prix proches du seed sur les autres lignes et une ligne (« SACS POUBELLE 100L ») que le chef ignorera.
 /// </summary>
-public sealed class DemoReceiptReader : IReceiptReader
+public sealed class DemoReceiptReader(TimeProvider clock) : IReceiptReader
 {
+    /// <summary>Le fuseau du restaurant de démonstration : « le jour » du ticket est celui de Bruxelles, quel que soit le fuseau du serveur.</summary>
+    private const string RestaurantTimeZone = "Europe/Brussels";
+
     private static readonly TimeSpan ReadDelay = TimeSpan.FromMilliseconds(800);
 
     public async Task<ReceiptExtraction> ReadAsync(byte[] content, string contentType, CancellationToken ct = default)
@@ -30,7 +34,7 @@ public sealed class DemoReceiptReader : IReceiptReader
 
         return new ReceiptExtraction(
             "Metro Cash & Carry",
-            DateOnly.FromDateTime(DateTime.Now),
+            RestaurantClock.Today(clock.GetUtcNow().UtcDateTime, RestaurantTimeZone),
             "DEMO-0427",
             AmountsIncludeVat: false,
             lines.Sum(l => l.LineTotal),

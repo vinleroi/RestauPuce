@@ -12,14 +12,14 @@ Tout tourne sur **un seul serveur**, dans des conteneurs Docker : la base Postgr
 | Il vous faut | Remarques |
 |---|---|
 | **Un serveur (VPS)** sous Linux | 2 Go de mémoire et 20 Go de disque suffisent pour un restaurant. Chez n'importe quel hébergeur (OVH, Hetzner, Scaleway, DigitalOcean…). Notez son **adresse IP publique**. |
-| **Docker** avec le plugin **Compose** | Sur Ubuntu ou Debian : `curl -fsSL https://get.docker.com \| sh`. Vérifiez avec `docker compose version`. |
+| **Docker** avec le plugin **Compose** | Sur Ubuntu ou Debian : `curl -fsSL https://get.docker.com \| sh`. Ensuite, pour lancer `docker` sans `sudo`, ajoutez votre utilisateur au groupe `docker` (`sudo usermod -aG docker $USER`), puis déconnectez-vous et reconnectez-vous en SSH ; sinon, préfixez chaque commande `docker` de ce guide par `sudo`. Vérifiez avec `docker compose version`. |
 | **Les ports 80 et 443 ouverts** | Dans le pare-feu du serveur et chez l'hébergeur. Caddy en a besoin pour obtenir les certificats. Rien d'autre ne doit les utiliser. |
 | **Un nom de domaine** | Chez n'importe quel bureau d'enregistrement (OVH, Gandi, Namecheap…). Vous pouvez utiliser deux sous-domaines d'un même domaine. |
 | **Un compte SMTP** | Pour envoyer les e-mails (confirmations de réservation, mot de passe oublié). Votre fournisseur de messagerie ou un service d'envoi (Brevo, Mailjet, Postmark…) vous donne : serveur, port, identifiant, mot de passe. |
 | **Un compte Mollie** | Pour encaisser les acomptes : <https://www.mollie.com/>. Créez une clé API (`test_…` pour essayer, `live_…` pour de vrais paiements). Facultatif pour une simple démonstration. |
 | **Une clé API Anthropic** (facultatif) | Pour la lecture automatique des tickets fournisseurs : <https://console.anthropic.com/>. Sans elle, le reste fonctionne. |
 
-Connectez-vous au serveur en SSH, puis récupérez le projet :
+Connectez-vous au serveur en SSH. Si `git` n'est pas installé : `sudo apt install -y git`. Puis récupérez le projet :
 
 ```bash
 git clone <adresse-du-dépôt> chefos
@@ -37,7 +37,7 @@ Le DNS est l'annuaire qui dit où se trouve chaque nom de domaine. Chez votre bu
 | `app` (donc `app.mondomaine.be`) | `A` | l'adresse IP du serveur |
 | `resto` (donc `resto.mondomaine.be`) | `A` | l'adresse IP du serveur |
 
-Si votre serveur a aussi une adresse IPv6, ajoutez les mêmes enregistrements en type `AAAA`.
+N'ajoutez **pas** d'enregistrement `AAAA` (IPv6), même si votre serveur a une adresse IPv6 : le réseau Docker par défaut n'a pas d'IPv6, les visiteurs en IPv6 arriveraient sous l'adresse de la passerelle et partageraient tous la même limite de requêtes, au lieu d'être comptés chacun.
 
 La propagation prend de quelques minutes à quelques heures. Vérifiez depuis votre ordinateur :
 
@@ -68,7 +68,7 @@ Les variables, dans l'ordre du fichier :
 | `POSTGRES_PASSWORD` | Un mot de passe long pour la base. Générez-le avec `openssl rand -hex 24` (lettres et chiffres seulement : évitez `$`, `#` et les espaces). |
 | `PAYMENTS_GATEWAY` | `Mollie` pour de vrais paiements (ou de test avec une clé `test_…`), `Demo` pour une démonstration sans argent réel. |
 | `MOLLIE_API_KEY` | Votre clé Mollie. Obligatoire si `PAYMENTS_GATEWAY=Mollie`. |
-| `EMAIL_SENDER` | `Smtp` pour envoyer de vrais e-mails, `Log` pour les écrire seulement dans les journaux (démonstration). |
+| `EMAIL_SENDER` | `Smtp` pour envoyer de vrais e-mails. `Log` n'écrit rien d'utile dans les journaux (pas le lien de confirmation) : il ne convient qu'à une démonstration avec `DEMO_SEED_ON_STARTUP=true` ; sinon le site refuse de démarrer. |
 | `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME` | L'expéditeur affiché (ex. `reservations@mondomaine.be` et `Mon Restaurant`). L'adresse doit être autorisée par votre fournisseur SMTP. |
 | `SMTP_HOST`, `SMTP_PORT` | Serveur et port de votre fournisseur (587 en général). |
 | `SMTP_SECURITY` | `StartTls` (port 587) ou `SslOnConnect` (port 465). Le mode sans chiffrement est refusé en production. |
@@ -99,7 +99,7 @@ Quand les quatre services (`db`, `back`, `vitrine`, `caddy`) sont `Up` et que `b
 
 ## 5. Premier compte
 
-**L'inscription est ouverte tant qu'aucun compte n'existe.** Ouvrez `https://app.mondomaine.be`, cliquez sur « S'inscrire » et créez le compte du chef : un e-mail de confirmation arrive, cliquez sur son lien, puis connectez-vous.
+**L'inscription est ouverte tant qu'aucun compte n'existe.** Ouvrez `https://app.mondomaine.be`, cliquez sur « Créer un compte » et créez le compte du chef : un e-mail de confirmation arrive, cliquez sur son lien, puis connectez-vous.
 
 Dès qu'un compte existe, **l'inscription se ferme** : personne d'autre ne peut créer un compte en ligne. Pour en ajouter un (un associé, un deuxième restaurant) :
 
@@ -111,21 +111,24 @@ Dès qu'un compte existe, **l'inscription se ferme** : personne d'autre ne peut 
 
 ## 6. Sauvegarde et restauration
 
-Toutes les données (restaurants, recettes, réservations, comptes, clés de connexion) sont dans la base PostgreSQL, qui vit dans le volume Docker `chefos-pg`. **Sauvegardez-la régulièrement, et copiez la sauvegarde hors du serveur.**
+Toutes les données (restaurants, recettes, réservations, comptes, clés de connexion) sont dans la base PostgreSQL, qui vit dans le volume Docker `chefos_chefos-pg` (le nom du projet Compose, `chefos`, puis le nom du volume, `chefos-pg`). **Sauvegardez-la régulièrement, et copiez la sauvegarde hors du serveur.**
 
 **Sauvegarder :**
 
 ```bash
-docker compose -f docker-compose.prod.yml exec -T db pg_dump -U chefos -d chefos --clean --if-exists | gzip > sauvegarde-$(date +%F).sql.gz
+mkdir -p ~/sauvegardes
+docker compose -f docker-compose.prod.yml exec -T db pg_dump -U chefos -d chefos --clean --if-exists | gzip > ~/sauvegardes/sauvegarde-$(date +%F).sql.gz
 ```
 
-Pour automatiser, placez cette commande (avec le chemin complet de `deploy/`) dans une tâche `cron` quotidienne, et ne gardez que les dernières sauvegardes.
+Les sauvegardes sont rangées dans `~/sauvegardes/`, hors du dossier du projet : elles contiennent des données personnelles et ne doivent jamais se retrouver dans le dépôt.
+
+Pour automatiser, placez ces commandes (avec le chemin complet de `deploy/`) dans une tâche `cron` quotidienne, et ne gardez que les dernières sauvegardes.
 
 **Restaurer** (sur ce serveur ou sur un nouveau serveur, après un premier démarrage) :
 
 ```bash
 docker compose -f docker-compose.prod.yml stop back vitrine
-gunzip -c sauvegarde-2026-01-31.sql.gz | docker compose -f docker-compose.prod.yml exec -T db psql -U chefos -d chefos
+gunzip -c ~/sauvegardes/sauvegarde-2026-01-31.sql.gz | docker compose -f docker-compose.prod.yml exec -T db psql -v ON_ERROR_STOP=1 -U chefos -d chefos
 docker compose -f docker-compose.prod.yml start back vitrine
 ```
 
@@ -178,9 +181,11 @@ Unhandled exception. System.InvalidOperationException: Configuration de producti
 - Payments:Gateway = Mollie sans clé : renseignez Mollie:ApiKey ou la variable d'environnement MOLLIE_API_KEY.
 ```
 
-Les autres lignes possibles : `Vitrine:BaseUrl` qui doit commencer par `https://`, `Email:Sender = Smtp sans serveur` ou sans adresse d'expédition, `Email:Smtp:Security = None` interdit. Les messages ne contiennent jamais vos secrets (les lignes qui suivent, `at ChefOS…`, sont des détails techniques : ignorez-les). Corrigez `.env`, puis `docker compose -f docker-compose.prod.yml up -d`.
+Les autres lignes possibles : `Vitrine:BaseUrl` qui doit commencer par `https://`, `Email:Sender = Smtp sans serveur` ou sans adresse d'expédition, `Email:Smtp:Security = None` interdit, `Email:FromAddress` qui n'est pas une adresse valide, `Email:Sender = Log` sans démonstration (le lien de confirmation ne partirait jamais). Les messages ne contiennent jamais vos secrets (les lignes qui suivent, `at ChefOS…`, sont des détails techniques : ignorez-les). Corrigez `.env`, puis `docker compose -f docker-compose.prod.yml up -d`.
 
 **`docker compose` répond « required variable … is missing a value ».** Une variable obligatoire de `.env` est vide (`POSTGRES_PASSWORD`, `PAYMENTS_GATEWAY`, `BACK_DOMAIN`, `VITRINE_DOMAIN`, `ACME_EMAIL`) : le message dit laquelle. Remplissez-la. (Un `PAYMENTS_GATEWAY` oublié est arrêté ici, avant même le démarrage du site.)
+
+**L'e-mail de confirmation n'arrive pas.** Lisez les journaux du back (`docker compose -f docker-compose.prod.yml logs back | grep -i mail`) : ils disent si l'envoi a été refusé (adresse d'expédition non autorisée, identifiants SMTP erronés, serveur injoignable). Corrigez les réglages `SMTP_*` et `EMAIL_FROM_ADDRESS` dans `.env`, appliquez avec `docker compose -f docker-compose.prod.yml up -d`, puis, sur la page de connexion, cliquez sur « Renvoyer l'e-mail de confirmation ».
 
 **Le navigateur affiche une erreur de certificat ou « connexion impossible ».** Vérifiez que le DNS pointe bien vers le serveur (étape 2), que les ports 80 et 443 sont ouverts, puis lisez `docker compose -f docker-compose.prod.yml logs caddy`. Let's Encrypt limite le nombre d'essais : corrigez la cause avant de relancer en boucle.
 

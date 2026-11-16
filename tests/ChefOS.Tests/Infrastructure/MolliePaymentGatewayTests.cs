@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace ChefOS.Tests.Infrastructure;
 
 /// <summary>Passerelle Mollie contre un faux <see cref="HttpMessageHandler"/> : aucun appel réseau.</summary>
+[Collection(EnvironmentVariablesCollection.Name)]
 public sealed class MolliePaymentGatewayTests
 {
     private const string Key = "test_SECRETKEY123";

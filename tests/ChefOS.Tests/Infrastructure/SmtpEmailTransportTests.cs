@@ -3,6 +3,8 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using ChefOS.Infrastructure.Notifications;
+using MailKit;
+using MailKit.Net.Smtp;
 using Microsoft.Extensions.Options;
 
 namespace ChefOS.Tests.Infrastructure;
@@ -43,6 +45,16 @@ public class SmtpEmailTransportTests(MailpitFixture mailpit) : IClassFixture<Mai
         Assert.Contains("Bonjour Jean, votre table est confirmée.", message.GetProperty("Text").GetString());
         Assert.Contains("<strong>confirmée</strong>", message.GetProperty("HTML").GetString());
     }
+
+    [Theory]
+    [InlineData(SmtpStatusCode.MailboxUnavailable, SmtpErrorCode.RecipientNotAccepted, EmailFailure.Permanent)]
+    [InlineData(SmtpStatusCode.MailboxUnavailable, SmtpErrorCode.MessageNotAccepted, EmailFailure.Permanent)]
+    [InlineData(SmtpStatusCode.MailboxUnavailable, SmtpErrorCode.SenderNotAccepted, EmailFailure.ServerUnavailable)]
+    [InlineData(SmtpStatusCode.TransactionFailed, SmtpErrorCode.SenderNotAccepted, EmailFailure.ServerUnavailable)]
+    [InlineData(SmtpStatusCode.ServiceNotAvailable, SmtpErrorCode.UnexpectedStatusCode, EmailFailure.ServerUnavailable)]
+    [InlineData(SmtpStatusCode.MailboxBusy, SmtpErrorCode.RecipientNotAccepted, EmailFailure.Temporary)]
+    public void Classify_MapsSmtpAnswers(SmtpStatusCode status, SmtpErrorCode error, EmailFailure expected) =>
+        Assert.Equal(expected, SmtpEmailTransport.Classify(status, error));
 
     [Fact]
     public async Task RejectedRecipient_IsPermanent()

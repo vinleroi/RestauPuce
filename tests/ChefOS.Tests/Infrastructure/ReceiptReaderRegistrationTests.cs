@@ -15,6 +15,7 @@ namespace ChefOS.Tests.Infrastructure;
 /// Seuls les enregistrements sont exercés : aucun appel à l'API. La variable d'environnement est réinitialisée pour chaque test
 /// (une clé réelle présente sur le poste du développeur ne doit pas fausser le résultat) ; la classe est séquentielle, les tests ne se chevauchent pas.
 /// </summary>
+[Collection(EnvironmentVariablesCollection.Name)]
 public sealed class ReceiptReaderRegistrationTests : IDisposable
 {
     private const string ConnectionString = "Host=localhost;Port=1;Database=chefos_unused;Username=u;Password=p";

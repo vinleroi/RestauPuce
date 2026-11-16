@@ -48,6 +48,32 @@ public sealed class ReservationEmailsTests
     }
 
     [Fact]
+    public void Confirmed_DeadlineAlreadyPassed_SaysSoInsteadOfAnnouncingIt()
+    {
+        var email = ReservationEmails.Confirmed(Base with { FreeCancellationOver = true });
+
+        foreach (var body in new[] { Plain(email.TextBody), Visible(email.HtmlBody) })
+        {
+            Assert.DoesNotContain("Annulation gratuite jusqu'au", body);
+            Assert.Contains("Le délai d'annulation gratuite est dépassé (il courait jusqu'au 12/11/2026 à 19:30)", body);
+            Assert.Contains("40,00 € ne sera pas remboursé", body);
+        }
+
+        var unpaid = Plain(ReservationEmails.Confirmed(Base with { FreeCancellationOver = true, AmountPaid = 0m }).TextBody);
+        Assert.DoesNotContain("Annulation gratuite jusqu'au", unpaid);
+        Assert.Contains("Le délai d'annulation gratuite est dépassé.", unpaid);
+        Assert.DoesNotContain("remboursé", unpaid);
+    }
+
+    [Fact]
+    public void Confirmed_DeadlineInTheFuture_KeepsTheAnnouncement()
+    {
+        var text = Plain(ReservationEmails.Confirmed(Base).TextBody);
+        Assert.Contains("Annulation gratuite jusqu'au 12/11/2026 à 19:30", text);
+        Assert.DoesNotContain("dépassé", text);
+    }
+
+    [Fact]
     public void Confirmed_WithoutPayment_DoesNotMentionAnAmount()
     {
         var email = ReservationEmails.Confirmed(Base with { AmountPaid = 0m });

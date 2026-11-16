@@ -5,14 +5,18 @@ using ChefOS.Infrastructure.Data;
 using ChefOS.Infrastructure.Receipts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace ChefOS.Tests.Infrastructure;
 
 [Collection("postgres")]
 public class DemoReceiptReaderTests(PostgresFixture postgres)
 {
+    // 23:30 UTC le 12/11/2026 : à Bruxelles, il est déjà le 13 (le serveur peut être en UTC).
+    private static readonly FakeTimeProvider Clock = new(new DateTimeOffset(2026, 11, 12, 23, 30, 0, TimeSpan.Zero));
+
     private static Task<ReceiptExtraction> ReadAsync(CancellationToken ct = default) =>
-        new DemoReceiptReader().ReadAsync([1, 2, 3], "image/jpeg", ct);
+        new DemoReceiptReader(Clock).ReadAsync([1, 2, 3], "image/jpeg", ct);
 
     [Fact]
     public async Task DemoReader_ReturnsLines()
@@ -22,7 +26,7 @@ public class DemoReceiptReaderTests(PostgresFixture postgres)
         clock.Stop();
 
         Assert.Equal("Metro Cash & Carry", extraction.SupplierName);
-        Assert.Equal(DateOnly.FromDateTime(DateTime.Now), extraction.Date);
+        Assert.Equal(new DateOnly(2026, 11, 13), extraction.Date);
         Assert.False(extraction.AmountsIncludeVat);
 
         Assert.True(extraction.Lines.Count >= 6);

@@ -19,7 +19,8 @@ public class NoServerClockTests
         [
             Path.Combine("src", "ChefOS.Back"),
             Path.Combine("src", "ChefOS.Infrastructure", "Services"),
-            Path.Combine("src", "ChefOS.Infrastructure", "Seeding")
+            Path.Combine("src", "ChefOS.Infrastructure", "Seeding"),
+            Path.Combine("src", "ChefOS.Infrastructure", "Receipts")
         ];
 
         var offenders = new List<string>();

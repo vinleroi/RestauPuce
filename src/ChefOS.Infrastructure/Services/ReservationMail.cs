@@ -14,7 +14,7 @@ namespace ChefOS.Infrastructure.Services;
 internal static class ReservationMail
 {
     /// <summary>Le contexte des gabarits à partir d'entités déjà lues (ou pas encore enregistrées) ; null si le client n'a pas d'adresse.</summary>
-    public static ReservationEmailContext? Context(Restaurant restaurant, VitrineProfile? profile, Reservation reservation, string baseUrl,
+    public static ReservationEmailContext? Context(Restaurant restaurant, VitrineProfile? profile, Reservation reservation, string baseUrl, DateTime nowUtc,
         decimal amountPaid = 0m, decimal refundAmount = 0m)
     {
         if (string.IsNullOrWhiteSpace(reservation.CustomerEmail))
@@ -25,11 +25,12 @@ internal static class ReservationMail
         return new ReservationEmailContext(
             restaurant.Name, profile?.AccentColor, profile?.PublicEmail, profile?.Phone, Address(restaurant.Address, profile?.City), restaurant.Slug, baseUrl,
             reservation.CustomerName, reservation.CustomerEmail, reservation.PublicToken, date, time, reservation.ServiceName, reservation.PartySize,
-            amountPaid, refundAmount, deadline.Date.ToDateTime(deadline.Time), restaurant.Id);
+            amountPaid, refundAmount, deadline.Date.ToDateTime(deadline.Time), restaurant.Id,
+            FreeCancellationOver: nowUtc > reservation.FreeCancellationUntilUtc);
     }
 
     /// <summary>Relit la réservation, son restaurant et sa vitrine dans le contexte (et la transaction) de l'appelant ; null si la réservation n'a pas d'adresse.</summary>
-    public static async Task<ReservationEmailContext?> LoadAsync(ChefOsDbContext db, int reservationId, string baseUrl, decimal amountPaid, decimal refundAmount,
+    public static async Task<ReservationEmailContext?> LoadAsync(ChefOsDbContext db, int reservationId, string baseUrl, DateTime nowUtc, decimal amountPaid, decimal refundAmount,
         CancellationToken ct)
     {
         var reservation = await db.Reservations.AsNoTracking().FirstOrDefaultAsync(r => r.Id == reservationId, ct);
@@ -38,7 +39,7 @@ internal static class ReservationMail
 
         var restaurant = await db.Restaurants.AsNoTracking().FirstAsync(r => r.Id == reservation.RestaurantId, ct);
         var profile = await db.VitrineProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.RestaurantId == reservation.RestaurantId, ct);
-        return Context(restaurant, profile, reservation, baseUrl, amountPaid, refundAmount);
+        return Context(restaurant, profile, reservation, baseUrl, nowUtc, amountPaid, refundAmount);
     }
 
     /// <summary>Ajoute le message au contexte, sans SaveChanges ; vrai si un message a été ajouté (l'appelant enregistre, valide, puis réveille le dispatcher).</summary>

@@ -3,14 +3,15 @@ using System.Globalization;
 namespace ChefOS.Infrastructure.Notifications;
 
 /// <summary>
-/// Ce qu'il faut pour écrire les e-mails d'une réservation, déjà dans le fuseau du restaurant. <paramref name="AmountPaid"/> : montant réglé (0 sans paiement) ;
+/// Ce qu'il faut pour écrire les e-mails d'une réservation, déjà dans le fuseau du restaurant. <paramref name="FreeCancellationOver"/> : la limite d'annulation gratuite est déjà passée à l'envoi (réservation du jour même). <paramref name="AmountPaid"/> : montant réglé (0 sans paiement) ;
 /// <paramref name="RefundAmount"/> : montant remboursé ou en cours de remboursement (0 sinon). <paramref name="PublicEmail"/>, <paramref name="Phone"/> et
 /// <paramref name="Address"/> sont ceux que le restaurant affiche au public, omis s'ils sont vides.
 /// </summary>
 public sealed record ReservationEmailContext(
     string RestaurantName, string? AccentColor, string? PublicEmail, string? Phone, string? Address, string Slug, string BaseUrl,
     string CustomerName, string CustomerEmail, string Token, DateOnly LocalDate, TimeOnly LocalTime, string ServiceName, int PartySize,
-    decimal AmountPaid, decimal RefundAmount, DateTime FreeCancellationUntilLocal, int RestaurantId);
+    decimal AmountPaid, decimal RefundAmount, DateTime FreeCancellationUntilLocal, int RestaurantId,
+    bool FreeCancellationOver = false);
 
 /// <summary>
 /// Les quatre e-mails aux clients de la vitrine (spec § 3.3), en français : confirmation, annulation par le client, annulation par le restaurant, paiement
@@ -30,9 +31,15 @@ public static class ReservationEmails
         if (c.AmountPaid > 0m)
             paragraphs.Add($"Montant réglé : {Money(c.AmountPaid)}.");
         var deadline = Deadline(c);
-        paragraphs.Add(c.AmountPaid > 0m
-            ? $"Annulation gratuite jusqu'au {deadline} : le montant réglé vous est alors remboursé. Ensuite, il n'est plus remboursé."
-            : $"Annulation gratuite jusqu'au {deadline}.");
+        // Réservation faite après la limite (même jour) : ne pas annoncer un délai déjà passé.
+        if (c.FreeCancellationOver)
+            paragraphs.Add(c.AmountPaid > 0m
+                ? $"Le délai d'annulation gratuite est dépassé (il courait jusqu'au {deadline}) : si vous annulez, {Money(c.AmountPaid)} ne sera pas remboursé."
+                : "Le délai d'annulation gratuite est dépassé.");
+        else
+            paragraphs.Add(c.AmountPaid > 0m
+                ? $"Annulation gratuite jusqu'au {deadline} : le montant réglé vous est alors remboursé. Ensuite, il n'est plus remboursé."
+                : $"Annulation gratuite jusqu'au {deadline}.");
         paragraphs.Add("Pour revoir votre réservation ou l'annuler, utilisez le lien ci-dessous.");
         AddContact(paragraphs, c);
 

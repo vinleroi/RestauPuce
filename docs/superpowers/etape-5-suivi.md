@@ -9,6 +9,8 @@ L'utilisateur a demandé d'avancer sans questions (« go for it ») : le plan n'
   - Une panne du serveur d'envoi ne compte pas comme un essai : l'envoi est retenté toutes les 30 secondes, et abandonné après 24 heures.
   - Le lien de réservation d'un e-mail fonctionne même si la vitrine n'est pas publiée ou si le slug a changé : le jeton suffit à retrouver la réservation.
   - Un paiement reçu après l'annulation du client est remboursé, sans e-mail (ce cas n'était pas prévu dans la spec).
+- **Envoi des e-mails : adresse d'expédition refusée.** Si le serveur d'envoi refuse l'adresse d'expédition de la plateforme, les e-mails ne sont plus abandonnés : ils attendent que l'adresse soit corrigée et partent ensuite, dans la limite de 24 heures. Un destinataire refusé reste abandonné tout de suite. Chaque abandon est écrit en erreur dans les journaux. De plus, `Email:FromAddress` doit être une adresse valide en production.
+- **Réglage `Log` pour les e-mails.** Il n'écrit pas le lien de confirmation dans les journaux (le contenu des e-mails contient des données personnelles). Hors démonstration, le site refuse donc de démarrer avec `Log` tant que la confirmation des comptes est exigée ; `Log` n'est accepté que pour une démo hébergée (`DEMO_SEED_ON_STARTUP=true`) ou si la confirmation est désactivée.
 - **Connexion.** Un seul message d'échec, qui mentionne aussi l'adresse « pas encore confirmée » : rien ne révèle qu'un compte existe, et le chef non confirmé comprend quoi faire.
 - **Fuseau horaire.** L'entrée de prix d'un ticket sans date est écrite au jour local de sa création, comme une étiquette, et non à l'instant brut.
 - **Renommage d'un service.** Il prend un verrou pour chaque date locale de ce jour de semaine, entre aujourd'hui et l'horizon des réservations en ligne, avant de relire les réservations à venir. Une réservation manuelle plus lointaine et simultanée reste hors périmètre (très improbable).
@@ -27,9 +29,7 @@ L'utilisateur a demandé d'avancer sans questions (« go for it ») : le plan n'
 
 - **Configuration de production.**
   - Un site en production derrière Caddy sans `ReverseProxy:KnownNetworks` échoue en silence (le site croit être en HTTP, les cookies ne sont pas `Secure`, les liens des e-mails sont internes) : ajouter un avertissement au démarrage ou une règle de configuration. Le réseau `0.0.0.0/0` est aujourd'hui accepté.
-  - L'échec d'un expéditeur refusé par le serveur d'envoi (erreur 5xx sur `MAIL FROM`) abandonne tous les e-mails : un `Email:FromAddress` mal réglé perd donc les messages ; envisager de réessayer.
-  - Le test `ProductionConfigurationTests` met `MOLLIE_API_KEY` à vide sans le restaurer (tests en parallèle) ; le cas avec la variable d'environnement n'est pas testé.
-  - Comparer `Smtp:Security` à des constantes plutôt qu'à des chaînes ; vérifier que `FromAddress` est une adresse valide.
+  - Comparer `Smtp:Security` à des constantes plutôt qu'à des chaînes.
 - **Clés de protection des données.**
   - Elles sont stockées en clair en base : prévoir `ProtectKeysWithCertificate`.
   - Une ligne de clé XML malformée casse tout : ajouter une garde dans la lecture des clés.
@@ -40,6 +40,7 @@ L'utilisateur a demandé d'avancer sans questions (« go for it ») : le plan n'
   - La durée maximale de 30 secondes d'un envoi dépend du comportement du transport ; le bail suppose que l'horloge est synchronisée.
   - `Enqueue=false` est ignoré en silence ; le texte « Bienvenue… activer votre compte » est aussi envoyé pour un simple changement d'adresse.
   - Une course est possible sur la création du tout premier compte.
+  - Les pages de compte qui envoient un e-mail (renvoi de confirmation, mot de passe oublié, changement d'adresse) ne sont pas encore limitées en nombre de demandes : reporté.
 - **Fuseau horaire et prix.**
   - Le fuseau du restaurant est gardé en cache pour la durée du circuit : un changement n'apparaît qu'au prochain circuit.
   - L'historique des prix mélange étiquettes (tickets) et instants (saisies manuelles) dans une même colonne : le dernier prix affiché peut être le mauvais dans de rares cas de minuit. La correction propre est une colonne « jour » séparée.
@@ -48,7 +49,7 @@ L'utilisateur a demandé d'avancer sans questions (« go for it ») : le plan n'
 - **Réservations.**
   - Un service qui a un paiement périmé en attente est compté comme actif ; fermer un jour déjà fermé demande confirmation puis échoue.
   - La lecture du nombre de réservations actives peut créer un profil par défaut.
-  - Plusieurs formulations à revoir (« contactez le restaurant » sans contact publié, délai gratuit affiché même passé).
+  - Plusieurs formulations à revoir (« contactez le restaurant » sans contact publié).
 - **Comptes.** Ouvrir les pages « codes de récupération » ou « désactiver la double authentification » sans double authentification active donne une erreur 500 (comportement d'Identity préexistant) : rediriger avec un message. Quelques libellés restent incohérents, et deux titres de page n'ont pas « — ChefOS ».
 - **Édition de commande ou de ticket.** Rendre `expectedVersion` obligatoire plutôt que facultatif ; l'ordre des messages d'erreur à l'enregistrement d'un brouillon de ticket est à revoir.
 - **Tests.**

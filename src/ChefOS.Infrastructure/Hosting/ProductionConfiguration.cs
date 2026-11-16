@@ -1,6 +1,7 @@
 using ChefOS.Infrastructure.Payments;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
+using MimeKit;
 
 namespace ChefOS.Infrastructure.Hosting;
 
@@ -75,12 +76,25 @@ public static class ProductionConfiguration
         {
             if (string.IsNullOrWhiteSpace(configuration["Email:Smtp:Host"]))
                 problems.Add("Email:Sender = Smtp sans serveur : renseignez Email:Smtp:Host.");
-            if (string.IsNullOrWhiteSpace(configuration["Email:FromAddress"]))
+            var from = configuration["Email:FromAddress"];
+            if (string.IsNullOrWhiteSpace(from))
                 problems.Add("Email:Sender = Smtp sans adresse d'expédition : renseignez Email:FromAddress.");
+            else if (!MailboxAddress.TryParse(from.Trim(), out _))
+                problems.Add("Email:FromAddress n'est pas une adresse e-mail valide : indiquez par exemple no-reply@mon-restaurant.be.");
             if (string.Equals(configuration["Email:Smtp:Security"]?.Trim(), "None", StringComparison.OrdinalIgnoreCase))
                 problems.Add("Email:Smtp:Security = None est réservé au développement local : utilisez StartTls ou SslOnConnect.");
         }
-        else if (!string.Equals(sender, "Log", StringComparison.OrdinalIgnoreCase))
+        else if (string.Equals(sender, "Log", StringComparison.OrdinalIgnoreCase))
+        {
+            // Avec « Log », le lien de confirmation n'est écrit nulle part (le corps des e-mails contient des données personnelles) :
+            // le premier compte ne pourrait jamais être confirmé. Seule la démo hébergée (compte déjà confirmé) ou l'absence de confirmation s'en passe.
+            var confirmationRequired = configuration.GetValue("Accounts:RequireConfirmedEmail", true);
+            var demoSeed = configuration.GetValue("Demo:SeedOnStartup", false);
+            if (confirmationRequired && !demoSeed)
+                problems.Add("Email:Sender = Log empêche de confirmer un compte (le lien de confirmation n'est jamais envoyé) : choisissez Smtp avec un vrai serveur d'e-mails, "
+                    + "ou limitez Log à une démo (Demo:SeedOnStartup = true, compte de démonstration déjà confirmé).");
+        }
+        else
         {
             problems.Add("Email:Sender doit valoir Smtp ou Log.");
         }

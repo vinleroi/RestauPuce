@@ -12,9 +12,9 @@ namespace ChefOS.Infrastructure.Notifications;
 /// un message à la fois). Le <c>From</c> est toujours l'adresse de la plateforme ; le <c>Reply-To</c> est celui du message.
 /// Classement des erreurs :
 /// <list type="bullet">
-/// <item><see cref="EmailFailure.ServerUnavailable"/> : connexion impossible, TLS ou authentification refusés, délai dépassé, connexion perdue, configuration incomplète ;</item>
+/// <item><see cref="EmailFailure.ServerUnavailable"/> : connexion impossible, expéditeur refusé (adresse d'expédition à corriger), TLS ou authentification refusés, délai dépassé, connexion perdue, configuration incomplète ;</item>
 /// <item><see cref="EmailFailure.Temporary"/> : une réponse 4xx sur ce message (sauf 421, fermeture du service : panne du serveur) ;</item>
-/// <item><see cref="EmailFailure.Permanent"/> : une réponse 5xx sur ce message (dont un destinataire refusé), ou une adresse de destinataire invalide.</item>
+/// <item><see cref="EmailFailure.Permanent"/> : une réponse 5xx sur ce message (dont un destinataire refusé, mais pas l'expéditeur), ou une adresse de destinataire invalide.</item>
 /// </list>
 /// Les raisons ne reprennent jamais le texte du serveur, qui peut citer l'adresse.
 /// </summary>
@@ -51,9 +51,7 @@ public sealed class SmtpEmailTransport(IOptions<EmailOptions> options) : IEmailT
         }
         catch (SmtpCommandException ex)
         {
-            var code = (int)ex.StatusCode;
-            var failure = code == 421 ? EmailFailure.ServerUnavailable : code >= 500 ? EmailFailure.Permanent : EmailFailure.Temporary;
-            throw new EmailTransportException($"SMTP {code} ({ex.ErrorCode})", failure, ex);
+            throw new EmailTransportException($"SMTP {(int)ex.StatusCode} ({ex.ErrorCode})", Classify(ex.StatusCode, ex.ErrorCode), ex);
         }
         catch (Exception ex) when (ex is NotSupportedException or SmtpUtf8AddressException)
         {
@@ -73,6 +71,18 @@ public sealed class SmtpEmailTransport(IOptions<EmailOptions> options) : IEmailT
         {
             // Le message est déjà accepté par le serveur : une fermeture ratée (ou annulée) ne doit pas le faire renvoyer.
         }
+    }
+
+    /// <summary>
+    /// Classe une réponse SMTP à l'envoi. Un expéditeur refusé (<see cref="SmtpErrorCode.SenderNotAccepted"/>) est un problème de configuration de la plateforme,
+    /// pas du message : tous les e-mails seraient perdus, ils attendent donc que l'adresse d'expédition soit corrigée (plafond de 24 h du dispatcher).
+    /// </summary>
+    internal static EmailFailure Classify(SmtpStatusCode status, SmtpErrorCode errorCode)
+    {
+        var code = (int)status;
+        if (code == 421 || errorCode == SmtpErrorCode.SenderNotAccepted)
+            return EmailFailure.ServerUnavailable;
+        return code >= 500 ? EmailFailure.Permanent : EmailFailure.Temporary;
     }
 
     private static MimeMessage Build(EmailMessage message, MailboxAddress from)

@@ -239,7 +239,7 @@ public class PaymentService(IDbContextFactory<ChefOsDbContext> factory, IPayment
                 : null;
             if (email is not null)
             {
-                var context = await ReservationMail.LoadAsync(db, reservation.Id, _site.BaseUrl, payment.Amount, confirmed ? 0m : payment.Amount, ct);
+                var context = await ReservationMail.LoadAsync(db, reservation.Id, _site.BaseUrl, now, payment.Amount, confirmed ? 0m : payment.Amount, ct);
                 enqueued = ReservationMail.Enqueue(db, context, email, now);
                 if (enqueued)
                     await db.SaveChangesAsync(ct);

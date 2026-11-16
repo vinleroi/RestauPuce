@@ -486,3 +486,6 @@ $RECYCLE.BIN/
 
 # Configuration de production (secrets) : jamais versionnée
 deploy/.env
+
+# Sauvegardes de la base (données personnelles)
+*.sql.gz

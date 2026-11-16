@@ -212,7 +212,7 @@ public sealed class OutgoingEmailDispatcher(
                 return true;
 
             default:
-                logger.LogWarning("E-mail {Id} ({Kind}) à {To} refusé définitivement ({Reason}) : abandonné ({Subject})",
+                logger.LogError("E-mail {Id} ({Kind}) à {To} refusé définitivement ({Reason}) : abandonné ({Subject})",
                     email.Id, email.Kind, to, reason, email.Subject);
                 await AbandonAsync(email, email.Attempts + 1, error);
                 return true;

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 
 namespace ChefOS.Tests.Infrastructure;
 
+[Collection(EnvironmentVariablesCollection.Name)]
 public class ProductionConfigurationTests
 {
     private static Dictionary<string, string?> Valid() => new()
@@ -12,7 +13,9 @@ public class ProductionConfigurationTests
         ["ConnectionStrings:ChefOs"] = "Host=db;Database=chefos",
         ["Payments:Gateway"] = "Demo",
         ["Vitrine:BaseUrl"] = "https://vitrine.test",
-        ["Email:Sender"] = "Log"
+        ["Email:Sender"] = "Log",
+        // « Log » ne convient qu'à une démo hébergée : le compte de démonstration est déjà confirmé.
+        ["Demo:SeedOnStartup"] = "true"
     };
 
     private static IReadOnlyList<string> Problems(Dictionary<string, string?> settings, string environment = "Production") =>
@@ -33,11 +36,82 @@ public class ProductionConfigurationTests
     [Fact]
     public void Production_MollieWithoutKey_IsAProblem()
     {
+        var previous = Environment.GetEnvironmentVariable("MOLLIE_API_KEY");
         Environment.SetEnvironmentVariable("MOLLIE_API_KEY", null);
+        try
+        {
+            var settings = Valid();
+            settings["Payments:Gateway"] = "mollie";
+            Assert.Contains(Problems(settings), p => p.Contains("Mollie:ApiKey"));
+            settings["Mollie:ApiKey"] = "test_secret";
+            Assert.Empty(Problems(settings));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MOLLIE_API_KEY", previous);
+        }
+    }
+
+    [Fact]
+    public void Production_MollieKeyOnlyInEnvironment_IsAccepted()
+    {
+        var previous = Environment.GetEnvironmentVariable("MOLLIE_API_KEY");
+        Environment.SetEnvironmentVariable("MOLLIE_API_KEY", "test_secret_from_environment");
+        try
+        {
+            var settings = Valid();
+            settings["Payments:Gateway"] = "Mollie";
+            Assert.Empty(Problems(settings));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MOLLIE_API_KEY", previous);
+        }
+    }
+
+    [Fact]
+    public void Production_LogWithConfirmationRequired_IsAProblem()
+    {
         var settings = Valid();
-        settings["Payments:Gateway"] = "mollie";
-        Assert.Contains(Problems(settings), p => p.Contains("Mollie:ApiKey"));
-        settings["Mollie:ApiKey"] = "test_secret";
+        settings.Remove("Demo:SeedOnStartup");
+        var problems = Problems(settings);
+        Assert.Contains(problems, p => p.Contains("Email:Sender = Log") && p.Contains("Smtp"));
+
+        settings["Accounts:RequireConfirmedEmail"] = "true";
+        Assert.Contains(Problems(settings), p => p.Contains("Email:Sender = Log"));
+        settings["Demo:SeedOnStartup"] = "false";
+        Assert.Contains(Problems(settings), p => p.Contains("Email:Sender = Log"));
+    }
+
+    [Fact]
+    public void Production_LogWithDemoSeed_IsAccepted()
+    {
+        var settings = Valid();
+        settings["Demo:SeedOnStartup"] = "true";
+        Assert.Empty(Problems(settings));
+    }
+
+    [Fact]
+    public void Production_LogWithoutConfirmationRequired_IsAccepted()
+    {
+        var settings = Valid();
+        settings.Remove("Demo:SeedOnStartup");
+        settings["Accounts:RequireConfirmedEmail"] = "false";
+        Assert.Empty(Problems(settings));
+    }
+
+    [Theory]
+    [InlineData("pas une adresse")]
+    [InlineData("no-reply@")]
+    [InlineData("@chefos.test")]
+    public void Production_SmtpWithInvalidFromAddress_IsAProblem(string from)
+    {
+        var settings = Valid();
+        settings["Email:Sender"] = "Smtp";
+        settings["Email:Smtp:Host"] = "smtp.test";
+        settings["Email:FromAddress"] = from;
+        Assert.Contains(Problems(settings), p => p.Contains("Email:FromAddress") && p.Contains("adresse e-mail valide"));
+        settings["Email:FromAddress"] = "no-reply@chefos.test";
         Assert.Empty(Problems(settings));
     }
 

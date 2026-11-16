@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace ChefOS.Tests.Infrastructure;
 
 /// <summary>Choix de l'assistant de rédaction des fiches de vin selon la configuration (section <c>Wines</c>, clé <c>Anthropic:ApiKey</c>). Aucun appel à l'API.</summary>
+[Collection(EnvironmentVariablesCollection.Name)]
 public sealed class WineDescriberRegistrationTests : IDisposable
 {
     private const string ConnectionString = "Host=localhost;Port=1;Database=chefos_unused;Username=u;Password=p";
