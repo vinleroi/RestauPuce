@@ -87,9 +87,9 @@
     protected override async Task OnInitializedAsync()
     {
         Input ??= new();
-        registrationOpen = await Registration.IsOpenAsync();
-
+        // Avant tout await : le premier rendu a lieu dès que la page attend la base, et le formulaire exige son contexte.
         editContext = new EditContext(Input);
+        registrationOpen = await Registration.IsOpenAsync();
 
         if (HttpMethods.IsGet(HttpContext.Request.Method))
         {

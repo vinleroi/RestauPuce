@@ -131,6 +131,21 @@ public class BackSiteTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Login_InProduction_ShowsTheFormAndSignsIn()
+    {
+        // Production : la règle d'inscription interroge la base (pas de raccourci « développement »), la page attend donc
+        // une vraie requête avant son premier rendu ; le formulaire doit être là, et la connexion aboutir.
+        await using var site = await BackSite.CreateAsync(postgres, environment: "Production");
+        using var client = site.CreateClient();
+
+        var page = await client.GetStringAsync("/Account/Login");
+
+        Assert.Contains("name=\"Input.Email\"", page);
+        Assert.DoesNotContain("Une erreur inattendue est survenue", page);
+        await BackSite.LoginAsync(client, site.BistroOwner.Email!, BackSite.Password);
+    }
+
+    [Fact]
     public async Task Register_WhenRegistrationIsClosed_RefusesToCreateAnAccount()
     {
         // Production : l'inscription n'est ouverte que tant qu'aucun compte n'existe ; le site en a déjà.
