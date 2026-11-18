@@ -9,7 +9,10 @@ COPY src/ChefOS.Infrastructure/ChefOS.Infrastructure.csproj src/ChefOS.Infrastru
 COPY src/ChefOS.Vitrine/ChefOS.Vitrine.csproj src/ChefOS.Vitrine/
 RUN dotnet restore src/ChefOS.Vitrine/ChefOS.Vitrine.csproj
 COPY src/ src/
-RUN dotnet publish src/ChefOS.Vitrine/ChefOS.Vitrine.csproj -c Release --no-restore -o /app/publish
+# Pas de --no-restore : la restauration ci-dessus a eu lieu sans les pages .razor, et le SDK n'y ajoute pas le paquet
+# qui fournit _framework/blazor.web.js (sans lui, aucune page n'est interactive). Les paquets déjà en cache ne sont pas retéléchargés.
+RUN dotnet publish src/ChefOS.Vitrine/ChefOS.Vitrine.csproj -c Release -o /app/publish \
+    && test -f /app/publish/wwwroot/_framework/blazor.web.js
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 # curl sert uniquement à la sonde de santé de la composition (l'image d'exécution n'en contient pas).
